@@ -199,6 +199,13 @@ class Tracker:
         self.at_limit = False
         self.laser_aim = False   # True: aim at the laser spot (laser mode).
         self.align_frames = 0    # Consecutive centered frames before laser lock.
+        # --- Remote (ESP32) manual override -------------------------------
+        # When True the gimbal ignores vision entirely and only follows the
+        # PAN/TILT targets pushed by the ESP32 joystick commands. Vision keeps
+        # running (so POS/LOST keep being reported) but drives nothing.
+        self.manual = False
+        self.manual_pan = 1500.0
+        self.manual_tilt = 1500.0
         self.off()
 
     def off(self):
@@ -210,6 +217,41 @@ class Tracker:
         self.velocity = [0.0, 0.0]
         self.laser_aim = False
         self.align_frames = 0
+        self.manual = False
+
+    def set_manual(self, pan=None, tilt=None):
+        """Remote manual control: absolute PWM targets, clamped to limits.
+
+        Arms the servos on demand so the ESP32 can move the gimbal without a
+        separate 'home' first. Vision is disabled until 'track' is received.
+        """
+        if self.mode == "OFF":
+            self.arm()
+        self.manual = True
+        self.mode = "MANUAL"
+        self.reason = "REMOTE"
+        self.centered = [False, False]
+        self.velocity = [0.0, 0.0]
+        self.laser_aim = False
+        self.align_frames = 0
+        if pan is not None:
+            self.manual_pan = float(pan)
+        if tilt is not None:
+            self.manual_tilt = float(tilt)
+
+    def step_manual(self, axis, delta):
+        """Relative jog in us (cross-key / shoulder-key stepping)."""
+        if axis == 0:
+            self.set_manual(pan=self.manual_pan + delta)
+        else:
+            self.set_manual(tilt=self.manual_tilt + delta)
+
+    def apply_manual(self):
+        """Push the manual targets to the servos (called every frame)."""
+        if not self.servos or not self.manual:
+            return
+        self.move(0, self.manual_pan)
+        self.move(1, self.manual_tilt)
 
     def arm(self):
         if self.servos:
@@ -432,18 +474,270 @@ def handle_usb(tracker, auto, line, now):
             print("ALREADY_ARMED; use off first to re-home")
     elif cmd in ("track", "start"):
         auto.cancel()
+        tracker.manual = False
         error = auto.start(now)
         print("START" if error is None else "START_ERR " + error)
-    elif cmd in ("status", "s"):
+    elif cmd == "manual":
+        tracker.set_manual()
+        print("MANUAL", int(tracker.manual_pan), int(tracker.manual_tilt))
+    elif cmd.startswith("pan ") or cmd.startswith("tilt "):
+        axis, _, value = cmd.partition(" ")
+        try:
+            tracker.set_manual(pan=int(value)) if axis == "pan" else tracker.set_manual(tilt=int(value))
+            print("MANUAL", int(tracker.manual_pan), int(tracker.manual_tilt))
+        except ValueError:
+            print("BAD_VALUE")
+    elif cmd == "status" or cmd == "s":
         print(tracker.status_line())
     elif cmd == "info":
         print("AUTO_START", AUTO_START, "LIMITS", tracker.limits,
               "PAN_RESPONSE", tracker.pan_response, "TILT_RESPONSE", TILT_RESPONSE,
               "SEARCH", "OFF(WAIT_IN_PLACE)")
     elif cmd == "help":
-        print("off | hold | home | track | status | info | help")
+        print("off | hold | home | track | manual | pan <us> | tilt <us> | status | info | help")
     else:
         print("UNKNOWN:", cmd)
+
+
+# ---------------------------------------------------------------------------
+# ESP32 link: UART3 on P4 (TX) / P5 (RX), 115200 8N1.
+#
+# Frame format (ASCII, matching the ESP32 firmware's $G2 parser):
+#     $G2,<VERB>,<arg1>,<arg2>,...!
+#
+# ESP32 -> OpenMV (commands):
+#     $G2,PAN,<us>!        absolute pan pulse width, us
+#     $G2,TILT,<us>!       absolute tilt pulse width, us
+#     $G2,MOVE,<pan>,<tilt>!   both axes at once (joystick frame)
+#     $G2,JOG,<axis>,<us>! relative step, axis 1=pan 2=tilt
+#     $G2,HOME!            centre both axes and hold
+#     $G2,HOLD!            freeze in place (keeps manual goal)
+#     $G2,TRACK!           leave manual, hand the gimbal back to vision
+#     $G2,OFF!             release the servos
+#     $G2,PING!            -> $G2,PONG!
+#     $G2,STATUS!          -> $G2,STATE,...
+#
+# OpenMV -> ESP32:
+#     $G2,PONG!
+#     $G2,STATE,<mode>,<pan>,<tilt>,<tx>,<ty>,<laser_ok>!
+#     $G2,POS,<tx>,<ty>,<lx>,<ly>!   ~10 Hz whenever the link is alive
+#     $G2,LOST!                      target lost
+# ---------------------------------------------------------------------------
+UART_BAUD = 115200
+UART_TIMEOUT_MS = 20
+TELEMETRY_MS = 100
+LINK_TEST_MS = 1000
+# Link UART selection. The OpenMV H7 exposes several UARTs; which one is wired
+# to the ESP32 depends on the board and on the header you use.
+#   LINK_UART = 3  ->  P4 = TX, P5 = RX   (classic OpenMV pinout)
+#   LINK_UART = 1  ->  P1 = TX, P0 = RX   (alternate, if P4/P5 are unusable)
+# Set LINK_UART to match the physical wiring. A pin that is shorted to GND or to
+# VCC will silently swallow every frame, so verify the chosen pair first.
+LINK_UART = 1
+LINK_UART_PINS = {3: ("P4", "P5"), 1: ("P1", "P0")}
+
+
+class SerialLink:
+    """Line-framed $G2 parser over UART3 (P4=TX, P5=RX)."""
+
+    def __init__(self, uart=None):
+        self.uart = uart
+        self.buffer = bytearray()
+        self.rx_commands = 0
+        self.rx_errors = 0
+        self.tx_frames = 0
+        self.last_rx = None
+        # Vision statistics reported to the ESP32 via the INFO verb.
+        self.frames = 0
+        self.fps = 0.0
+        self.snap_us = 0
+        self.camera_ok = False
+        self.camera_errors = 0
+        self._fps_window = None
+        self._fps_count = 0
+
+    def note_frame(self, snap_us, now, ok):
+        """Called once per capture: feeds the INFO counters (no allocation)."""
+        self.frames += 1
+        self.snap_us = snap_us if snap_us >= 0 else self.snap_us
+        self.camera_ok = ok
+        if not ok:
+            self.camera_errors += 1
+        if self._fps_window is None:
+            self._fps_window = now
+            self._fps_count = 0
+        self._fps_count += 1
+        elapsed = time.ticks_diff(now, self._fps_window)
+        if elapsed >= 1000:
+            self.fps = self._fps_count * 1000.0 / elapsed
+            self._fps_window = now
+            self._fps_count = 0
+
+    def send(self, text):
+        if not self.uart:
+            return False
+        try:
+            self.uart.write(text)
+        except Exception:
+            self.rx_errors += 1
+            return False
+        self.tx_frames += 1
+        return True
+
+    def poll(self, handler, now):
+        """Read available bytes, split on '!', dispatch each frame."""
+        if not self.uart:
+            return
+        try:
+            count = self.uart.any()
+            data = self.uart.read(count) if count else None
+        except Exception:
+            self.rx_errors += 1
+            return
+        if not data:
+            return
+        for byte in data:
+            if byte == 0x24:            # '$' starts a new frame
+                self.buffer = bytearray([byte])
+            elif self.buffer:
+                if len(self.buffer) >= 96:   # runaway frame: drop it
+                    self.buffer = bytearray()
+                    self.rx_errors += 1
+                    continue
+                self.buffer.append(byte)
+                if byte == 0x21:             # '!'
+                    frame = self.buffer.decode()
+                    self.buffer = bytearray()
+                    self.rx_commands += 1
+                    self.last_rx = now
+                    try:
+                        handler(frame)
+                    except Exception as error:
+                        self.rx_errors += 1
+                        print("G2_CMD_ERROR", repr(error), frame)
+
+
+def parse_fields(frame):
+    """'$G2,VERB,a,b!' -> ['VERB','a','b']; None if not a well-formed frame."""
+    if not frame.startswith("$G2,") or not frame.endswith("!"):
+        return None
+    body = frame[4:-1]
+    if not body:
+        return None
+    return body.split(",")
+
+
+def handle_g2(tracker, auto, link, frame, now):
+    fields = parse_fields(frame)
+    if fields is None:
+        return
+    verb = fields[0].strip().upper()
+    args = fields[1:]
+
+    def number(index, default=None):
+        try:
+            return int(float(args[index]))
+        except (IndexError, ValueError):
+            return default
+
+    def arg(index, default=None):
+        """Argument *after* the sequence number (payload args)."""
+        try:
+            return int(float(rest[index]))
+        except (IndexError, ValueError):
+            return default
+
+    # The ESP32 firmware sends '$G2,<VERB>,<seq>[,<args>]!' and expects a reply
+    # shaped '$G2,ACK,<seq>,<KIND>,...' (or '$G2,PONG,<seq>!' for PING). The seq
+    # must be echoed verbatim or completeFrame() will ignore the reply and the
+    # firmware will report TIMEOUT.
+    seq = args[0] if args else "0"
+    rest = args[1:]
+
+    def ack(kind, payload=""):
+        link.send("$G2,ACK,%s,%s,%s!" % (seq, kind, payload) if payload
+                  else "$G2,ACK,%s,%s!" % (seq, kind))
+
+    def err(reason):
+        link.send("$G2,ERR,%s,%s!" % (seq, reason))
+
+    # --- console/keepalive verbs the firmware polls -----------------------
+    if verb == "PING":
+        link.send("$G2,PONG,%s!" % seq)
+        return
+    if verb == "INFO":
+        # 7 integers: uptime,frames,fps_x10,snap_us,camera_ok,cam_err,uart_err
+        ack("INFO", "%d,%d,%d,%d,%d,%d,%d" %
+            (time.ticks_ms(), link.frames, int(link.fps * 10), link.snap_us,
+             1 if link.camera_ok else 0, link.camera_errors, link.rx_errors))
+        return
+    if verb == "LIMITS":
+        low_pan, high_pan = map(int, tracker.limits[0])
+        low_tilt, high_tilt = map(int, tracker.limits[1])
+        ack("LIMITS", "%d,%d,%d,%d" % (low_pan, high_pan, low_tilt, high_tilt))
+        return
+    if verb == "STATUS":
+        pan, tilt = tracker.sent if tracker.servos else (0, 0)
+        ack("STATE", "%s,%d,%d" % (tracker.mode, pan, tilt))
+        return
+
+    # --- gimbal control verbs (joystick / console) ------------------------
+    if verb == "MOVE":
+        pan, tilt = arg(0), arg(1)
+        if pan is None or tilt is None:
+            err("BAD_ARGS")
+            return
+        auto.cancel()
+        tracker.set_manual(pan=pan, tilt=tilt)
+        ack("STATE", "MANUAL")
+    elif verb == "PAN":
+        value = arg(0)
+        if value is None:
+            err("BAD_ARGS")
+            return
+        auto.cancel()
+        tracker.set_manual(pan=value)
+        ack("STATE", "MANUAL")
+    elif verb == "TILT":
+        value = arg(0)
+        if value is None:
+            err("BAD_ARGS")
+            return
+        auto.cancel()
+        tracker.set_manual(tilt=value)
+        ack("STATE", "MANUAL")
+    elif verb == "JOG":
+        axis, delta = arg(0), arg(1)
+        if axis is None or delta is None:
+            err("BAD_ARGS")
+            return
+        auto.cancel()
+        tracker.step_manual(0 if axis == 1 else 1, delta)
+        ack("STATE", "MANUAL")
+    elif verb == "HOME":
+        auto.cancel()
+        tracker.set_manual(pan=1500, tilt=1500)
+        ack("STATE", "HOME")
+    elif verb == "HOLD":
+        auto.cancel()
+        tracker.set_manual()          # keep current goal, just stop vision
+        ack("STATE", "HOLD")
+    elif verb in ("TRACK", "START"):
+        # Hand the gimbal back to the vision loop.
+        tracker.manual = False
+        tracker.mode = "HOLD"
+        tracker.reason = "REMOTE_TRACK"
+        tracker.velocity = [0.0, 0.0]
+        tracker.position = [float(value) for value in tracker.sent]
+        auto.start(now)
+        ack("STATE", "TRACK")
+    elif verb == "OFF":
+        auto.cancel()
+        tracker.off()
+        tracker.reason = "REMOTE"
+        ack("STATE", "OFF")
+    else:
+        err("UNKNOWN")
 
 
 def main():
@@ -452,11 +746,23 @@ def main():
     auto = AutoStart(tracker)
     watchdog = None
     vcp = None
+    uart = None
     try:
         from pyb import USB_VCP
         vcp = USB_VCP()
     except (ImportError, AttributeError, OSError):
         vcp = None
+    try:
+        from pyb import UART
+        # LINK_UART selects the physical pair, see LINK_UART_PINS above.
+        uart = UART(LINK_UART, UART_BAUD)
+        uart.init(UART_BAUD, 8, None, 1, timeout=UART_TIMEOUT_MS)
+    except (ImportError, AttributeError, ValueError, OSError) as error:
+        uart = None
+        print("LINK_UART_UNAVAILABLE", LINK_UART, repr(error))
+    link = SerialLink(uart)
+    _tx, _rx = LINK_UART_PINS.get(LINK_UART, ("?", "?"))
+    print("LINK UART%d TX=%s RX=%s BAUD=%d" % (LINK_UART, _tx, _rx, UART_BAUD))
     try:
         sensor.reset()
         sensor.set_pixformat(sensor.RGB565)
@@ -482,9 +788,13 @@ def main():
         if error:
             print("AUTO_START_ERROR", error)
     window = now
+    telemetry = now
     usb_line = bytearray()
     while True:
         now = time.ticks_ms()
+        # --- ESP32 link: parse commands and drive the servos ---------------
+        link.poll(lambda frame: handle_g2(tracker, auto, link, frame, now), now)
+        tracker.apply_manual()
         if vcp and vcp.any():
             data = vcp.read(64)
             if data:
@@ -499,11 +809,14 @@ def main():
                     else:
                         usb_line.append(ch)
         try:
+            snap_start = time.ticks_us()
             img = sensor.snapshot()
+            snap_us = time.ticks_diff(time.ticks_us(), snap_start)
             target = detect(img)
             laser = detect_laser(img, tracker.aim)
             tracker.update(target, laser, now)
             auto.update(now)
+            link.note_frame(snap_us, now, True)
             if target:
                 img.draw_rectangle(target[2], color=(0, 255, 0), thickness=2)
                 img.draw_cross(target[0], target[1], color=(255, 0, 0), size=12, thickness=2)
@@ -525,6 +838,7 @@ def main():
             auto.cancel()
             tracker.off()
             tracker.reason = "CAMERA_OR_CONTROL_ERROR"
+            link.note_frame(-1, now, False)
             print("VISION_ERROR; PWM OFF", repr(error))
         if time.ticks_diff(now, window) >= LOG_INTERVAL_MS:
             print("V4", tracker.mode, tracker.reason, "AIM", "LASER" if tracker.laser_aim else "CENTER",
@@ -532,6 +846,19 @@ def main():
                   "TARGET", tracker.target[:2] if tracker.target else None,
                   "LASER", tracker.laser)
             window = now
+        # --- Upstream telemetry to the ESP32 (~10 Hz, plus a 1 Hz link ping).
+        if time.ticks_diff(now, telemetry) >= TELEMETRY_MS:
+            telemetry = now
+            if tracker.target:
+                lx, ly = tracker.laser if tracker.laser else (-1, -1)
+                link.send("$G2,POS,%d,%d,%d,%d!" %
+                          (int(tracker.target[0]), int(tracker.target[1]), int(lx), int(ly)))
+            else:
+                link.send("$G2,LOST!")
+            pan, tilt = tracker.sent if tracker.servos else (0, 0)
+            link.send("$G2,STATE,%s,%d,%d,%d,%d,%d!" %
+                      (tracker.mode, pan, tilt, link.rx_commands, link.rx_errors,
+                       1 if tracker.manual else 0))
         if watchdog:
             watchdog.feed()
         time.sleep_ms(2)
@@ -539,3 +866,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
