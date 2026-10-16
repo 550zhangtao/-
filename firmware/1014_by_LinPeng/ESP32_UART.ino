@@ -1,5 +1,5 @@
 /* ============================================================================
- * KPZ-ESP32 小车主控固件  V1-13
+ * KPZ-ESP32 小车主控固件  V1-16
  * 平台: DOIT ESP32 DEVKIT V1 + KPZ-ESP32 扩展板 (Arduino core 3.3.x)
  * ----------------------------------------------------------------------------
  * 【功能总览】
@@ -62,7 +62,7 @@
  *           kp/ki/kd <值> 调 PID / go 恢复 / park 模拟停车 / s 查状态
  * ----------------------------------------------------------------------------
  * 【快速上手测试顺序】
- *   1. 上电看串口 "V1-13 READY" 与引脚打印
+ *   1. 上电看串口 "V1-16 READY" 与引脚打印
  *   2. 舵机测试: s1 1500 / s2 1500 (回中), 切 GIMBAL 推摇杆看 pan/tilt
  *   3. 电机测试: ch 0 200 500 / ch 1 200 500 (左右轮各转 0.5s), 方向反改 TB_INV
  *   4. 手柄:     先开手柄再上电, 看串口 PS2[...] ready 帧出现
@@ -88,6 +88,8 @@
  *           V1-13 高速目标: TGT 帧扩展为 8 字段(带 vx,vy), 新增速度前馈
  *                + 60ms 预瞄; 限速 60->800/300, 加速度 400->6000;
  *                移动中的目标不再被判为"已对准"(否则会停在原地被甩掉)
+ *           V1-16 高速目标: 短暂丢失时按最后速度滑行 AIM_COAST_MS, 不再一帧丢失
+ *                就冻结(快靶就是这么跑掉的); 预瞄时长叠加实际数据延迟
  * ============================================================================
  */
 #include <Arduino.h>
@@ -175,6 +177,9 @@ constexpr uint32_t BAUD = 115200, TIMEOUT_MS = 1000, POLL_MS = 2000;
 //   死区取 120px 后, 一进入范围就停住. 想更准只能从机械上提高分辨率.
 constexpr uint32_t AIM_CTRL_MS = 20;             // 瞄准控制周期 50Hz
 constexpr uint32_t AIM_TARGET_TIMEOUT_MS = 500;  // 超过这么久没 TGT -> 原地保持
+// 目标短暂丢失时, 用上一条速度继续"滑行"这么久再冻结. 视觉端偶尔一帧没检出时,
+// 旧逻辑(立刻清零冻结)会让云台定在原地, 快靶直接飞出画面.
+constexpr uint32_t AIM_COAST_MS = 150;
 constexpr int      AIM_CENTER_X = 320, AIM_CENTER_Y = 240;  // VGA 图像中心
 constexpr int      AIM_DEADBAND_PX = 120;  // 未对准时的死区 (V1-9: 12 -> 120)
 constexpr int      AIM_RESTART_PX = 150;   // 已对准后的保持死区(防抖)
@@ -284,6 +289,8 @@ uint32_t laserHitCount = 0;
 // ---------- $G2,TGT 视觉瞄准状态 (V1-8) ----------
 int      aimCx = -1, aimCy = -1, aimLx = -1, aimLy = -1;
 int      aimVx = 0, aimVy = 0;         // target velocity px/s, from the OpenMV
+uint32_t aimCoastMs = 0;               // 已经滑行了多久
+bool     aimHasTrack = false;          // 上一条 TGT 帧是否给出过有效目标
 int      aimMode = 0;          // 0 = 目标对屏幕中心, 1 = 把激光压到目标上
 bool     aimRun = false;       // 0/1 from the OpenMV: may we move?
 uint32_t aimLastFrameMs = 0, aimLastCtrlMs = 0, aimLastTrackCmd = 0;
@@ -616,12 +623,38 @@ void aimControlUpdate(uint32_t now) {
   const float dt = AIM_CTRL_MS / 1000.0f;
   aimLastCtrlMs = now;
 
-  // 看门狗: 没有数据 / 目标丢失 / OpenMV 说别动 -> 原地冻结, 绝不自己乱跑
-  if (!aimRun || aimCx < 0 || (now - aimLastFrameMs) > AIM_TARGET_TIMEOUT_MS) {
+  // ---- 目标丢失 / 数据过期 (V1-16) ----
+  // 旧逻辑在这里立刻 aimVelUs=0 冻结. 实测那正是快靶跑掉的原因: 视觉端只要偶尔
+  // 一帧没检出(run=0), 云台就原地定住, 目标直接飞出画面再也追不回.
+  // 新逻辑: 保持上一条速度滑行最多 AIM_COAST_MS, 之后才冻结(安全兜底不变).
+  const bool targetLost  = (!aimRun || aimCx < 0);
+  const bool targetStale = (now - aimLastFrameMs) > AIM_TARGET_TIMEOUT_MS;
+  if (targetLost || targetStale) {
+    if (aimHasTrack && aimCoastMs < AIM_COAST_MS) {
+      aimCoastMs += AIM_CTRL_MS;
+      aimReason = "COAST";
+      aimAtLimit = false;
+      for (uint8_t axis = 0; axis < 2; ++axis) {
+        const int low  = (axis == 0) ? AIM_PAN_MIN_US  : AIM_TILT_MIN_US;
+        const int high = (axis == 0) ? AIM_PAN_MAX_US : AIM_TILT_MAX_US;
+        float target = aimPosUs[axis] + aimVelUs[axis] * dt;
+        if (target < float(low) || target > float(high)) aimAtLimit = true;
+        target = constrain(target, float(low), float(high));
+        aimPosUs[axis] = target;
+        if (axis == 0) { panUs  = int16_t(lroundf(target)); setServoUs(PIN_PAN,  panUs); }
+        else           { tiltUs = int16_t(lroundf(target)); setServoUs(PIN_TILT, tiltUs); }
+      }
+      if (aimAtLimit) aimReason = "COAST_LIMIT";
+      return;
+    }
     aimVelUs[0] = aimVelUs[1] = 0.0f;
+    aimCoastMs = AIM_COAST_MS;
+    aimHasTrack = false;
     aimReason = !aimRun ? "HOLD" : (aimCx < 0 ? "NO_TARGET" : "STALE");
     return;
   }
+  aimCoastMs = 0;            // 有效帧到达, 滑行结束
+  aimHasTrack = true;
   const int refX = (aimMode == 1 && aimLx >= 0) ? aimLx : AIM_CENTER_X;
   const int refY = (aimMode == 1 && aimLy >= 0) ? aimLy : AIM_CENTER_Y;
   const int8_t resp[2] = {AIM_PAN_RESPONSE, AIM_TILT_RESPONSE};
@@ -630,9 +663,12 @@ void aimControlUpdate(uint32_t now) {
   // loop MOVES WITH the target instead of永远 chasing the last measurement.
   const float vel[2]  = {float(aimVx), float(aimVy)};
   const float px_us[2] = {AIM_PAN_PX_PER_US, AIM_TILT_PX_PER_US};
-  // Look-ahead: by the time this command reaches the servo the target has moved
-  // on, so aim where it WILL be, not where it was.
-  const float lead = AIM_LOOKAHEAD_MS / 1000.0f;
+  // Look-ahead: by the time this command reaches the servo, the target has moved
+  // on, so aim where it WILL be.  The horizon is the fixed servo/UART margin PLUS
+  // the real age of the measurement -- on a fast target that data age is the
+  // dominant part of the lag, and assuming a fixed value under-compensates
+  // exactly when it matters most.
+  const float lead = (AIM_LOOKAHEAD_MS + float(now - aimLastFrameMs)) / 1000.0f;
   const float err[2] = {float(aimCx - refX) + vel[0] * lead,
                         float(aimCy - refY) + vel[1] * lead};
   const float ff[2] = {-float(resp[0]) * vel[0] / px_us[0],
@@ -872,7 +908,7 @@ void command(const char *line) {
 }
 
 void help() {
-  Serial.println("V1-13 console (TB6612 + PS2 + servo PWM + line follow + vision aim); newline commands:");
+  Serial.println("V1-16 console (TB6612 + PS2 + servo PWM + line follow + vision aim); newline commands:");
   Serial.println("$G2: start|track|stop/hold|off|home|calpan|pan+/pan-/tilt+/tilt-|ping|status|info|limits|stats|pollon|polloff");
   Serial.println("Car: cf/cb/cs, ch <side 0/1> <speed> <ms>");
   Serial.println("Servo: s1 <us> = pan, s2 <us> = tilt, sh = 回中");
@@ -926,7 +962,7 @@ void setup() {
   carStop();
   lastPoll = lastPs2Poll = lastValidPs2 = millis();
 
-  Serial.println("V1-13 READY: TB6612 + PS2 + servo PWM + line follow + vision aim");
+  Serial.println("V1-16 READY: TB6612 + PS2 + servo PWM + line follow + vision aim");
   Serial.println("TB6612 左: PWM32/AIN1_13/AIN2_12  右: PWM33/AIN1_2/AIN2_4  STBY=3V3常通");
   Serial.println("舵机: PAN=27 TILT=14 (PWM接口4/5)  循迹: I2C 0x5D SDA21/SCL22");
   Serial.print("PS2 pins: DAT="); Serial.print(PS2_DAT);

@@ -1,4 +1,4 @@
-"""V6 FAST: OpenMV vision front-end for the KPZ-ESP32 car over UART3.
+"""V9 ROBUST: OpenMV vision front-end for the KPZ-ESP32 car over UART3.
 
 Deployment: open this file in OpenMV IDE and SAVE TO BOARD AS main.py.
 
@@ -84,8 +84,6 @@ BUS_SEND_HIT = True      # emit $G2,HIT,1! + DONE when the laser locks on
 # white walls/roll/shirt) and without this gate the detector happily switches to
 # one of them the moment the real target leaves the frame, which makes the aim
 # loop chase a phantom (observed as the reported target teleporting).
-TRACK_ROI_HALF = 150     # px half-size of the window handed to find_blobs
-ROI_LOST_FRAMES = 8      # ROI misses before falling back to a full-frame search
 # When re-acquiring after a loss, how much an apparent disk-size mismatch counts
 # against a candidate, in "pixels of distance".  Raising it trusts the
 # remembered target size more than proximity to the last known position.
@@ -96,10 +94,58 @@ ROI_SIZE_WEIGHT = 2.0
 # on the ESP32 and lets us predict where the target will be by the time a servo
 # command actually takes effect.  Without it the loop can only chase the last
 # measured position and always arrives late.
-AB_ALPHA = 0.55          # position correction gain
-AB_BETA = 0.18           # velocity correction gain
-AB_MAX_SPEED = 4000.0    # px/s; reject absurd velocity estimates (bad frames)
-AIM_LEAD_MS = 60.0       # how far ahead to look when centring the search window
+# ---- target motion filter: 2-state Kalman, one per axis --------------------
+# Replaces the old alpha-beta tracker.  Velocity is what drives the ESP32
+# feed-forward *and* the search-window prediction, and alpha-beta needs many
+# frames to converge on it -- a fast target cannot wait.  The Kalman filter
+# converges in ~2 frames and also hands us the covariance, which is what lets
+# the search window grow by measured uncertainty instead of by a fixed guess.
+KF_ACCEL_STD = 900.0     # px/s^2: manoeuvre level the target may have
+KF_MEAS_STD = 3.0        # px: detection noise on a good frame
+KF_MAX_SPEED = 6000.0    # px/s sanity clamp
+KF_MIN_DT = 0.001        # s
+
+# ---- search window: predictive and adaptive --------------------------------
+# Measured on this rig: a +-150px window costs ~4ms per frame, a FULL VGA scan
+# ~42ms.  Going full-frame therefore halves the loop rate (46.6 -> ~21fps)
+# exactly during the moments a fast target is hardest to hold.  So while a track
+# is alive we never go full-frame: the window simply grows with the uncertainty.
+ROI_BASE_HALF = 70       # px: minimum half-window
+ROI_SIGMA_K = 5.0        # half-window += this * position sigma (px)
+ROI_MAX_HALF = 250       # px: cap, keeps the scan well inside one frame period
+ROI_DEAD_MS = 700.0      # ms with no sighting before we give up and re-scan
+ROI_LEAD_MS = 60.0       # ms of lead used when placing the window
+
+# ---- 锁定后的宽容判定 (V9) --------------------------------------------------
+# 实测定位: "速度稍快就丢靶" 的主因不是舵机, 而是检出条件太苛刻 —— 冷启动那一套
+# 要求 8 个几何条件在同一帧同时成立. 运动模糊会把圆盘拉扁(长宽比失败)、降低密度
+# (密度失败)、糊掉小橙点(找不到橙点); 而靶一跑快、预测稍有偏差, 圆盘就被搜索窗
+# 裁切, 于是被整个丢弃 —— 哪怕它在画面里清清楚楚. 任何一条不满足就是"整帧没有
+# 测量", 跟踪随即断掉.
+# 所以: 冷启动仍然严格(避免抓到别的白物体), 一旦锁定就放宽几何门限、橙点改为
+# 加分项、并允许被裁切的圆盘(用记忆半径反推圆心).
+DOT_SCORE_BONUS = 45.0        # "px 距离"当量: 有橙点的候选优先
+# 丢失后保留"上次位置"作为弱参考的时长. 冷启动那套"全画面唯一"的规则在杂物环境里
+# 几乎不可能满足, 于是"短暂丢失"就变成"永久丢失". 在这段时间内改为按"离丢失位置
+# 的距离 + 尺寸相似度 + 橙点加分"排序取最优, 才能真正重新捕获.
+REACQ_MEMORY_MS = 3000.0
+# 重捕窗口半径. 全画面扫描实测 ~42ms(20fps), 而有界窗口 ~26ms(38fps) —— 丢失重捕
+# 正是最需要帧率的时候, 所以这段时间用有界窗口围着"上次位置"找, 而不是扫全画面.
+REACQ_ROI_HALF = 220
+RELAX_ASPECT_MIN = 0.42       # 锁定后允许被模糊拉扁/拉长
+RELAX_ASPECT_MAX = 2.20
+RELAX_DENSITY_MIN = 0.32      # 模糊会让密度掉下来
+RELAX_DENSITY_MAX = 0.97
+
+# 每帧被拒原因计数 —— 用来量化"到底为什么丢", 每秒随日志打印一次
+REJECT = {"size": 0, "clip": 0, "shape": 0, "dot": 0, "span": 0, "accept": 0}
+
+# ---- coasting --------------------------------------------------------------
+# The single biggest cause of "lost it at speed": one missed detection made the
+# vision side report run=0 and the ESP32 freeze instantly, so the gimbal stopped
+# dead and the target ran away.  Instead keep the track alive briefly, report the
+# PREDICTED spot with run=1, and let the ESP32 keep moving.
+TGT_COAST_MS = 260.0     # ms of prediction-only output after the last sighting
 
 # --------------------------------------------------------------- vision
 WHITE = (48, 100, -24, 12, -24, 30)
@@ -163,58 +209,139 @@ def load_limits(path='v1_tracking_limits.json'):
 
 
 def detect(img, search_roi=None, prefer=None, prefer_size=None):
-    """Return the target (dot cx, dot cy, disk rect) or None.
+    """Return (cx, cy, disk_rect, dot_bonus) or None.
 
-    Without `prefer` (nothing locked yet) the original strict rule applies --
-    exactly one candidate -- so a cold start cannot grab a random object.
+    Two modes, and the difference is the whole point:
 
-    With `prefer` (we had a lock before) candidates are ranked by distance to
-    the last known position plus how similar their apparent disk size is, and
-    the best one wins *even when the frame contains other white/orange objects*.
+    * COLD (prefer is None) -- the original strict gate: a complete, round,
+      dense white disk carrying a small centred orange dot, and it must be the
+      ONLY candidate.  A cold start therefore cannot grab a random object.
+    * LOCKED (prefer given) -- identity comes from position and size, not from
+      the orange dot.  Geometry gates are widened and a disk clipped by the
+      frame OR by the search window is still accepted, with its centre
+      reconstructed from the remembered radius.
 
-    That second part matters: the earlier version gave up whenever more than one
-    candidate was present, so once the target was lost in a scene that also
-    contains decoys (a plate with fruit, an orange box) it could never
-    re-acquire -- the loop stayed at run=0 forever and looked "stuck".
+    Why LOCKED mode exists: measured on this rig, a target moving only
+    moderately fast was lost constantly, and the cause was not the servos -- it
+    was that eight geometric conditions had to hold in the same frame.  Motion
+    blur breaks the aspect and density gates, blur swallows the small orange
+    dot, and a target that outruns the prediction by a few pixels has its
+    bounding box clipped by the search window and used to be thrown away even
+    though it was plainly visible.  Each of those turned into "no measurement
+    this frame" and the track died.
     """
-    # MicroPython's find_blobs() rejects roi=None ("object 'NoneType' isn't a
-    # tuple or list"), so an absent window becomes an explicit full-frame rect.
+    # MicroPython's find_blobs() rejects roi=None, so an absent window becomes an
+    # explicit full-frame rect.
     blob_roi = search_roi
     if blob_roi is None:
         blob_roi = (0, 0, img.width(), img.height())
     rx, ry, rw, rh = blob_roi
+    locked = prefer is not None
+    radius = 0.0
+    if locked and prefer_size:
+        radius = prefer_size / 2.0
+    REJECT["clip"] = REJECT["clip"]      # (kept for symmetry; counters below)
     found = []
+
     for disk in img.find_blobs([WHITE], roi=blob_roi, pixels_threshold=250,
                                area_threshold=400, merge=False):
         w, h = disk.w(), disk.h()
-        if not (20 <= w <= 220 and 20 <= h <= 220):
+        x, y = disk.x(), disk.y()
+
+        # "clipped" = cut by the search window (or the frame edge when the window
+        # is the whole frame).  A clipped disk reports a truncated bounding box,
+        # so its centre cannot be read directly -- but it can be reconstructed.
+        left = x <= rx + 2
+        right = x + w >= rx + rw - 2
+        top = y <= ry + 2
+        bottom = y + h >= ry + rh - 2
+        clipped = left or right or top or bottom
+
+        # Size: judge by the LONGER side, because clipping truncates one of them.
+        span = w if w > h else h
+        if not (20 <= span <= 220):
+            REJECT["size"] += 1
             continue
-        # The disk must be complete.  When searching a window, "complete" means
-        # inside the WINDOW, not just the image: a disk cut by the ROI border
-        # would report a wrong bounding box (and therefore a wrong centre).
-        if (disk.x() <= rx + 2 or disk.y() <= ry + 2
-                or disk.x() + w >= rx + rw - 2 or disk.y() + h >= ry + rh - 2):
+
+        if clipped:
+            REJECT["clip"] += 1
+            if not locked or radius <= 0.0:
+                continue          # cold start: a partial disk proves nothing
+
+        if not clipped:
+            if locked:
+                if not (RELAX_ASPECT_MIN <= w / h <= RELAX_ASPECT_MAX):
+                    REJECT["shape"] += 1
+                    continue
+                if not (RELAX_DENSITY_MIN <= disk.density() <= RELAX_DENSITY_MAX):
+                    REJECT["shape"] += 1
+                    continue
+            else:
+                if not (0.65 <= w / h <= 1.45):
+                    REJECT["shape"] += 1
+                    continue
+                if not (0.55 <= disk.density() <= 0.92):
+                    REJECT["shape"] += 1
+                    continue
+
+        # Centre: direct when the disk is whole, reconstructed when it is cut.
+        # NOTE: the reconstruction must stay INTEGER.  MicroPython's draw_*()
+        # reject floats, and a float centre here made every frame raise
+        # "can't convert float to int" -- which silently killed the whole vision
+        # loop and looked exactly like "the tracker cannot see the target".
+        if clipped:
+            if left and not right:
+                cx = int(x + w - radius + 0.5)
+            elif right and not left:
+                cx = int(x + radius + 0.5)
+            else:
+                cx = x + w // 2
+            if top and not bottom:
+                cy = int(y + h - radius + 0.5)
+            elif bottom and not top:
+                cy = int(y + radius + 0.5)
+            else:
+                cy = y + h // 2
+        else:
+            cx, cy = disk.cx(), disk.cy()
+
+        if not (0 <= cx < img.width() and 0 <= cy < img.height()):
+            REJECT["span"] += 1
             continue
-        if not 0.65 <= w / h <= 1.45 or not 0.55 <= disk.density() <= 0.92:
+
+        # Orange dot: the identity proof when cold, a score bonus when locked.
+        has_dot = False
+        dw = w // 2
+        dh = h // 2
+        if dw >= 2 and dh >= 2:
+            dot_roi = (x + w // 4, y + h // 4, dw, dh)
+            for dot in img.find_blobs([ORANGE], roi=dot_roi, pixels_threshold=5,
+                                      area_threshold=6, merge=False):
+                if not 0.45 <= dot.w() / dot.h() <= 1.8 or dot.density() < 0.4:
+                    continue
+                if not 0.002 <= dot.pixels() / disk.pixels() <= 0.08:
+                    continue
+                if abs(dot.cx() - cx) > w * 0.18 or abs(dot.cy() - cy) > h * 0.18:
+                    continue
+                has_dot = True
+                break
+        if not has_dot and not locked:
+            REJECT["dot"] += 1
             continue
-        dot_roi = (disk.x() + w // 4, disk.y() + h // 4, w // 2, h // 2)
-        for dot in img.find_blobs([ORANGE], roi=dot_roi, pixels_threshold=5, area_threshold=6, merge=False):
-            if not 0.45 <= dot.w() / dot.h() <= 1.8 or dot.density() < 0.4:
-                continue
-            if not 0.002 <= dot.pixels() / disk.pixels() <= 0.08:
-                continue
-            if abs(dot.cx() - disk.cx()) > w * 0.18 or abs(dot.cy() - disk.cy()) > h * 0.18:
-                continue
-            found.append((dot.cx(), dot.cy(), disk.rect()))
+
+        REJECT["accept"] += 1
+        found.append((cx, cy, disk.rect(), DOT_SCORE_BONUS if has_dot else 0.0))
+
     if not found:
         return None
     if prefer is None:
+        # Cold acquisition: refuse to guess between several candidates.
         return found[0] if len(found) == 1 else None
     if prefer_size is None:
-        found.sort(key=lambda f: (f[0] - prefer[0]) ** 2 + (f[1] - prefer[1]) ** 2)
+        found.sort(key=lambda f: (f[0] - prefer[0]) ** 2 + (f[1] - prefer[1]) ** 2 - f[3])
     else:
         found.sort(key=lambda f: (((f[0] - prefer[0]) ** 2 + (f[1] - prefer[1]) ** 2) ** 0.5
-                                  + ROI_SIZE_WEIGHT * abs(f[2][2] - prefer_size)))
+                                  + ROI_SIZE_WEIGHT * abs(f[2][2] - prefer_size) - f[3]))
     return found[0]
 
 
@@ -252,6 +379,89 @@ def detect_laser(img, previous, search_roi=None):
     return x, y
 
 
+class Track2D:
+    """Two-state Kalman filter per axis: state = (position px, velocity px/s).
+
+    Kept deliberately small (no matrices) so it stays cheap in MicroPython:
+    every frame runs two of these, and the vision loop has ~21ms of budget.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.x = [0.0, 0.0]
+        self.v = [0.0, 0.0]
+        self.p00 = [0.0, 0.0]
+        self.p01 = [0.0, 0.0]
+        self.p11 = [0.0, 0.0]
+        self.t = None
+
+    def seed(self, px, py, now):
+        self.x = [float(px), float(py)]
+        self.v = [0.0, 0.0]
+        for i in (0, 1):
+            self.p00[i] = KF_MEAS_STD * KF_MEAS_STD
+            self.p01[i] = 0.0
+            self.p11[i] = KF_MAX_SPEED * KF_MAX_SPEED
+        self.t = now
+
+    def advance(self, now):
+        """Roll the state forward to `now` with no measurement (coasting)."""
+        if self.t is None:
+            return False
+        dt = time.ticks_diff(now, self.t) / 1000.0
+        if dt <= KF_MIN_DT:
+            return True
+        q = KF_ACCEL_STD * KF_ACCEL_STD
+        dt2 = dt * dt
+        for i in (0, 1):
+            self.x[i] += self.v[i] * dt
+            self.p00[i] += 2.0 * dt * self.p01[i] + dt2 * self.p11[i] + q * dt2 * dt / 3.0
+            self.p01[i] += dt * self.p11[i] + 0.5 * q * dt2
+            self.p11[i] += q * dt
+        self.t = now
+        return True
+
+    def correct(self, px, py, now):
+        if self.t is None:
+            self.seed(px, py, now)
+            return
+        self.advance(now)
+        r = KF_MEAS_STD * KF_MEAS_STD
+        for i, z in ((0, float(px)), (1, float(py))):
+            a00 = self.p00[i]; a01 = self.p01[i]; a11 = self.p11[i]
+            k0 = a00 / (a00 + r)
+            k1 = a01 / (a00 + r)
+            y = z - self.x[i]
+            self.x[i] += k0 * y
+            self.v[i] += k1 * y
+            if self.v[i] > KF_MAX_SPEED:
+                self.v[i] = KF_MAX_SPEED
+            elif self.v[i] < -KF_MAX_SPEED:
+                self.v[i] = -KF_MAX_SPEED
+            self.p00[i] = (1.0 - k0) * a00
+            self.p01[i] = (1.0 - k0) * a01
+            self.p11[i] = a11 - k1 * a01
+
+    def pos_at(self, now, lead_ms=0.0):
+        """Where the target is (or will be) at `now` + lead; does not mutate."""
+        if self.t is None:
+            return None
+        dt = time.ticks_diff(now, self.t) / 1000.0 + lead_ms / 1000.0
+        if dt < 0.0:
+            dt = 0.0
+        return (self.x[0] + self.v[0] * dt, self.x[1] + self.v[1] * dt)
+
+    def sigma(self):
+        """Worst-axis 1-sigma position uncertainty in px."""
+        a = self.p00[0] if self.p00[0] > 0.0 else 0.0
+        b = self.p00[1] if self.p00[1] > 0.0 else 0.0
+        if b > a:
+            a = b
+        return a ** 0.5
+
+
 class Tracker:
     """Vision + aim-reference decision.  Owns no hardware.
 
@@ -271,8 +481,11 @@ class Tracker:
         self.aim = None               # Filtered laser spot; None => center mode.
         self.aim_error = (0.0, 0.0)
         self.stable = 0
+        self._now = None              # last timestamp seen by update()
+        self.kf = Track2D()
+        self.last_sight_ms = None     # last frame that really saw the target
         self.filtered = None
-        self.velocity = [0.0, 0.0]    # px/s, from the alpha-beta tracker
+        self.velocity = [0.0, 0.0]    # px/s, mirrored from the Kalman filter
         self.laser_aim = False        # True: aim reference is the laser spot.
         self.align_frames = 0         # Consecutive centered frames before lock.
         self.last_time = None
@@ -295,20 +508,50 @@ class Tracker:
         self.last_seen = None
         self.last_size = None
         self.miss = 0
+        self.kf.reset()
+        self.last_sight_ms = None
 
-    def search_roi(self, width, height):
-        """Window handed to find_blobs, centred on where the target is *now*.
+    def search_roi(self, width, height, now=None):
+        """Predictive, adaptive window; returns None only when the track is dead.
 
-        Using the predicted position (not the last measured one) keeps a fast
-        target inside the window, and a small window is ~2x faster than a
-        full-frame scan (measured: 39 ms vs 18 ms on VGA).
+        It never falls back to a full-frame scan while a track is alive: measured
+        cost is ~4ms for a +-150px window versus ~42ms for a full VGA frame, so a
+        full-frame fallback halves the loop rate (46.6 -> ~21fps) exactly when a
+        fast target is hardest to hold.  The window instead grows with the
+        Kalman uncertainty and with how far the target travelled while blind.
         """
-        if self.last_seen is None or self.miss >= ROI_LOST_FRAMES:
+        if now is None:
+            now = self._clock()
+        if self.last_sight_ms is None:
             return None
-        lead = AIM_LEAD_MS / 1000.0
-        cx = self.last_seen[0] + self.velocity[0] * lead
-        cy = self.last_seen[1] + self.velocity[1] * lead
-        half = TRACK_ROI_HALF
+        age = time.ticks_diff(now, self.last_sight_ms)
+        if self.kf.t is None:
+            # Track is dead but we may still hold a weak reference to where it
+            # was lost.  Search a BOUNDED window around it: a full VGA scan costs
+            # ~42ms (20fps) and re-acquisition is exactly when frame rate matters,
+            # so a ~26ms window keeps us near 38fps while still covering 63% of
+            # the frame right where the target most likely is.
+            if self.last_seen is None or age > REACQ_MEMORY_MS:
+                return None
+            cx, cy = self.last_seen
+            half = REACQ_ROI_HALF
+            x0 = int(max(0, cx - half))
+            y0 = int(max(0, cy - half))
+            x1 = int(min(width, cx + half))
+            y1 = int(min(height, cy + half))
+            if x1 - x0 < 8 or y1 - y0 < 8:
+                return None
+            return (x0, y0, x1 - x0, y1 - y0)
+        if age > ROI_DEAD_MS:
+            return None
+        centre = self.kf.pos_at(now, ROI_LEAD_MS)
+        if centre is None:
+            return None
+        half = ROI_BASE_HALF + int(ROI_SIGMA_K * self.kf.sigma())
+        half += int(max(abs(self.kf.v[0]), abs(self.kf.v[1])) * (age / 1000.0))
+        if half > ROI_MAX_HALF:
+            half = ROI_MAX_HALF
+        cx, cy = centre
         x0 = int(max(0, cx - half))
         y0 = int(max(0, cy - half))
         x1 = int(min(width, cx + half))
@@ -367,6 +610,8 @@ class Tracker:
         self.last_seen = None
         self.last_size = None
         self.miss = 0
+        self.kf.reset()
+        self.last_sight_ms = None
 
     # ---------------------------------------------------------- text
     def state_text(self):
@@ -382,25 +627,57 @@ class Tracker:
                  1 if self.mode == "TRACK" else 0))
 
     # ---------------------------------------------------------- report
-    def build_report(self):
+    def moving_allowed(self, now):
+        """True when the ESP32 may drive the servos.
+
+        Note it is NOT the same as mode == "TRACK": the auto-controller flips the
+        mode to WAIT/WAIT_TARGET the instant one frame misses the target, and
+        gating on TRACK there would defeat the whole point of coasting (the
+        gimbal would freeze on every single dropped detection).  So: any live
+        mode, except while a fresh acquisition is still being confirmed.
+        """
+        if self.mode in ("OFF", "BOOT", "HOLD"):
+            return False
+        if self.reason == "CONFIRM_TARGET":
+            return False
+        if self.last_sight_ms is None or self.kf.t is None:
+            return False
+        return time.ticks_diff(now, self.last_sight_ms) <= TGT_COAST_MS
+
+    def build_report(self, now=None):
         """$G2,TGT,<cx>,<cy>,<vx>,<vy>,<lx>,<ly>,<aim>,<run>!
 
-        vx/vy are the filtered target velocity in px/s.  The ESP32 uses them for
-        the feed-forward term and for look-ahead, which is what lets a small
-        servo gimbal stay on a fast target instead of always arriving late.
+        cx/cy is the PREDICTED position at send time, not the last measurement:
+        by the time the servos act the target has moved on, so the prediction is
+        what should be aimed at.
+
+        run=1 is held for TGT_COAST_MS after the last real sighting, so a single
+        missed detection no longer makes the ESP32 freeze and lose the target.
+        vx/vy feed the ESP32's feed-forward term.
         """
-        cx, cy = (int(round(self.filtered[0])), int(round(self.filtered[1]))) \
-            if self.filtered else (-1, -1)
-        vx, vy = (int(round(self.velocity[0])), int(round(self.velocity[1]))) \
-            if self.filtered else (0, 0)
+        if now is None:
+            now = self._clock()
+        cx = cy = -1
+        vx = vy = 0
+        run = 0
+        if self.moving_allowed(now):
+            spot = self.kf.pos_at(now)
+            if spot is not None:
+                cx = int(round(spot[0])); cy = int(round(spot[1]))
+                vx = int(round(self.kf.v[0])); vy = int(round(self.kf.v[1]))
+                run = 1
         lx, ly = (int(self.laser[0]), int(self.laser[1])) if self.laser else (-1, -1)
         aim = 1 if (self.laser_aim and self.aim) else 0
-        run = 1 if self.mode == "TRACK" else 0
         return ("$G2,TGT,%d,%d,%d,%d,%d,%d,%d,%d!"
                 % (cx, cy, vx, vy, lx, ly, aim, run)).encode()
 
     # ---------------------------------------------------------- main step
+    def _clock(self):
+        """Frame timestamp, so the filter clock is testable and never stale."""
+        return self._now if self._now is not None else time.ticks_ms()
+
     def update(self, target, laser, now):
+        self._now = now
         dt = 0 if self.last_time is None else min(0.1, max(0, time.ticks_diff(now, self.last_time) / 1000))
         self.last_time = now
         previous = self.target
@@ -410,9 +687,6 @@ class Tracker:
             self.last_seen = (target[0], target[1])
             self.last_size = target[2][2]
             self.miss = 0
-        else:
-            self.miss += 1
-        if target:
             # Keep a visible moving disk; reject discontinuous jumps/size changes.
             gate = max(40, min(160, 2 * max(target[2][2], target[2][3])))
             continuous = (previous and abs(target[0] - previous[0]) <= gate
@@ -420,27 +694,45 @@ class Tracker:
                           and 0.5 <= target[2][2] / previous[2][2] <= 2
                           and 0.5 <= target[2][3] / previous[2][3] <= 2)
             self.stable = min(100, self.stable + 1) if continuous else 1
-            if not continuous or self.filtered is None:
-                # (re)seed the filter; keep any velocity we already trust
-                self.filtered = [float(target[0]), float(target[1])]
-                if not continuous:
-                    self.velocity = [0.0, 0.0]
+            if not continuous or self.kf.t is None:
+                # New object (or first lock): restart the filter so a stale
+                # velocity cannot be carried over onto a different target.
+                self.kf.seed(target[0], target[1], now)
             else:
-                # alpha-beta tracker: smooths position AND estimates velocity,
-                # which the ESP32 uses for feed-forward + look-ahead.  This is
-                # what lets the loop lead a fast target instead of chasing it.
-                step = dt if dt > 0.001 else 0.001
-                for i in (0, 1):
-                    predicted = self.filtered[i] + self.velocity[i] * step
-                    residual = target[i] - predicted
-                    self.filtered[i] = predicted + AB_ALPHA * residual
-                    self.velocity[i] += (AB_BETA / step) * residual
-                    if self.velocity[i] > AB_MAX_SPEED:
-                        self.velocity[i] = AB_MAX_SPEED
-                    elif self.velocity[i] < -AB_MAX_SPEED:
-                        self.velocity[i] = -AB_MAX_SPEED
+                self.kf.correct(target[0], target[1], now)
+            self.last_sight_ms = now
         else:
-            self.stable, self.filtered = 0, None
+            self.miss += 1
+            # COAST instead of dropping the track.  A single missed detection used
+            # to clear the filter immediately, which is exactly how a fast target
+            # escaped: the aim loop lost its reference and the gimbal froze.
+            # NOTE: the expiry test must NOT sit behind a kf.t guard.  Resetting
+            # the filter clears kf.t, and if the expiry lived inside that guard
+            # the weak reference could never expire -- it would pin detect() into
+            # relaxed mode forever and eventually lock onto a decoy.
+            if self.last_sight_ms is not None:
+                age = time.ticks_diff(now, self.last_sight_ms)
+                if age > ROI_DEAD_MS:
+                    self.stable = 0
+                    if self.kf.t is not None:
+                        self.kf.reset()
+                    # Keep last_seen/last_size as a WEAK reference while trying to
+                    # re-acquire: detect() then ranks candidates by proximity and
+                    # size instead of demanding a globally unique target, which
+                    # in a cluttered room is effectively "lost forever".  It
+                    # expires after REACQ_MEMORY_MS -> strict cold rules again.
+                    if age > REACQ_MEMORY_MS:
+                        self.last_seen = None
+                        self.last_size = None
+                        self.last_sight_ms = None
+                elif self.kf.t is not None:
+                    self.kf.advance(now)
+        # Mirror the filter into the legacy fields the rest of the file uses.
+        if self.kf.t is not None:
+            self.filtered = [self.kf.x[0], self.kf.x[1]]
+            self.velocity = [self.kf.v[0], self.kf.v[1]]
+        else:
+            self.filtered = None
             self.velocity = [0.0, 0.0]
         if laser is not None:
             if self.aim is None:
@@ -817,9 +1109,9 @@ def main():
             watchdog = WDT(timeout=8000)
         except (ImportError, AttributeError, ValueError, OSError) as error:
             print("WATCHDOG_UNAVAILABLE", repr(error))
-    print("V6 FAST READY; UART%d@%d P4/P5 AUTO_START %s" %
+    print("V9 ROBUST READY; UART%d@%d P4/P5 AUTO_START %s" %
           (BUS_UART_ID, BUS_BAUD, AUTO_START))
-    print("V6", "LIMITS", tracker.limits, "SEARCH", "OFF(WAIT_IN_PLACE)")
+    print("V9", "LIMITS", tracker.limits, "SEARCH", "OFF(WAIT_IN_PLACE)")
     now = time.ticks_ms()
     if AUTO_START:
         error = auto.start(now)
@@ -861,7 +1153,7 @@ def main():
             t_snap = time.ticks_us()
             img = sensor.snapshot()
             snap_us = time.ticks_diff(time.ticks_us(), t_snap)
-            target = detect(img, tracker.search_roi(img.width(), img.height()),
+            target = detect(img, tracker.search_roi(img.width(), img.height(), now),
                             tracker.last_seen, tracker.last_size)
             # Laser search window: around the target when we have one, else the
             # centre of the image (LASER_SEARCH_HALF = 0 => whole frame).
@@ -926,12 +1218,19 @@ def main():
                 print("BUS_POLL_ERROR", repr(error))
 
         if time.ticks_diff(now, window) >= LOG_INTERVAL_MS:
-            print("V6", tracker.mode, tracker.reason,
+            print("V9", tracker.mode, tracker.reason,
                   "AIM", "LASER" if tracker.laser_aim else "CENTER",
                   "TARGET", tracker.target[:2] if tracker.target else None,
                   "V", (int(round(tracker.velocity[0])), int(round(tracker.velocity[1]))),
                   "FPS", stats.fps_x10 / 10.0,
                   "LASER", tracker.laser, "TGT", bus.last_cmd if bus else "-")
+            # Per-second rejection breakdown: this is how we tell "the gimbal
+            # was too slow" apart from "the detector threw the target away".
+            print("REJ size=%d clip=%d shape=%d dot=%d acc=%d"
+                  % (REJECT["size"], REJECT["clip"], REJECT["shape"],
+                     REJECT["dot"], REJECT["accept"]))
+            for _k in REJECT:
+                REJECT[_k] = 0
             window = now
         if watchdog:
             watchdog.feed()
@@ -940,3 +1239,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
