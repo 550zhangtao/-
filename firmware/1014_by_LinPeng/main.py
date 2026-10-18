@@ -210,7 +210,7 @@ REACQ_ROI_HALF = 140
 
 # 每帧被拒原因计数 —— 用来量化"到底为什么丢", 每秒随日志打印一次
 REJECT = {"size": 0, "span": 0, "contrast": 0, "glyph": 0, "dark": 0,
-          "ring": 0, "jump": 0, "accept": 0}
+          "ring": 0, "jump": 0, "board": 0, "accept": 0}
 
 # ---- coasting --------------------------------------------------------------
 # The single biggest cause of "lost it at speed": one missed detection made the
@@ -381,6 +381,26 @@ _LEVEL_PHASE = [0]       # rotates the fallback level when detection fails
 # false-positive source.  With the 7x shorter exposure there is far less motion
 # blur, so the blob path is enough.  Flip to True only if blur returns.
 ENABLE_HOUGH = False
+
+# ---- coarse target (whole printed board) --------------------------------
+# Measured on the real target (612x782 photo): the target is a black rounded
+# square board, width/height = 0.925, with the white 10-ring disc at
+#   disc radius   = 0.092 * board height
+#   disc centre   = 0.545 * board height below the board's top edge.
+# Stage 1 finds the big dark board with ONE find_blobs (merge bridges the thin
+# white rings); stage 2 only searches the disc at that expected spot.  This is
+# the "先找靶面、再找靶心" split requested for this target.
+# img.find_rects was evaluated and rejected: 82 ms on this target and it did
+# not even return the board (only small internal quads).
+TARGET_DARK_L = 40
+BOARD_ASPECT = 0.925
+DISC_R_RATIO = 0.092
+DISC_DY = 0.545
+BOARD_MIN_FRAC = 0.035      # of the frame; ignores far/small clutter boards
+BOARD_MAX_FRAC = 0.92
+BOARD_MERGE_MARGIN = 3
+BOARD_TOP_N = 2             # boards tried per cold frame
+_LAST_BOARD = [None]        # (cx, cy, board_h) of the last coarse lock
 
 _COS = []
 _SIN = []
@@ -734,6 +754,138 @@ def _hough_candidates(img, center_x, center_y, prefer_size):
     return out
 
 
+def _find_boards(img, roi=None):
+    """Large dark printed boards inside the search window, biggest first.
+
+    The white rings/thin numerals are bridged by find_blobs(merge=True,
+    margin=BOARD_MERGE_MARGIN), so the whole black board comes back as one
+    blob even though the print splits it into bands.
+    """
+    width = img.width()
+    height = img.height()
+    if roi is None:
+        rx, ry, rw, rh = 0, 0, width, height
+    else:
+        rx, ry, rw, rh = roi
+        rx = max(0, rx)
+        ry = max(0, ry)
+        rw = min(rw, width - rx)
+        rh = min(rh, height - ry)
+    if rw < 24 or rh < 24:
+        return []
+    try:
+        blobs = img.find_blobs(
+            [(0, TARGET_DARK_L, -40, 40, -40, 40)],
+            roi=(rx, ry, rw, rh),
+            pixels_threshold=120, area_threshold=120,
+            merge=True, margin=BOARD_MERGE_MARGIN)
+    except Exception:
+        return []
+    frame = float(width * height)
+    out = []
+    for blob in blobs:
+        w = blob.w()
+        h = blob.h()
+        if w < 24 or h < 24:
+            continue
+        area = w * h
+        if area < BOARD_MIN_FRAC * frame or area > BOARD_MAX_FRAC * frame:
+            continue
+        aspect = float(w) / h
+        if aspect < 0.50 or aspect > 1.60:
+            continue
+        if blob.density() < 0.30:
+            continue
+        board_h = w / BOARD_ASPECT
+        if board_h > h * 1.10:
+            board_h = h * 1.10
+        out.append((blob, w, h, board_h))
+    out.sort(key=lambda item: item[0].pixels(), reverse=True)
+    return out
+
+
+def _disc_in_board(img, blob, w, h, board_h):
+    """Find the 10-ring disc at the board's known relative position."""
+    cx = int(blob.x() + w * 0.5)
+    cy = int(blob.y() + board_h * DISC_DY)
+    r_exp = DISC_R_RATIO * board_h
+    half = int(max(12, r_exp * 3.4))
+    x0 = max(0, cx - half)
+    y0 = max(0, cy - half)
+    x1 = min(img.width(), cx + half)
+    y1 = min(img.height(), cy + half)
+    if x1 - x0 < 14 or y1 - y0 < 14:
+        return None
+    try:
+        hist = img.get_histogram(roi=(x0, y0, x1 - x0, y1 - y0))
+        p50 = hist.get_percentile(0.50).value()
+        p90 = hist.get_percentile(0.90).value()
+    except Exception:
+        return None
+    lmin = int(p50 + 0.55 * (p90 - p50))
+    if lmin < 18:
+        lmin = 18
+    elif lmin > 80:
+        lmin = 80
+    try:
+        blobs = img.find_blobs(
+            [(lmin, 100, -40, 40, -40, 40)],
+            roi=(x0, y0, x1 - x0, y1 - y0),
+            pixels_threshold=12, area_threshold=12, merge=False)
+    except Exception:
+        return None
+    best = None
+    for disc in blobs:
+        bw = disc.w()
+        bh = disc.h()
+        if bw < 4 or bh < 4:
+            continue
+        aspect = float(bw) / bh
+        if aspect < 0.55 or aspect > 1.80:
+            continue
+        density = disc.density()
+        if density < 0.50 or density > 0.95:
+            continue
+        radius = 0.5 * (bw if bw > bh else bh)
+        if radius < r_exp * 0.55 or radius > r_exp * 1.70:
+            continue
+        dx = disc.cx() - cx
+        dy = disc.cy() - cy
+        if dx * dx + dy * dy > (0.55 * board_h) * (0.55 * board_h):
+            continue
+        result = _validate(img, disc, radius, density, disc.pixels(), True)
+        if result is None:
+            continue
+        size = result[8]
+        if not (r_exp * 1.1 <= size <= r_exp * 3.4):
+            continue
+        if best is None or result[0] > best[0]:
+            best = result
+    if best is None:
+        return None
+    # The bright threshold that isolated the disc is the best seed level for
+    # the following locked frames.
+    _LAST_LEVEL[0] = lmin
+    half_size = best[8] // 2
+    return (best[6], best[7],
+            (best[6] - half_size, best[7] - half_size, best[8], best[8]),
+            best[4] * 100.0)
+
+
+def _detect_on_board(img, roi=None):
+    """Coarse-to-fine cold acquisition: board first, then its 10 disc."""
+    boards = _find_boards(img, roi)
+    for blob, w, h, board_h in boards[:BOARD_TOP_N]:
+        disc = _disc_in_board(img, blob, w, h, board_h)
+        if disc is not None:
+            _LAST_BOARD[0] = (int(blob.x() + w * 0.5),
+                              int(blob.y() + board_h * DISC_DY),
+                              int(board_h))
+            REJECT["board"] += 1
+            return disc
+    return None
+
+
 def detect(img, search_roi=None, prefer=None, prefer_size=None):
     """Return (cx, cy, (x, y, w, h), ring_percent) of the 10-ring bullseye.
 
@@ -776,6 +928,15 @@ def detect(img, search_roi=None, prefer=None, prefer_size=None):
     else:
         refx = width // 2
         refy = height // 2
+
+    # Coarse-to-fine cold acquisition: find the whole printed board first and
+    # then the 10 disc at its known relative position.  Falls through to the
+    # V12 seed sweep when no board/disc matches.
+    if not locked:
+        coarse = _detect_on_board(img, (rx, ry, rw, rh))
+        if coarse is not None:
+            REJECT["accept"] += 1
+            return coarse
 
     # ---- adaptive seed thresholds ------------------------------------
     # Never sweep several full-frame scans in one frame: measured at VGA that
@@ -1946,10 +2107,10 @@ def main():
                 # Per-second rejection breakdown: this is how we tell "the
                 # gimbal was too slow" apart from "the detector threw the
                 # target away".
-                print("REJ size=%d span=%d contrast=%d glyph=%d dark=%d ring=%d jump=%d acc=%d"
+                print("REJ size=%d span=%d contrast=%d glyph=%d dark=%d ring=%d jump=%d board=%d acc=%d"
                       % (REJECT["size"], REJECT["span"], REJECT["contrast"],
                          REJECT["glyph"], REJECT["dark"], REJECT["ring"],
-                         REJECT["jump"], REJECT["accept"]))
+                         REJECT["jump"], REJECT["board"], REJECT["accept"]))
             except Exception:
                 pass
             for _k in REJECT:
