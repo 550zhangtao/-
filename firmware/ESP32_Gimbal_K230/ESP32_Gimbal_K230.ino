@@ -1652,7 +1652,7 @@ void setup() {
   Serial.print(" CMD="); Serial.print(PS2_CMD);
   Serial.print(" ATT="); Serial.print(PS2_ATT);
   Serial.print(" CLK="); Serial.println(PS2_CLK);
-  Serial.println("上电: 云台已在 TRACK (等 K230 $KT); 小车无模式");
+  Serial.println("上电: 无模式 (按手柄 R2 才进跟踪 / 才让 K230 跑识别); 小车无模式");
   Serial.println("手柄: L1=小车手动 L2=循迹 R1=云台手动 R2=云台跟踪; 电机需 arm");
 
   Serial.println();
