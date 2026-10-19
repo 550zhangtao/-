@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>K230 靶纸 5 关键点标注</title>
+<style>
+  :root { --bg:#12161c; --panel:#1b222c; --line:#2c3745; --fg:#e6edf3; --dim:#8b9bb0;
+          --tl:#ff5d5d; --tr:#4dd07a; --br:#5aa9ff; --bl:#ffd24d; --bull:#ff4dd2; }
+  * { box-sizing:border-box; }
+  body { margin:0; height:100vh; display:flex; background:var(--bg); color:var(--fg);
+         font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; overflow:hidden; }
+  #side { width:330px; min-width:330px; height:100vh; overflow:auto; background:var(--panel);
+          border-right:1px solid var(--line); padding:14px; }
+  #main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  h1 { font-size:16px; margin:0 0 6px; }
+  h2 { font-size:13px; margin:14px 0 6px; color:var(--dim); font-weight:600;
+       text-transform:uppercase; letter-spacing:.06em; }
+  .hint { color:var(--dim); font-size:12px; line-height:1.6; }
+  .hint b { color:var(--fg); }
+  button, select, input[type=file] { width:100%; margin:4px 0; padding:7px 9px;
+       background:#243040; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+       cursor:pointer; font-size:13px; }
+  button:hover { background:#2d3c50; }
+  button.primary { background:#1f6feb; border-color:#1f6feb; }
+  button.primary:hover { background:#2d7ff0; }
+  button.danger { background:#4a2029; border-color:#6b2b38; }
+  .row { display:flex; gap:6px; }
+  .row > * { flex:1; }
+  #fileInfo { font-size:12px; color:var(--dim); word-break:break-all; margin:6px 0; }
+  #list { max-height:34vh; overflow:auto; border:1px solid var(--line); border-radius:6px;
+          background:#151b23; }
+  .item { padding:5px 8px; font-size:12px; cursor:pointer; border-bottom:1px solid #202a36;
+          display:flex; justify-content:space-between; gap:8px; }
+  .item:hover { background:#202a36; }
+  .item.active { background:#1f3a5c; }
+  .item .tag { color:var(--dim); font-size:11px; }
+  .item.done .tag { color:#4dd07a; }
+  #canvasWrap { flex:1; position:relative; background:#0b0e12; overflow:hidden; }
+  canvas { display:block; width:100%; height:100%; cursor:crosshair; }
+  #topbar { display:flex; gap:8px; align-items:center; padding:8px 12px;
+            border-bottom:1px solid var(--line); background:#161c24; font-size:12px; }
+  #topbar .sp { flex:1; }
+  #status { color:var(--dim); }
+  #err { display:none; margin:6px 0; padding:7px 9px; background:#4a2029;
+         border:1px solid #6b2b38; border-radius:6px; font-size:12px; color:#ffb3c0;
+         white-space:pre-wrap; }
+  #toast { position:absolute; left:50%; top:14px; transform:translateX(-50%);
+           background:#1f6feb; color:#fff; padding:6px 14px; border-radius:20px;
+           opacity:0; transition:opacity .2s; pointer-events:none; font-size:12px; }
+  .pt { display:flex; align-items:center; gap:8px; padding:5px 7px; border-radius:6px;
+        cursor:pointer; font-size:13px; }
+  .pt:hover { background:#243040; }
+  .pt.sel { background:#1f3a5c; }
+  .dot { width:12px; height:12px; border-radius:50%; flex:none; }
+  .pt .v { margin-left:auto; color:var(--dim); font-size:11px; }
+  kbd { background:#0f141a; border:1px solid var(--line); border-radius:4px;
+        padding:0 5px; font-size:11px; }
+  textarea { width:100%; height:90px; background:#0f141a; color:var(--fg);
+             border:1px solid var(--line); border-radius:6px; font:11px/1.4 monospace; }
+</style>
+</head>
+<body>
+<div id="side">
+  <h1>靶纸 5 关键点标注</h1>
+  <div class="hint">
+    顺序：<b>1 TL 左上 → 2 TR 右上 → 3 BR 右下 → 4 BL 左下 → 5 白色 10 环中心</b><br>
+    拖动点修正；<kbd>1-5</kbd> 选点，<kbd>V</kbd> 切换可见性（2/1/0），
+    <kbd>R</kbd> 重置，<kbd>N</kbd>/<kbd>P</kbd> 下一张/上一张，<kbd>E</kbd> 导出。
+  </div>
+
+  <h2>1. 加载图片</h2>
+  <button id="loadTodo" class="primary">加载剩余 166 张（继续标注）</button>
+  <button id="loadAll">查看全部 186 张</button>
+  <div id="err"></div>
+  <div class="hint" style="margin-top:4px">
+    当前清单已带自动预标：直接拖错点即可，不用从零画。<br>
+    如果上面按钮无效，说明页面不是通过本地 HTTP 打开的：<br>
+    在项目根目录运行 <code>python3 -m http.server 8765</code>，<br>
+    再打开 <code>http://127.0.0.1:8765/k230/tools/pose_label.html</code>。
+  </div>
+  <details style="margin-top:8px">
+    <summary class="hint">离线模式：手动选择图片文件夹（仅 Chrome/Edge）</summary>
+    <input id="dir" type="file" webkitdirectory multiple>
+  </details>
+  <div id="fileInfo">未加载图片。</div>
+
+  <h2>2. 筛选</h2>
+  <select id="filter">
+    <option value="todo">未完成</option>
+    <option value="rec">全部推荐</option>
+    <option value="all">全部图片</option>
+    <option value="todo">未完成</option>
+    <option value="done">已完成</option>
+  </select>
+
+  <h2>3. 当前图片</h2>
+  <div id="list"></div>
+
+  <h2>4. 关键点</h2>
+  <div id="pts"></div>
+  <div class="row">
+    <button id="reset" title="恢复预标注">重置</button>
+    <button id="vis" title="切换可见性">可见性</button>
+  </div>
+  <div class="row">
+    <button id="skip">跳过</button>
+    <button id="done" class="primary">完成并下一张</button>
+  </div>
+
+  <h2>5. 导出</h2>
+  <button id="export" class="primary">导出 pose_labels.json</button>
+  <button id="importBtn">导入 JSON 继续</button>
+  <input id="importFile" type="file" accept=".json" style="display:none">
+  <div class="hint" style="margin-top:6px">
+    导出后保存到项目根目录：<br><b>/home/khalil/personal_prj/K230/pose_labels.json</b>
+  </div>
+
+  <h2>进度</h2>
+  <div id="progress" class="hint">0 / 0</div>
+</div>
+
+<div id="main">
+  <div id="topbar">
+    <span id="curName">未选择图片</span>
+    <span class="sp"></span>
+    <span id="status"></span>
+  </div>
+  <div id="canvasWrap">
+    <canvas id="cv"></canvas>
+    <div id="toast"></div>
+  </div>
+</div>
+
+<script src="pose_prefill.js"></script>
+<script>
+"use strict";
+let PREFILL = window.POSE_PREFILL || {};
+let PILOT = new Set(window.POSE_PILOT || []);
+let SERVER_MODE = false;
+
+function showErr(msg) {
+  const el = document.getElementById("err");
+  if (!el) return;
+  el.style.display = "block";
+  el.textContent = String(msg);
+}
+window.onerror = function (msg, src, line) {
+  showErr("脚本错误：" + msg + "\n" + src + ":" + line);
+};
+window.addEventListener("unhandledrejection", e => showErr("Promise 错误：" + (e.reason || e)));
+const LABELS = ["TL 左上", "TR 右上", "BR 右下", "BL 左下", "10 靶心"];
+const COLORS = ["#ff5d5d", "#4dd07a", "#5aa9ff", "#ffd24d", "#ff4dd2"];
+const LS_KEY = "k230_pose_labels_v1";
+const MANIFEST = new URLSearchParams(location.search).get("manifest") || "pose_manifest.json";
+
+let files = [];           // {key, file}
+let order = [];           // keys after filter
+let cur = -1;
+let img = null, imgKey = "", imgW = 0, imgH = 0;
+let points = [];          // [ [x,y,v], ... ] image coords
+let prefillPoints = [];
+let doneSet = new Set();
+let selected = 0;
+let view = { scale: 1, ox: 0, oy: 0 };
+let drag = null, pan = null;
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+
+function toast(msg, ms=1200) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.style.opacity = 1;
+  clearTimeout(t._tm); t._tm = setTimeout(() => t.style.opacity = 0, ms);
+}
+
+function normKey(rel) {
+  const parts = rel.replace(/\\/g, "/").split("/").filter(Boolean);
+  // 取最后两段：stage/filename
+  return parts.slice(-2).join("/");
+}
+
+function loadStore() {
+  try {
+    const s = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+    if (s.done) doneSet = new Set(s.done);
+    window._saved = s.labels || {};
+  } catch (e) { window._saved = {}; }
+}
+
+function saveStore() {
+  const labels = window._saved || {};
+  labels[imgKey] = { w: imgW, h: imgH, points: points.map(p => [Math.round(p[0]*10)/10, Math.round(p[1]*10)/10, p[2]]) };
+  window._saved = labels;
+  localStorage.setItem(LS_KEY, JSON.stringify({ labels, done: [...doneSet] }));
+}
+
+function guessPrefill(key) {
+  const b = PREFILL[key];
+  if (!b) return null;
+  if (b.points && b.points.length >= 5) {
+    return b.points.map(p => [p[0], p[1], p[2] === undefined ? 2 : p[2]]);
+  }
+  const [x, y, w, h] = b;
+  return [
+    [x, y, 2], [x+w, y, 2], [x+w, y+h, 2], [x, y+h, 2],
+    [x+w/2, y+h/2, 2]
+  ];
+}
+
+function setPointsFromPrefill() {
+  const p = guessPrefill(imgKey);
+  if (p) {
+    const cl = q => [Math.max(0, Math.min(imgW, q[0])), Math.max(0, Math.min(imgH, q[1])), q[2]];
+    prefillPoints = p.map(q => cl(q));
+    points = p.map(q => cl(q));
+  } else {
+    // 无预标注：放在图像中间，用户拖
+    const x1=imgW*0.3, y1=imgH*0.3, x2=imgW*0.7, y2=imgH*0.7;
+    prefillPoints = [[x1,y1,2],[x2,y1,2],[x2,y2,2],[x1,y2,2],[imgW/2,imgH/2,2]];
+    points = prefillPoints.map(q => q.slice());
+  }
+  const saved = window._saved && window._saved[imgKey];
+  if (saved && saved.points && saved.points.length === 5 && saved.w === imgW && saved.h === imgH) {
+    points = saved.points.map(q => q.slice());
+  }
+  selected = 0;
+  renderPoints();
+}
+
+function fit() {
+  const r = cv.getBoundingClientRect();
+  const s = Math.min((r.width-20)/imgW, (r.height-20)/imgH);
+  view.scale = s;
+  view.ox = (r.width - imgW*s)/2;
+  view.oy = (r.height - imgH*s)/2;
+}
+
+function resize() {
+  const r = cv.getBoundingClientRect();
+  cv.width = Math.round(r.width * devicePixelRatio);
+  cv.height = Math.round(r.height * devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  draw();
+}
+
+function draw() {
+  const r = cv.getBoundingClientRect();
+  ctx.clearRect(0,0,r.width,r.height);
+  if (!img) return;
+  ctx.save();
+  ctx.translate(view.ox, view.oy);
+  ctx.scale(view.scale, view.scale);
+  ctx.drawImage(img, 0, 0);
+  // 边框
+  ctx.strokeStyle = "rgba(255,255,255,.25)";
+  ctx.lineWidth = 1/view.scale;
+  ctx.strokeRect(0,0,imgW,imgH);
+  // 四角连线
+  if (points.length === 5) {
+    ctx.beginPath();
+    for (let i=0;i<4;i++) {
+      const p=points[i];
+      if (p[2] > 0) { i===0 ? ctx.moveTo(p[0],p[1]) : ctx.lineTo(p[0],p[1]); }
+      else { ctx.moveTo(p[0],p[1]); }
+    }
+    ctx.closePath();
+    ctx.strokeStyle = "rgba(90,169,255,.8)";
+    ctx.lineWidth = 2/view.scale;
+    ctx.stroke();
+  }
+  // 点
+  const r0 = 6/view.scale;
+  for (let i=0;i<points.length;i++) {
+    const p = points[i];
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], r0, 0, Math.PI*2);
+    if (p[2] === 0) {
+      ctx.fillStyle = "#333"; ctx.fill();
+      ctx.strokeStyle = COLORS[i]; ctx.lineWidth = 2/view.scale; ctx.stroke();
+    } else {
+      ctx.fillStyle = p[2] === 1 ? "rgba(0,0,0,.4)" : COLORS[i];
+      ctx.fill();
+      ctx.strokeStyle = i===selected ? "#fff" : "rgba(0,0,0,.6)";
+      ctx.lineWidth = (i===selected?3:1.5)/view.scale;
+      ctx.stroke();
+    }
+    // 编号
+    ctx.fillStyle = "#fff";
+    ctx.font = `${12/view.scale}px system-ui`;
+    ctx.fillText(String(i+1), p[0]+r0*1.4, p[1]-r0*0.8);
+  }
+  ctx.restore();
+}
+
+function toImg(ev) {
+  const rect = cv.getBoundingClientRect();
+  const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+  return { x:(sx - view.ox)/view.scale, y:(sy - view.oy)/view.scale };
+}
+
+function hit(ev) {
+  const q = toImg(ev);
+  let best=-1, bd=18/view.scale;
+  for (let i=0;i<points.length;i++) {
+    const d = Math.hypot(points[i][0]-q.x, points[i][1]-q.y);
+    if (d < bd) { bd=d; best=i; }
+  }
+  return best;
+}
+
+cv.addEventListener("mousedown", ev => {
+  if (ev.button === 1 || ev.button === 2) {
+    pan = { x:ev.clientX, y:ev.clientY, ox:view.ox, oy:view.oy };
+    ev.preventDefault(); return;
+  }
+  if (!img) return;
+  const i = hit(ev);
+  if (i >= 0) { selected = i; drag = i; renderPoints(); draw(); }
+});
+window.addEventListener("mousemove", ev => {
+  if (drag !== null && img) {
+    const q = toImg(ev);
+    points[drag][0] = Math.max(0, Math.min(imgW, q.x));
+    points[drag][1] = Math.max(0, Math.min(imgH, q.y));
+    if (points[drag][2] === 0) points[drag][2] = 2;
+    draw(); saveStore();
+  } else if (pan) {
+    view.ox = pan.ox + (ev.clientX - pan.x);
+    view.oy = pan.oy + (ev.clientY - pan.y);
+    draw();
+  }
+});
+window.addEventListener("mouseup", () => { drag=null; pan=null; });
+cv.addEventListener("contextmenu", ev => ev.preventDefault());
+cv.addEventListener("wheel", ev => {
+  if (!img) return;
+  ev.preventDefault();
+  const rect = cv.getBoundingClientRect();
+  const mx = ev.clientX-rect.left, my = ev.clientY-rect.top;
+  const ix = (mx-view.ox)/view.scale, iy = (my-view.oy)/view.scale;
+  const k = ev.deltaY < 0 ? 1.12 : 1/1.12;
+  view.scale = Math.max(0.1, Math.min(10, view.scale*k));
+  view.ox = mx - ix*view.scale;
+  view.oy = my - iy*view.scale;
+  draw();
+}, {passive:false});
+
+function renderPoints() {
+  const box = document.getElementById("pts");
+  box.innerHTML = "";
+  LABELS.forEach((name, i) => {
+    const d = document.createElement("div");
+    d.className = "pt" + (i===selected?" sel":"");
+    const dot = document.createElement("span");
+    dot.className = "dot"; dot.style.background = COLORS[i];
+    const txt = document.createElement("span"); txt.textContent = (i+1)+"  "+name;
+    const v = document.createElement("span"); v.className="v";
+    v.textContent = points[i] ? ("v="+points[i][2]) : "";
+    d.append(dot, txt, v);
+    d.onclick = () => { selected=i; renderPoints(); draw(); };
+    box.appendChild(d);
+  });
+}
+
+function updateDoneClass() {
+  document.querySelectorAll(".item").forEach(el => {
+    const k = el.dataset.key;
+    el.classList.toggle("done", doneSet.has(k));
+    const tag = el.querySelector(".tag");
+    if (tag) tag.textContent = doneSet.has(k) ? "✓ 完成" + (PREFILL[k] ? "" : "（无框）") : (PREFILL[k] ? "有预标" : "无框");
+  });
+}
+
+function applyFilter() {
+  const f = document.getElementById("filter").value;
+  let ks = files.map(f => f.key);
+  if (f === "rec") ks = ks.filter(k => PREFILL[k]);
+  if (f === "todo") ks = ks.filter(k => !doneSet.has(k));
+  if (f === "done") ks = ks.filter(k => doneSet.has(k));
+  order = ks;
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  order.forEach((k, idx) => {
+    const d = document.createElement("div");
+    d.className = "item" + (idx===cur?" active":"");
+    d.dataset.key = k;
+    const n = document.createElement("span"); n.textContent = k.split("/").pop();
+    const t = document.createElement("span"); t.className="tag";
+    t.textContent = doneSet.has(k) ? "✓ 完成" : (PREFILL[k] ? "有预标" : "无框");
+    d.append(n, t);
+    d.onclick = () => openKey(k);
+    list.appendChild(d);
+  });
+  document.getElementById("progress").textContent =
+    `${doneSet.size} / ${files.length} 已完成（推荐 ${Object.keys(PREFILL).length} 张）`;
+}
+
+function openKey(k) {
+  if (imgKey && img) saveStore();
+  const idx = order.indexOf(k);
+  if (idx < 0) { toast("当前筛选下不包含该图片"); return; }
+  cur = idx;
+  imgKey = k;
+  const item = files.find(f => f.key === k);
+  if (!item) { toast("找不到图片：" + k); return; }
+  const url = item.url || URL.createObjectURL(item.file);
+  const im = new Image();
+  im.onload = () => {
+    if (img && img._url) URL.revokeObjectURL(img._url);
+    img = im; img._url = item.url ? null : url;
+    imgW = im.naturalWidth; imgH = im.naturalHeight;
+    setPointsFromPrefill(); fit(); draw();
+    document.getElementById("curName").textContent = k;
+    document.getElementById("status").textContent = `${imgW}×${imgH}  ·  ${cur+1}/${order.length}`;
+    updateDoneClass();
+    const active = document.querySelector(".item.active");
+    if (active) active.scrollIntoView({block:"nearest"});
+  };
+  im.onerror = () => toast("图片加载失败："+k);
+  im.src = url;
+}
+
+function step(d) {
+  if (!order.length) return;
+  let i = (cur + d + order.length) % order.length;
+  openKey(order[i]);
+}
+
+async function loadManifest(mode) {
+  try {
+    showErr("");
+    const r = await fetch(MANIFEST, {cache:"no-store"});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const m = await r.json();
+    PREFILL = PREFILL || {};
+    for (const [k, v] of Object.entries(m.images || {})) {
+      PREFILL[k] = v.points ? v : (v.box || PREFILL[k]);
+      if (v.done) doneSet.add(k);
+    }
+    PILOT = new Set(m.pilot || []);
+    files = Object.entries(m.images || {}).map(([k, v]) => ({key:k, url:v.url, file:null}));
+    files.sort((a,b) => a.key.localeCompare(b.key));
+    SERVER_MODE = true;
+    document.getElementById("fileInfo").textContent =
+      `已加载 ${files.length} 张；已完成 ${doneSet.size} 张，剩余 ${files.length - doneSet.size} 张。`;
+    document.getElementById("filter").value = mode || "todo";
+    applyFilter();
+    if (order.length) openKey(order[0]);
+    else toast("没有可标注的图片");
+  } catch (e) {
+    showErr("加载清单失败：" + e + "\n请通过本地 HTTP 打开页面（见左侧说明）。");
+  }
+}
+
+document.getElementById("loadTodo").onclick = () => loadManifest("todo");
+document.getElementById("loadAll").onclick = () => loadManifest("rec");
+
+document.getElementById("dir").addEventListener("change", ev => {
+  SERVER_MODE = false;
+  const list = [...ev.target.files].filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f.name));
+  files = list.map(f => ({ key: normKey(f.webkitRelativePath || f.name), file: f }));
+  // 去重
+  const seen = new Set(); files = files.filter(f => !seen.has(f.key) && seen.add(f.key));
+  files.sort((a,b) => a.key.localeCompare(b.key));
+  document.getElementById("fileInfo").textContent =
+    `已选择 ${files.length} 张；其中推荐 ${Object.keys(PREFILL).length} 张。`;
+  applyFilter();
+  if (order.length) openKey(order[0]);
+});
+
+document.getElementById("filter").onchange = () => { applyFilter(); if (order.length) openKey(order[0]); };
+document.getElementById("reset").onclick = () => {
+  if (!img) { toast("请先加载图片"); return; }
+  points = prefillPoints.map(p => p.slice());
+  renderPoints(); draw(); saveStore(); toast("已重置为预标注");
+};
+document.getElementById("vis").onclick = () => {
+  if (!img) { toast("请先加载图片"); return; }
+  if (!points[selected]) { toast("没有可切换的点"); return; }
+  points[selected][2] = (points[selected][2] + 2) % 3; // 2->1->0->2
+  renderPoints(); draw(); saveStore();
+};
+document.getElementById("skip").onclick = () => {
+  if (!order.length) { toast("请先加载图片"); return; }
+  step(1);
+};
+document.getElementById("done").onclick = () => {
+  if (!img) { toast("请先加载图片"); return; }
+  doneSet.add(imgKey);
+  saveStore(); applyFilter(); updateDoneClass();
+  step(1);
+};
+document.getElementById("export").onclick = () => {
+  saveStore();
+  const labels = window._saved || {};
+  const out = { version:1, kpt:5,
+    order:["TL","TR","BR","BL","bull"],
+    images:{} };
+  for (const [k, v] of Object.entries(labels)) {
+    if (!v || !v.points) continue;
+    out.images[k] = { w:v.w, h:v.h, points:v.points, done:doneSet.has(k) };
+  }
+  // 只导出已完成的优先；未完成也带上，便于续标
+  const blob = new Blob([JSON.stringify(out, null, 2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "pose_labels.json";
+  document.body.appendChild(a); a.click(); a.remove();
+  toast("已导出 pose_labels.json");
+};
+document.getElementById("importBtn").onclick = () => document.getElementById("importFile").click();
+document.getElementById("importFile").addEventListener("change", ev => {
+  const f = ev.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const o = JSON.parse(r.result);
+      window._saved = window._saved || {};
+      for (const [k,v] of Object.entries(o.images||{})) {
+        window._saved[k] = {w:v.w, h:v.h, points:v.points};
+        if (v.done) doneSet.add(k);
+      }
+      saveStore(); applyFilter(); toast("已导入，继续标注");
+      if (order.length) openKey(order[0]);
+    } catch(e) { toast("JSON 解析失败"); }
+  };
+  r.readAsText(f);
+});
+
+document.addEventListener("keydown", ev => {
+  const tag = (ev.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  if (ev.key >= "1" && ev.key <= "5") { selected = +ev.key-1; renderPoints(); draw(); }
+  else if (ev.key.toLowerCase() === "v") document.getElementById("vis").click();
+  else if (ev.key.toLowerCase() === "r") document.getElementById("reset").click();
+  else if (ev.key.toLowerCase() === "e") document.getElementById("export").click();
+  else if (ev.key.toLowerCase() === "n") step(1);
+  else if (ev.key.toLowerCase() === "p") step(-1);
+});
+
+window.addEventListener("resize", () => { resize(); });
+loadStore();
+resize();
+applyFilter();
+if (location.protocol === "http:" || location.protocol === "https:") {
+  loadManifest("todo");
+} else {
+  showErr("当前是 file:// 离线模式。请用本地 HTTP 打开，或展开“离线模式”手动选文件夹（仅 Chrome/Edge）。");
+}
+</script>
+</body>
+</html>

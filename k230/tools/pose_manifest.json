@@ -1,0 +1,7445 @@
+{
+ "root": "../../",
+ "images": {
+  "black_move/frame_000000.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000000.jpg",
+   "box": [
+    420.7,
+    160.2,
+    64.80000000000001,
+    97.10000000000002
+   ],
+   "points": [
+    [
+     425.9,
+     160.2,
+     2
+    ],
+    [
+     485.5,
+     165.3,
+     2
+    ],
+    [
+     481.2,
+     257.3,
+     2
+    ],
+    [
+     420.7,
+     242.5,
+     2
+    ],
+    [
+     451.2,
+     213.4,
+     2
+    ]
+   ],
+   "conf": 0.782,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000004.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000004.jpg",
+   "box": [
+    535.8,
+    77.4,
+    103.2,
+    119.5
+   ],
+   "points": [
+    [
+     549.3,
+     85.3,
+     2
+    ],
+    [
+     630.5,
+     80.5,
+     1
+    ],
+    [
+     631.7,
+     199,
+     2
+    ],
+    [
+     548.6,
+     190.3,
+     2
+    ],
+    [
+     613.9,
+     158.7,
+     1
+    ]
+   ],
+   "conf": 0.884,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000007.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000007.jpg",
+   "box": [
+    533.5,
+    114.5,
+    96.4,
+    115.7
+   ],
+   "points": [
+    [
+     546.3,
+     120.7,
+     1
+    ],
+    [
+     623.4,
+     123.8,
+     1
+    ],
+    [
+     615,
+     236.3,
+     1
+    ],
+    [
+     539.4,
+     221.4,
+     2
+    ],
+    [
+     576.8,
+     184.7,
+     2
+    ]
+   ],
+   "conf": 0.85,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000011.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000011.jpg",
+   "box": [
+    457.5,
+    141.1,
+    88.8,
+    103.1
+   ],
+   "points": [
+    [
+     479.3,
+     144,
+     1
+    ],
+    [
+     538.9,
+     158.7,
+     1
+    ],
+    [
+     527.3,
+     251,
+     1
+    ],
+    [
+     466.4,
+     232.4,
+     2
+    ],
+    [
+     500,
+     203.5,
+     1
+    ]
+   ],
+   "conf": 0.765,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000013.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000013.jpg",
+   "box": [
+    408.6,
+    138.0,
+    85.2,
+    103.0
+   ],
+   "points": [
+    [
+     427.4,
+     144.6,
+     1
+    ],
+    [
+     483.9,
+     160.7,
+     1
+    ],
+    [
+     470.2,
+     246,
+     1
+    ],
+    [
+     414.9,
+     227.1,
+     2
+    ],
+    [
+     446.8,
+     201.4,
+     1
+    ]
+   ],
+   "conf": 0.808,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000014.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000014.jpg",
+   "box": [
+    397.1,
+    125.9,
+    87.4,
+    109.5
+   ],
+   "points": [
+    [
+     418.6,
+     136.8,
+     1
+    ],
+    [
+     473.9,
+     153.2,
+     1
+    ],
+    [
+     458.2,
+     237.1,
+     1
+    ],
+    [
+     404.6,
+     220.5,
+     1
+    ],
+    [
+     436.3,
+     194.3,
+     1
+    ]
+   ],
+   "conf": 0.748,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000015.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000015.jpg",
+   "box": [
+    375.7,
+    132.3,
+    80.1,
+    104.3
+   ],
+   "points": [
+    [
+     389.5,
+     140,
+     1
+    ],
+    [
+     447.9,
+     160.5,
+     1
+    ],
+    [
+     430.5,
+     240.8,
+     1
+    ],
+    [
+     377.9,
+     222.5,
+     1
+    ],
+    [
+     409,
+     198.4,
+     1
+    ]
+   ],
+   "conf": 0.844,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000016.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000016.jpg",
+   "box": [
+    359.0,
+    138.2,
+    78.6,
+    105.4
+   ],
+   "points": [
+    [
+     375,
+     150.3,
+     1
+    ],
+    [
+     426,
+     166,
+     1
+    ],
+    [
+     410.3,
+     246.3,
+     1
+    ],
+    [
+     361.7,
+     227.7,
+     1
+    ],
+    [
+     391.4,
+     204.1,
+     1
+    ]
+   ],
+   "conf": 0.511,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000019.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000019.jpg",
+   "box": [
+    274.8,
+    199,
+    59.30000000000001,
+    99.19999999999999
+   ],
+   "points": [
+    [
+     284.8,
+     199,
+     2
+    ],
+    [
+     334.1,
+     216.6,
+     2
+    ],
+    [
+     323.4,
+     298.2,
+     2
+    ],
+    [
+     274.8,
+     279.4,
+     2
+    ],
+    [
+     302.8,
+     252,
+     2
+    ]
+   ],
+   "conf": 0.316,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000045.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000045.jpg",
+   "box": [
+    195.7,
+    236.9,
+    76.4,
+    96.0
+   ],
+   "points": [
+    [
+     210.7,
+     244.4,
+     1
+    ],
+    [
+     266.4,
+     255,
+     1
+    ],
+    [
+     236.3,
+     332.5,
+     1
+    ],
+    [
+     204.1,
+     326.9,
+     1
+    ],
+    [
+     233.7,
+     297.4,
+     1
+    ]
+   ],
+   "conf": 0.697,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000048.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000048.jpg",
+   "box": [
+    233.2,
+    300.3,
+    83.0,
+    95.8
+   ],
+   "points": [
+    [
+     251.7,
+     302.6,
+     1
+    ],
+    [
+     305.6,
+     312.1,
+     1
+    ],
+    [
+     299.3,
+     396,
+     1
+    ],
+    [
+     244.1,
+     386.3,
+     2
+    ],
+    [
+     273.9,
+     356.2,
+     1
+    ]
+   ],
+   "conf": 0.825,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000050.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000050.jpg",
+   "box": [
+    279.4,
+    255.5,
+    76.3,
+    97.7
+   ],
+   "points": [
+    [
+     292.5,
+     263.1,
+     1
+    ],
+    [
+     343.7,
+     272.6,
+     1
+    ],
+    [
+     338.7,
+     354.8,
+     1
+    ],
+    [
+     285.6,
+     344,
+     1
+    ],
+    [
+     314.3,
+     314.4,
+     1
+    ]
+   ],
+   "conf": 0.548,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000051.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000051.jpg",
+   "box": [
+    312.2,
+    231.3,
+    84.1,
+    94.0
+   ],
+   "points": [
+    [
+     330.9,
+     232.4,
+     1
+    ],
+    [
+     385.2,
+     245.7,
+     1
+    ],
+    [
+     375,
+     329,
+     1
+    ],
+    [
+     321.9,
+     313.5,
+     1
+    ],
+    [
+     352.4,
+     287.2,
+     2
+    ]
+   ],
+   "conf": 0.519,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000058.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000058.jpg",
+   "box": [
+    339.9,
+    233.9,
+    83.0,
+    106.5
+   ],
+   "points": [
+    [
+     358.1,
+     245.4,
+     1
+    ],
+    [
+     416.1,
+     257.6,
+     1
+    ],
+    [
+     402.7,
+     344.7,
+     1
+    ],
+    [
+     347.7,
+     328.9,
+     1
+    ],
+    [
+     380.5,
+     299.8,
+     1
+    ]
+   ],
+   "conf": 0.756,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000059.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000059.jpg",
+   "box": [
+    345.1,
+    244.7,
+    75.6,
+    99.4
+   ],
+   "points": [
+    [
+     356.8,
+     250.2,
+     2
+    ],
+    [
+     414.8,
+     261.9,
+     1
+    ],
+    [
+     405,
+     351.4,
+     1
+    ],
+    [
+     345.9,
+     334.7,
+     1
+    ],
+    [
+     378.8,
+     305.2,
+     1
+    ]
+   ],
+   "conf": 0.644,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000060.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000060.jpg",
+   "box": [
+    337.7,
+    250.4,
+    84.1,
+    102.0
+   ],
+   "points": [
+    [
+     355.3,
+     251.8,
+     1
+    ],
+    [
+     414.6,
+     266.4,
+     1
+    ],
+    [
+     405.7,
+     354.1,
+     1
+    ],
+    [
+     346.9,
+     340.4,
+     1
+    ],
+    [
+     379.7,
+     310.2,
+     1
+    ]
+   ],
+   "conf": 0.652,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000061.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000061.jpg",
+   "box": [
+    352.9,
+    246.5,
+    67.20000000000005,
+    98.39999999999998
+   ],
+   "points": [
+    [
+     362,
+     246.5,
+     2
+    ],
+    [
+     420.1,
+     257.7,
+     2
+    ],
+    [
+     411.1,
+     344.9,
+     2
+    ],
+    [
+     352.9,
+     332.3,
+     2
+    ],
+    [
+     385.3,
+     301.8,
+     2
+    ]
+   ],
+   "conf": 0.682,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000062.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000062.jpg",
+   "box": [
+    344.9,
+    231.7,
+    90.3,
+    108.2
+   ],
+   "points": [
+    [
+     366.3,
+     241,
+     1
+    ],
+    [
+     425.5,
+     254,
+     1
+    ],
+    [
+     415.7,
+     342.1,
+     1
+    ],
+    [
+     359.4,
+     328.8,
+     2
+    ],
+    [
+     390.9,
+     297.9,
+     2
+    ]
+   ],
+   "conf": 0.673,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000063.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000063.jpg",
+   "box": [
+    358.9,
+    248.9,
+    81.2,
+    100.8
+   ],
+   "points": [
+    [
+     371.6,
+     252.6,
+     1
+    ],
+    [
+     428.9,
+     262.1,
+     1
+    ],
+    [
+     423.6,
+     350.3,
+     1
+    ],
+    [
+     364.7,
+     339.7,
+     2
+    ],
+    [
+     396.7,
+     307.4,
+     1
+    ]
+   ],
+   "conf": 0.754,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000064.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000064.jpg",
+   "box": [
+    357.7,
+    270.2,
+    86.7,
+    105.7
+   ],
+   "points": [
+    [
+     371.1,
+     277.6,
+     1
+    ],
+    [
+     430.9,
+     285.1,
+     1
+    ],
+    [
+     425.8,
+     376.6,
+     1
+    ],
+    [
+     366.7,
+     365.8,
+     2
+    ],
+    [
+     397.8,
+     332.6,
+     1
+    ]
+   ],
+   "conf": 0.682,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000065.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000065.jpg",
+   "box": [
+    359.0,
+    271.5,
+    92.0,
+    108.3
+   ],
+   "points": [
+    [
+     379.6,
+     279.2,
+     2
+    ],
+    [
+     437.9,
+     286.2,
+     1
+    ],
+    [
+     435.3,
+     378.6,
+     1
+    ],
+    [
+     373.9,
+     367.6,
+     1
+    ],
+    [
+     405.7,
+     335.1,
+     2
+    ]
+   ],
+   "conf": 0.725,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000066.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000066.jpg",
+   "box": [
+    374.4,
+    271.2,
+    85.7,
+    107.5
+   ],
+   "points": [
+    [
+     384.8,
+     282,
+     1
+    ],
+    [
+     445.8,
+     287.9,
+     1
+    ],
+    [
+     442.8,
+     379.6,
+     1
+    ],
+    [
+     382.8,
+     370.3,
+     1
+    ],
+    [
+     413.1,
+     335.9,
+     1
+    ]
+   ],
+   "conf": 0.582,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000071.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000071.jpg",
+   "box": [
+    426.4,
+    261.4,
+    96.0,
+    130.0
+   ],
+   "points": [
+    [
+     440.4,
+     281.1,
+     1
+    ],
+    [
+     507.1,
+     283.2,
+     1
+    ],
+    [
+     509.9,
+     384.8,
+     2
+    ],
+    [
+     442.3,
+     375.8,
+     1
+    ],
+    [
+     472.8,
+     339,
+     1
+    ]
+   ],
+   "conf": 0.553,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000072.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000072.jpg",
+   "box": [
+    438.8,
+    291.4,
+    97.5,
+    112.8
+   ],
+   "points": [
+    [
+     446.5,
+     302.5,
+     2
+    ],
+    [
+     514.8,
+     300.8,
+     1
+    ],
+    [
+     520.3,
+     406.3,
+     2
+    ],
+    [
+     451,
+     396.7,
+     2
+    ],
+    [
+     482.2,
+     358.9,
+     2
+    ]
+   ],
+   "conf": 0.816,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "black_move/frame_000078.jpg": {
+   "url": "../../k230_target_project/captures/black_move/frame_000078.jpg",
+   "box": [
+    510.3,
+    271.1,
+    108.0,
+    122.3
+   ],
+   "points": [
+    [
+     511.9,
+     286.1,
+     2
+    ],
+    [
+     588.3,
+     272.4,
+     2
+    ],
+    [
+     611.5,
+     388.5,
+     2
+    ],
+    [
+     532.1,
+     389.6,
+     1
+    ],
+    [
+     561.4,
+     343.4,
+     2
+    ]
+   ],
+   "conf": 0.7,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_angle/frame_000024.jpg": {
+   "url": "../../k230_target_project/captures/pos_angle/frame_000024.jpg",
+   "box": [
+    120.8,
+    79.7,
+    216.2,
+    306.7
+   ],
+   "points": [
+    [
+     120.8,
+     105.4,
+     2
+    ],
+    [
+     315.4,
+     79.7,
+     2
+    ],
+    [
+     337,
+     360.7,
+     2
+    ],
+    [
+     147.2,
+     386.4,
+     2
+    ],
+    [
+     231,
+     254.1,
+     2
+    ]
+   ],
+   "conf": 0.996,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_angle/frame_000025.jpg": {
+   "url": "../../k230_target_project/captures/pos_angle/frame_000025.jpg",
+   "box": [
+    109.5,
+    89.4,
+    245.2,
+    306.9
+   ],
+   "points": [
+    [
+     136.2,
+     93.3,
+     2
+    ],
+    [
+     329.4,
+     82.2,
+     1
+    ],
+    [
+     341.4,
+     369.8,
+     2
+    ],
+    [
+     144.9,
+     383.9,
+     1
+    ],
+    [
+     239.6,
+     254,
+     2
+    ]
+   ],
+   "conf": 0.996,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_angle/frame_000028.jpg": {
+   "url": "../../k230_target_project/captures/pos_angle/frame_000028.jpg",
+   "box": [
+    185.5,
+    109.9,
+    233.1,
+    311.8
+   ],
+   "points": [
+    [
+     244.3,
+     76.9,
+     2
+    ],
+    [
+     436.2,
+     148.9,
+     2
+    ],
+    [
+     365.2,
+     423.8,
+     2
+    ],
+    [
+     174.7,
+     345.7,
+     1
+    ],
+    [
+     299.2,
+     271.4,
+     2
+    ]
+   ],
+   "conf": 0.998,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000000.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000000.jpg",
+   "box": [
+    418.5,
+    315.6,
+    108.79999999999995,
+    159.29999999999995
+   ],
+   "points": [
+    [
+     433.2,
+     315.6,
+     2
+    ],
+    [
+     527.3,
+     336,
+     2
+    ],
+    [
+     515.5,
+     474.9,
+     2
+    ],
+    [
+     418.5,
+     454.1,
+     2
+    ],
+    [
+     470.1,
+     401.7,
+     2
+    ]
+   ],
+   "conf": 0.832,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000001.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000001.jpg",
+   "box": [
+    410.5,
+    311.4,
+    120.6,
+    164.9
+   ],
+   "points": [
+    [
+     430.7,
+     305.1,
+     1
+    ],
+    [
+     522.8,
+     325,
+     1
+    ],
+    [
+     508.3,
+     462,
+     1
+    ],
+    [
+     414.8,
+     435.5,
+     2
+    ],
+    [
+     465.9,
+     392.1,
+     2
+    ]
+   ],
+   "conf": 0.725,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000002.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000002.jpg",
+   "box": [
+    398.2,
+    310.3,
+    117.6,
+    160.0
+   ],
+   "points": [
+    [
+     416.5,
+     306.3,
+     2
+    ],
+    [
+     510.8,
+     323.5,
+     2
+    ],
+    [
+     494.3,
+     461.3,
+     2
+    ],
+    [
+     405,
+     434.8,
+     2
+    ],
+    [
+     454.1,
+     392.6,
+     1
+    ]
+   ],
+   "conf": 0.86,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000003.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000003.jpg",
+   "box": [
+    383.6,
+    317.1,
+    116.2,
+    159.1
+   ],
+   "points": [
+    [
+     400.9,
+     314.4,
+     2
+    ],
+    [
+     492.2,
+     329.9,
+     2
+    ],
+    [
+     477.8,
+     467.2,
+     2
+    ],
+    [
+     388.5,
+     436.8,
+     2
+    ],
+    [
+     439,
+     396.5,
+     1
+    ]
+   ],
+   "conf": 0.832,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000004.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000004.jpg",
+   "box": [
+    370.2,
+    307.0,
+    109.1,
+    159.9
+   ],
+   "points": [
+    [
+     387.7,
+     308,
+     2
+    ],
+    [
+     474.7,
+     323.8,
+     2
+    ],
+    [
+     463.6,
+     459.9,
+     2
+    ],
+    [
+     375.5,
+     435.8,
+     2
+    ],
+    [
+     422.8,
+     390.1,
+     2
+    ]
+   ],
+   "conf": 0.887,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000005.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000005.jpg",
+   "box": [
+    362.4,
+    296.3,
+    111.0,
+    146.3
+   ],
+   "points": [
+    [
+     379.1,
+     300.3,
+     2
+    ],
+    [
+     463.7,
+     312.2,
+     2
+    ],
+    [
+     457.5,
+     442.8,
+     2
+    ],
+    [
+     370.1,
+     423.5,
+     2
+    ],
+    [
+     415.1,
+     376.9,
+     2
+    ]
+   ],
+   "conf": 0.734,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000006.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000006.jpg",
+   "box": [
+    362.8,
+    284.6,
+    113.8,
+    145.9
+   ],
+   "points": [
+    [
+     376.3,
+     289.8,
+     2
+    ],
+    [
+     457.6,
+     291.4,
+     2
+    ],
+    [
+     456.7,
+     414.2,
+     2
+    ],
+    [
+     373.3,
+     407,
+     2
+    ],
+    [
+     414.8,
+     357.2,
+     2
+    ]
+   ],
+   "conf": 0.829,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000007.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000007.jpg",
+   "box": [
+    352.2,
+    286.9,
+    105.5,
+    151.0
+   ],
+   "points": [
+    [
+     363.9,
+     296,
+     2
+    ],
+    [
+     442.5,
+     299.4,
+     2
+    ],
+    [
+     444.2,
+     420.7,
+     2
+    ],
+    [
+     363.5,
+     415.8,
+     2
+    ],
+    [
+     401.7,
+     364.5,
+     2
+    ]
+   ],
+   "conf": 0.751,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000008.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000008.jpg",
+   "box": [
+    342.9,
+    297.8,
+    104.4,
+    128.3
+   ],
+   "points": [
+    [
+     353.7,
+     306.7,
+     2
+    ],
+    [
+     431,
+     304.8,
+     2
+    ],
+    [
+     434.4,
+     424.9,
+     2
+    ],
+    [
+     354,
+     421.5,
+     2
+    ],
+    [
+     391.3,
+     371.5,
+     1
+    ]
+   ],
+   "conf": 0.933,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000009.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000009.jpg",
+   "box": [
+    339.0,
+    296.3,
+    93.6,
+    137.6
+   ],
+   "points": [
+    [
+     345.1,
+     306.6,
+     2
+    ],
+    [
+     418.4,
+     303.5,
+     2
+    ],
+    [
+     425.3,
+     420.2,
+     2
+    ],
+    [
+     345.5,
+     418.2,
+     2
+    ],
+    [
+     419.4,
+     361.4,
+     1
+    ]
+   ],
+   "conf": 0.891,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000010.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000010.jpg",
+   "box": [
+    334.3,
+    287.8,
+    97.4,
+    138.3
+   ],
+   "points": [
+    [
+     340.7,
+     298.5,
+     2
+    ],
+    [
+     416.2,
+     294,
+     2
+    ],
+    [
+     424.7,
+     412.9,
+     2
+    ],
+    [
+     344.5,
+     413.9,
+     2
+    ],
+    [
+     380.7,
+     361,
+     1
+    ]
+   ],
+   "conf": 0.886,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000011.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000011.jpg",
+   "box": [
+    337.5,
+    280.1,
+    103.3,
+    136.7
+   ],
+   "points": [
+    [
+     347.6,
+     285.4,
+     2
+    ],
+    [
+     427.3,
+     286.8,
+     2
+    ],
+    [
+     429.1,
+     409.6,
+     2
+    ],
+    [
+     347.8,
+     405.1,
+     2
+    ],
+    [
+     386.4,
+     353.9,
+     2
+    ]
+   ],
+   "conf": 0.906,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000012.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000012.jpg",
+   "box": [
+    345.1,
+    280.3,
+    86.19999999999999,
+    127.80000000000001
+   ],
+   "points": [
+    [
+     351.3,
+     280.3,
+     2
+    ],
+    [
+     431.3,
+     285.5,
+     2
+    ],
+    [
+     428.8,
+     408.1,
+     2
+    ],
+    [
+     345.1,
+     400.2,
+     2
+    ],
+    [
+     386.9,
+     351.4,
+     2
+    ]
+   ],
+   "conf": 0.906,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000013.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000013.jpg",
+   "box": [
+    338.5,
+    271.0,
+    104.9,
+    143.6
+   ],
+   "points": [
+    [
+     352.7,
+     277.8,
+     2
+    ],
+    [
+     432.2,
+     284.1,
+     2
+    ],
+    [
+     425.5,
+     409.1,
+     2
+    ],
+    [
+     349.2,
+     398.3,
+     2
+    ],
+    [
+     388.3,
+     350.8,
+     2
+    ]
+   ],
+   "conf": 0.89,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000014.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000014.jpg",
+   "box": [
+    335.9,
+    269.6,
+    108.6,
+    146.9
+   ],
+   "points": [
+    [
+     362.6,
+     277.8,
+     2
+    ],
+    [
+     441.7,
+     265.5,
+     2
+    ],
+    [
+     436.7,
+     400.3,
+     1
+    ],
+    [
+     346.7,
+     404.9,
+     2
+    ],
+    [
+     391.7,
+     351.6,
+     2
+    ]
+   ],
+   "conf": 0.862,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_blur/frame_000015.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000015.jpg",
+   "box": [
+    333.5,
+    270.1,
+    110.5,
+    147.5
+   ],
+   "points": [
+    [
+     345.8,
+     275.9,
+     2
+    ],
+    [
+     433.3,
+     281.2,
+     2
+    ],
+    [
+     426.4,
+     411.3,
+     2
+    ],
+    [
+     341.9,
+     401.5,
+     2
+    ],
+    [
+     385.7,
+     353,
+     2
+    ]
+   ],
+   "conf": 0.856,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000016.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000016.jpg",
+   "box": [
+    336.0,
+    269.5,
+    121.8,
+    142.4
+   ],
+   "points": [
+    [
+     345.6,
+     275.2,
+     2
+    ],
+    [
+     432.1,
+     280.7,
+     1
+    ],
+    [
+     431.2,
+     410.6,
+     2
+    ],
+    [
+     345.6,
+     401.4,
+     2
+    ],
+    [
+     385.9,
+     351.4,
+     2
+    ]
+   ],
+   "conf": 0.858,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000017.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000017.jpg",
+   "box": [
+    337.7,
+    268.3,
+    116.8,
+    154.8
+   ],
+   "points": [
+    [
+     349.4,
+     273.8,
+     2
+    ],
+    [
+     436.6,
+     278.7,
+     2
+    ],
+    [
+     433.7,
+     409,
+     2
+    ],
+    [
+     349.5,
+     399.6,
+     2
+    ],
+    [
+     390.5,
+     351.3,
+     1
+    ]
+   ],
+   "conf": 0.849,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000019.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000019.jpg",
+   "box": [
+    337.1,
+    275.0,
+    123.0,
+    155.1
+   ],
+   "points": [
+    [
+     345,
+     283.9,
+     2
+    ],
+    [
+     433.9,
+     285.3,
+     2
+    ],
+    [
+     431.8,
+     417.5,
+     2
+    ],
+    [
+     343,
+     409.3,
+     2
+    ],
+    [
+     442.4,
+     359.8,
+     1
+    ]
+   ],
+   "conf": 0.783,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000020.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000020.jpg",
+   "box": [
+    334.4,
+    287.1,
+    121.9,
+    153.0
+   ],
+   "points": [
+    [
+     351.6,
+     296.2,
+     2
+    ],
+    [
+     440.1,
+     286.8,
+     2
+    ],
+    [
+     436.0,
+     423.5,
+     1
+    ],
+    [
+     348.4,
+     420.5,
+     2
+    ],
+    [
+     390.4,
+     366.9,
+     2
+    ]
+   ],
+   "conf": 0.652,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_blur/frame_000021.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000021.jpg",
+   "box": [
+    330.9,
+    287.9,
+    123.9,
+    159.8
+   ],
+   "points": [
+    [
+     342.9,
+     296.5,
+     2
+    ],
+    [
+     429.6,
+     298.8,
+     1
+    ],
+    [
+     425.8,
+     430.8,
+     2
+    ],
+    [
+     338.8,
+     424.5,
+     2
+    ],
+    [
+     382.5,
+     371.8,
+     2
+    ]
+   ],
+   "conf": 0.585,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000022.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000022.jpg",
+   "box": [
+    330.7,
+    286.1,
+    127.8,
+    153.9
+   ],
+   "points": [
+    [
+     343.1,
+     294,
+     2
+    ],
+    [
+     429.8,
+     297.8,
+     1
+    ],
+    [
+     423.7,
+     424,
+     2
+    ],
+    [
+     340,
+     418,
+     2
+    ],
+    [
+     383,
+     369.6,
+     2
+    ]
+   ],
+   "conf": 0.594,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000023.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000023.jpg",
+   "box": [
+    331.6,
+    287.1,
+    123.8,
+    153.8
+   ],
+   "points": [
+    [
+     349.0,
+     293.0,
+     2
+    ],
+    [
+     433.1,
+     284.5,
+     2
+    ],
+    [
+     435.2,
+     419.1,
+     1
+    ],
+    [
+     346.5,
+     417.6,
+     2
+    ],
+    [
+     388.4,
+     364.4,
+     2
+    ]
+   ],
+   "conf": 0.658,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_blur/frame_000025.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000025.jpg",
+   "box": [
+    336.6,
+    273.9,
+    122.2,
+    121.9
+   ],
+   "points": [
+    [
+     343.6,
+     283.5,
+     2
+    ],
+    [
+     429.2,
+     286.8,
+     1
+    ],
+    [
+     429.6,
+     401.6,
+     2
+    ],
+    [
+     342.3,
+     368,
+     1
+    ],
+    [
+     385.6,
+     358.1,
+     1
+    ]
+   ],
+   "conf": 0.461,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_blur/frame_000026.jpg": {
+   "url": "../../k230_target_project/captures/pos_blur/frame_000026.jpg",
+   "box": [
+    343.0,
+    282.9,
+    90.3,
+    103.5
+   ],
+   "points": [
+    [
+     354.6,
+     286.4,
+     2
+    ],
+    [
+     433.6,
+     290.4,
+     2
+    ],
+    [
+     424.3,
+     395.2,
+     1
+    ],
+    [
+     368.5,
+     393.5,
+     2
+    ],
+    [
+     390.7,
+     352.7,
+     2
+    ]
+   ],
+   "conf": 0.367,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000001.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000001.jpg",
+   "box": [
+    316.3,
+    181.8,
+    100.0,
+    145.09999999999997
+   ],
+   "points": [
+    [
+     318.1,
+     181.8,
+     2
+    ],
+    [
+     416.3,
+     183.6,
+     2
+    ],
+    [
+     413.2,
+     326.9,
+     2
+    ],
+    [
+     316.3,
+     323.7,
+     2
+    ],
+    [
+     364.8,
+     265.9,
+     2
+    ]
+   ],
+   "conf": 0.835,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_far/frame_000004.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000004.jpg",
+   "box": [
+    199.0,
+    87.5,
+    236.5,
+    304.2
+   ],
+   "points": [
+    [
+     227.6,
+     105.7,
+     2
+    ],
+    [
+     420.8,
+     99,
+     1
+    ],
+    [
+     413.1,
+     361.1,
+     2
+    ],
+    [
+     241.7,
+     377.9,
+     2
+    ],
+    [
+     329.4,
+     261.7,
+     2
+    ]
+   ],
+   "conf": 0.996,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_far/frame_000007.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000007.jpg",
+   "box": [
+    263.5,
+    53.5,
+    187.8,
+    280.3
+   ],
+   "points": [
+    [
+     288.1,
+     83.8,
+     2
+    ],
+    [
+     418.9,
+     65.3,
+     2
+    ],
+    [
+     428.7,
+     290.5,
+     2
+    ],
+    [
+     297.4,
+     302.8,
+     2
+    ],
+    [
+     366.9,
+     208.3,
+     2
+    ]
+   ],
+   "conf": 0.993,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000012.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000012.jpg",
+   "box": [
+    318.1,
+    222.1,
+    58.2,
+    78.9
+   ],
+   "points": [
+    [
+     319.3,
+     291.1,
+     1
+    ],
+    [
+     327.4,
+     224,
+     1
+    ],
+    [
+     373.8,
+     232.9,
+     1
+    ],
+    [
+     365.4,
+     301,
+     2
+    ],
+    [
+     345.7,
+     268.1,
+     2
+    ]
+   ],
+   "conf": 0.881,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_far/frame_000016.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000016.jpg",
+   "box": [
+    237.0,
+    222.4,
+    53.0,
+    70.4
+   ],
+   "points": [
+    [
+     245.5,
+     226.7,
+     2
+    ],
+    [
+     292.9,
+     223.4,
+     2
+    ],
+    [
+     284.1,
+     296.0,
+     1
+    ],
+    [
+     246.9,
+     290.1,
+     2
+    ],
+    [
+     266.8,
+     258.6,
+     1
+    ]
+   ],
+   "conf": 0.624,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000019.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000019.jpg",
+   "box": [
+    288.1,
+    193.7,
+    80.9,
+    95.5
+   ],
+   "points": [
+    [
+     318.8,
+     198.7,
+     2
+    ],
+    [
+     371.3,
+     195.3,
+     2
+    ],
+    [
+     358.7,
+     292.4,
+     1
+    ],
+    [
+     292.6,
+     292.8,
+     2
+    ],
+    [
+     331.8,
+     252.3,
+     1
+    ]
+   ],
+   "conf": 0.822,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000020.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000020.jpg",
+   "box": [
+    296.9,
+    208.8,
+    88.1,
+    104.4
+   ],
+   "points": [
+    [
+     327.0,
+     208.0,
+     2
+    ],
+    [
+     386.8,
+     201.0,
+     2
+    ],
+    [
+     378.4,
+     311.8,
+     1
+    ],
+    [
+     302.8,
+     311.9,
+     2
+    ],
+    [
+     344.6,
+     268.7,
+     1
+    ]
+   ],
+   "conf": 0.885,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000025.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000025.jpg",
+   "box": [
+    183.5,
+    153.4,
+    223.0,
+    291.3
+   ],
+   "points": [
+    [
+     230.7,
+     191.8,
+     2
+    ],
+    [
+     369.0,
+     187.8,
+     2
+    ],
+    [
+     370.9,
+     408.9,
+     2
+    ],
+    [
+     240.3,
+     424.5,
+     2
+    ],
+    [
+     314.0,
+     313.5,
+     2
+    ]
+   ],
+   "conf": 0.997,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000028.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000028.jpg",
+   "box": [
+    300.4,
+    150.2,
+    117.0,
+    168.8
+   ],
+   "points": [
+    [
+     300.4,
+     162.2,
+     2
+    ],
+    [
+     414.5,
+     150.2,
+     2
+    ],
+    [
+     417.4,
+     316.1,
+     2
+    ],
+    [
+     308.7,
+     319,
+     2
+    ],
+    [
+     359.4,
+     251.7,
+     2
+    ]
+   ],
+   "conf": 0.723,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_far/frame_000029.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000029.jpg",
+   "box": [
+    308.6,
+    160.2,
+    110.9,
+    155.4
+   ],
+   "points": [
+    [
+     327.0,
+     173.9,
+     2
+    ],
+    [
+     408.6,
+     165.7,
+     2
+    ],
+    [
+     404.7,
+     299.9,
+     1
+    ],
+    [
+     317.9,
+     299.9,
+     2
+    ],
+    [
+     361.9,
+     248.8,
+     2
+    ]
+   ],
+   "conf": 0.861,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000032.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000032.jpg",
+   "box": [
+    281.6,
+    205.8,
+    70.3,
+    86.5
+   ],
+   "points": [
+    [
+     303.4,
+     212.8,
+     2
+    ],
+    [
+     355.9,
+     210.2,
+     2
+    ],
+    [
+     348.1,
+     284.9,
+     1
+    ],
+    [
+     291.6,
+     289.1,
+     2
+    ],
+    [
+     323.8,
+     254.3,
+     1
+    ]
+   ],
+   "conf": 0.775,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000033.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000033.jpg",
+   "box": [
+    228.3,
+    207.7,
+    51.1,
+    77.2
+   ],
+   "points": [
+    [
+     236.5,
+     214.2,
+     2
+    ],
+    [
+     288.7,
+     213.4,
+     2
+    ],
+    [
+     283.8,
+     278.2,
+     1
+    ],
+    [
+     232.4,
+     284.2,
+     2
+    ],
+    [
+     261.1,
+     252.0,
+     1
+    ]
+   ],
+   "conf": 0.515,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000034.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000034.jpg",
+   "box": [
+    238.3,
+    212.9,
+    48.4,
+    76.6
+   ],
+   "points": [
+    [
+     237.7,
+     223.3,
+     1
+    ],
+    [
+     280.6,
+     220.8,
+     2
+    ],
+    [
+     286.4,
+     289.8,
+     1
+    ],
+    [
+     243.0,
+     282.0,
+     2
+    ],
+    [
+     262.6,
+     257.3,
+     1
+    ]
+   ],
+   "conf": 0.275,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000039.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000039.jpg",
+   "box": [
+    379.0,
+    166.9,
+    111.3,
+    154.5
+   ],
+   "points": [
+    [
+     400.5,
+     172.1,
+     2
+    ],
+    [
+     480.3,
+     172.4,
+     2
+    ],
+    [
+     476.6,
+     305.3,
+     1
+    ],
+    [
+     392.3,
+     298.6,
+     2
+    ],
+    [
+     434.8,
+     247.5,
+     2
+    ]
+   ],
+   "conf": 0.834,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000041.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000041.jpg",
+   "box": [
+    309.9,
+    78.8,
+    185.4,
+    262.5
+   ],
+   "points": [
+    [
+     315.2,
+     115.5,
+     2
+    ],
+    [
+     474.4,
+     82.0,
+     2
+    ],
+    [
+     460.6,
+     310.7,
+     1
+    ],
+    [
+     317.8,
+     327.8,
+     2
+    ],
+    [
+     388.1,
+     228.3,
+     2
+    ]
+   ],
+   "conf": 0.985,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000042.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000042.jpg",
+   "box": [
+    236.9,
+    78.0,
+    223.4,
+    303.9
+   ],
+   "points": [
+    [
+     294.2,
+     133.4,
+     2
+    ],
+    [
+     429.3,
+     130.0,
+     2
+    ],
+    [
+     428.1,
+     336.8,
+     2
+    ],
+    [
+     311.1,
+     353.3,
+     2
+    ],
+    [
+     375.8,
+     250.6,
+     2
+    ]
+   ],
+   "conf": 0.978,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000047.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000047.jpg",
+   "box": [
+    364.6,
+    146.2,
+    109.19999999999999,
+    159.40000000000003
+   ],
+   "points": [
+    [
+     367.2,
+     146.2,
+     2
+    ],
+    [
+     473.8,
+     148.8,
+     2
+    ],
+    [
+     469.2,
+     305.6,
+     2
+    ],
+    [
+     364.6,
+     301,
+     2
+    ],
+    [
+     416.6,
+     238.6,
+     2
+    ]
+   ],
+   "conf": 0.873,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_far/frame_000048.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000048.jpg",
+   "box": [
+    358.6,
+    127.0,
+    99.4,
+    118.4
+   ],
+   "points": [
+    [
+     383.1,
+     131.3,
+     2
+    ],
+    [
+     453.7,
+     128.8,
+     2
+    ],
+    [
+     443.4,
+     246.8,
+     1
+    ],
+    [
+     369.3,
+     248.1,
+     2
+    ],
+    [
+     408.4,
+     199.4,
+     2
+    ]
+   ],
+   "conf": 0.945,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000050.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000050.jpg",
+   "box": [
+    317.9,
+    208.4,
+    75.0,
+    94.3
+   ],
+   "points": [
+    [
+     331.1,
+     221.6,
+     2
+    ],
+    [
+     384.5,
+     220.2,
+     2
+    ],
+    [
+     387.4,
+     297.9,
+     1
+    ],
+    [
+     328.5,
+     295.1,
+     2
+    ],
+    [
+     358.8,
+     262.2,
+     1
+    ]
+   ],
+   "conf": 0.828,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000053.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000053.jpg",
+   "box": [
+    189.2,
+    312.0,
+    67.3,
+    59.6
+   ],
+   "points": [
+    [
+     199.0,
+     298.1,
+     1
+    ],
+    [
+     246.0,
+     301.0,
+     2
+    ],
+    [
+     250.3,
+     365.6,
+     1
+    ],
+    [
+     202.6,
+     365.1,
+     2
+    ],
+    [
+     226.6,
+     338.1,
+     1
+    ]
+   ],
+   "conf": 0.0,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000055.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000055.jpg",
+   "box": [
+    207.8,
+    335.3,
+    69.2,
+    61.3
+   ],
+   "points": [
+    [
+     207.8,
+     335.3,
+     2
+    ],
+    [
+     277.0,
+     335.3,
+     2
+    ],
+    [
+     277.0,
+     396.6,
+     2
+    ],
+    [
+     207.8,
+     396.6,
+     2
+    ],
+    [
+     242.4,
+     365.95,
+     2
+    ]
+   ],
+   "conf": 0.0,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000056.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000056.jpg",
+   "box": [
+    250.1,
+    347.7,
+    74.3,
+    65.1
+   ],
+   "points": [
+    [
+     265.4,
+     344.5,
+     2
+    ],
+    [
+     315.0,
+     346.0,
+     2
+    ],
+    [
+     301.2,
+     394.3,
+     1
+    ],
+    [
+     281.8,
+     387.9,
+     2
+    ],
+    [
+     285.2,
+     370.8,
+     1
+    ]
+   ],
+   "conf": 0.0,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000057.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000057.jpg",
+   "box": [
+    290.2,
+    302.6,
+    64.1,
+    76.4
+   ],
+   "points": [
+    [
+     308.2,
+     295.5,
+     2
+    ],
+    [
+     360.3,
+     302.0,
+     2
+    ],
+    [
+     347.1,
+     375.3,
+     1
+    ],
+    [
+     295.5,
+     380.3,
+     2
+    ],
+    [
+     325.2,
+     341.4,
+     1
+    ]
+   ],
+   "conf": 0.467,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000058.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000058.jpg",
+   "box": [
+    312.3,
+    276.3,
+    70.0,
+    87.2
+   ],
+   "points": [
+    [
+     333.8,
+     278.2,
+     2
+    ],
+    [
+     386.0,
+     277.1,
+     2
+    ],
+    [
+     378.0,
+     365.7,
+     1
+    ],
+    [
+     317.4,
+     363.1,
+     2
+    ],
+    [
+     352.9,
+     325.9,
+     1
+    ]
+   ],
+   "conf": 0.493,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_far/frame_000059.jpg": {
+   "url": "../../k230_target_project/captures/pos_far/frame_000059.jpg",
+   "box": [
+    320.1,
+    259.3,
+    79.5,
+    94.1
+   ],
+   "points": [
+    [
+     350.8,
+     260.6,
+     2
+    ],
+    [
+     404.0,
+     258.6,
+     2
+    ],
+    [
+     388.1,
+     357.7,
+     1
+    ],
+    [
+     324.3,
+     356.3,
+     2
+    ],
+    [
+     361.8,
+     315.5,
+     1
+    ]
+   ],
+   "conf": 0.722,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000025.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000025.jpg",
+   "box": [
+    181.8,
+    197.5,
+    125.39999999999998,
+    189.8
+   ],
+   "points": [
+    [
+     181.8,
+     210.5,
+     2
+    ],
+    [
+     295.2,
+     197.5,
+     2
+    ],
+    [
+     307.2,
+     371.4,
+     2
+    ],
+    [
+     186.2,
+     387.3,
+     2
+    ],
+    [
+     243,
+     303.3,
+     2
+    ]
+   ],
+   "conf": 0.958,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_light/frame_000026.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000026.jpg",
+   "box": [
+    177.4,
+    185.6,
+    177.8,
+    207.2
+   ],
+   "points": [
+    [
+     187.4,
+     220.4,
+     2
+    ],
+    [
+     313.5,
+     193.0,
+     2
+    ],
+    [
+     315.0,
+     370.6,
+     1
+    ],
+    [
+     196.4,
+     380.5,
+     2
+    ],
+    [
+     249.5,
+     306.0,
+     2
+    ]
+   ],
+   "conf": 0.674,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000027.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000027.jpg",
+   "box": [
+    221.5,
+    202.4,
+    118.1,
+    177.4
+   ],
+   "points": [
+    [
+     224.7,
+     214.3,
+     2
+    ],
+    [
+     327.2,
+     197.4,
+     2
+    ],
+    [
+     328.0,
+     364.1,
+     2
+    ],
+    [
+     222.0,
+     366.9,
+     2
+    ],
+    [
+     278.9,
+     297.3,
+     2
+    ]
+   ],
+   "conf": 0.702,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000028.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000028.jpg",
+   "box": [
+    218.5,
+    191.2,
+    115.7,
+    165.2
+   ],
+   "points": [
+    [
+     219.7,
+     194.9,
+     2
+    ],
+    [
+     323.9,
+     178.9,
+     2
+    ],
+    [
+     322.7,
+     345.3,
+     2
+    ],
+    [
+     214.6,
+     348.3,
+     2
+    ],
+    [
+     271.5,
+     282.5,
+     2
+    ]
+   ],
+   "conf": 0.602,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000029.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000029.jpg",
+   "box": [
+    226.2,
+    177.3,
+    116.7,
+    160.8
+   ],
+   "points": [
+    [
+     234.8,
+     186.7,
+     2
+    ],
+    [
+     333.7,
+     163.1,
+     2
+    ],
+    [
+     331.1,
+     326.5,
+     1
+    ],
+    [
+     222.6,
+     333.7,
+     2
+    ],
+    [
+     279.5,
+     270.5,
+     2
+    ]
+   ],
+   "conf": 0.655,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000030.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000030.jpg",
+   "box": [
+    245.2,
+    147.5,
+    109.6,
+    149.3
+   ],
+   "points": [
+    [
+     246.4,
+     161.3,
+     2
+    ],
+    [
+     342.6,
+     136.3,
+     2
+    ],
+    [
+     343.2,
+     288.6,
+     1
+    ],
+    [
+     242.2,
+     298.1,
+     2
+    ],
+    [
+     290.8,
+     241.2,
+     2
+    ]
+   ],
+   "conf": 0.725,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000031.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000031.jpg",
+   "box": [
+    252.9,
+    112.2,
+    111.4,
+    155.0
+   ],
+   "points": [
+    [
+     252.9,
+     132.6,
+     2
+    ],
+    [
+     342.7,
+     112.2,
+     2
+    ],
+    [
+     364.3,
+     245,
+     2
+    ],
+    [
+     274.1,
+     267.2,
+     2
+    ],
+    [
+     310.2,
+     198.9,
+     2
+    ]
+   ],
+   "conf": 0.553,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_light/frame_000032.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000032.jpg",
+   "box": [
+    263.8,
+    107.3,
+    117.9,
+    158.8
+   ],
+   "points": [
+    [
+     265.4,
+     125.8,
+     2
+    ],
+    [
+     369.1,
+     103.5,
+     2
+    ],
+    [
+     369.5,
+     264.5,
+     1
+    ],
+    [
+     259.5,
+     269.0,
+     2
+    ],
+    [
+     315.1,
+     205.2,
+     2
+    ]
+   ],
+   "conf": 0.5,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000033.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000033.jpg",
+   "box": [
+    265.3,
+    112.3,
+    118.5,
+    170.9
+   ],
+   "points": [
+    [
+     269.2,
+     126.4,
+     2
+    ],
+    [
+     382.8,
+     104.6,
+     2
+    ],
+    [
+     378.1,
+     276.2,
+     1
+    ],
+    [
+     264.8,
+     281.7,
+     2
+    ],
+    [
+     321.1,
+     209.9,
+     2
+    ]
+   ],
+   "conf": 0.615,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000034.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000034.jpg",
+   "box": [
+    247.8,
+    110.1,
+    118.4,
+    173.4
+   ],
+   "points": [
+    [
+     244.5,
+     127.1,
+     2
+    ],
+    [
+     352.4,
+     112.2,
+     2
+    ],
+    [
+     350.5,
+     278.3,
+     2
+    ],
+    [
+     241.3,
+     281.9,
+     2
+    ],
+    [
+     297.7,
+     216.6,
+     2
+    ]
+   ],
+   "conf": 0.573,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000035.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000035.jpg",
+   "box": [
+    203.2,
+    87.5,
+    174.9,
+    209.9
+   ],
+   "points": [
+    [
+     219.5,
+     123.0,
+     2
+    ],
+    [
+     337.7,
+     92.5,
+     2
+    ],
+    [
+     332.3,
+     271.8,
+     1
+    ],
+    [
+     214.9,
+     282.8,
+     2
+    ],
+    [
+     269.8,
+     210.4,
+     2
+    ]
+   ],
+   "conf": 0.939,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000036.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000036.jpg",
+   "box": [
+    172.4,
+    78.0,
+    179.5,
+    199.7
+   ],
+   "points": [
+    [
+     191.2,
+     91.5,
+     2
+    ],
+    [
+     323.0,
+     65.7,
+     2
+    ],
+    [
+     309.7,
+     254.8,
+     1
+    ],
+    [
+     192.7,
+     271.9,
+     2
+    ],
+    [
+     246.1,
+     196.1,
+     2
+    ]
+   ],
+   "conf": 0.793,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_light/frame_000037.jpg": {
+   "url": "../../k230_target_project/captures/pos_light/frame_000037.jpg",
+   "box": [
+    152.0,
+    52.8,
+    170.9,
+    219.4
+   ],
+   "points": [
+    [
+     163.0,
+     92.4,
+     2
+    ],
+    [
+     299.7,
+     58.8,
+     2
+    ],
+    [
+     287.2,
+     265.6,
+     1
+    ],
+    [
+     160.8,
+     284.3,
+     2
+    ],
+    [
+     223.6,
+     194.6,
+     2
+    ]
+   ],
+   "conf": 0.797,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000004.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000004.jpg",
+   "box": [
+    269.6,
+    232.9,
+    94.89999999999998,
+    138.1
+   ],
+   "points": [
+    [
+     269.6,
+     246,
+     2
+    ],
+    [
+     352.3,
+     232.9,
+     2
+    ],
+    [
+     364.5,
+     362.1,
+     2
+    ],
+    [
+     278.6,
+     371,
+     2
+    ],
+    [
+     316.1,
+     312.3,
+     2
+    ]
+   ],
+   "conf": 0.898,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_mid/frame_000008.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000008.jpg",
+   "box": [
+    299.6,
+    225.2,
+    111.7,
+    159.0
+   ],
+   "points": [
+    [
+     305.6,
+     235.9,
+     2
+    ],
+    [
+     397.9,
+     226.0,
+     2
+    ],
+    [
+     409.4,
+     370.3,
+     2
+    ],
+    [
+     310.8,
+     367.4,
+     2
+    ],
+    [
+     357.9,
+     311.3,
+     2
+    ]
+   ],
+   "conf": 0.819,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000009.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000009.jpg",
+   "box": [
+    306.9,
+    224.3,
+    110.9,
+    154.8
+   ],
+   "points": [
+    [
+     314.9,
+     237.1,
+     2
+    ],
+    [
+     404.7,
+     223.6,
+     2
+    ],
+    [
+     408.4,
+     360.5,
+     1
+    ],
+    [
+     312.3,
+     369.0,
+     2
+    ],
+    [
+     361.4,
+     314.6,
+     2
+    ]
+   ],
+   "conf": 0.908,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000010.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000010.jpg",
+   "box": [
+    324.5,
+    220.6,
+    117.6,
+    152.6
+   ],
+   "points": [
+    [
+     335.6,
+     232.7,
+     2
+    ],
+    [
+     433.3,
+     215.2,
+     2
+    ],
+    [
+     437.0,
+     357.4,
+     1
+    ],
+    [
+     340.7,
+     360.3,
+     2
+    ],
+    [
+     382.4,
+     305.9,
+     2
+    ]
+   ],
+   "conf": 0.878,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000011.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000011.jpg",
+   "box": [
+    346.0,
+    202.7,
+    115.2,
+    167.6
+   ],
+   "points": [
+    [
+     351.5,
+     224.6,
+     2
+    ],
+    [
+     454.6,
+     207.3,
+     2
+    ],
+    [
+     456.9,
+     362.4,
+     1
+    ],
+    [
+     353.5,
+     366.9,
+     2
+    ],
+    [
+     402.9,
+     303.3,
+     2
+    ]
+   ],
+   "conf": 0.893,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000012.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000012.jpg",
+   "box": [
+    361.1,
+    203.9,
+    115.0,
+    161.6
+   ],
+   "points": [
+    [
+     369.1,
+     228.5,
+     2
+    ],
+    [
+     466.7,
+     210.5,
+     2
+    ],
+    [
+     469.8,
+     358.6,
+     1
+    ],
+    [
+     371.0,
+     361.8,
+     2
+    ],
+    [
+     417.4,
+     302.6,
+     2
+    ]
+   ],
+   "conf": 0.866,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000015.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000015.jpg",
+   "box": [
+    400.7,
+    205.1,
+    121.2,
+    173.4
+   ],
+   "points": [
+    [
+     409.8,
+     219.6,
+     2
+    ],
+    [
+     515.8,
+     197.1,
+     2
+    ],
+    [
+     510.5,
+     363.9,
+     1
+    ],
+    [
+     402.3,
+     372.1,
+     2
+    ],
+    [
+     455.4,
+     304.3,
+     2
+    ]
+   ],
+   "conf": 0.844,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000025.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000025.jpg",
+   "box": [
+    489.5,
+    226.0,
+    121.6,
+    167.1
+   ],
+   "points": [
+    [
+     504.5,
+     234.6,
+     2
+    ],
+    [
+     597.1,
+     231.4,
+     2
+    ],
+    [
+     592.4,
+     371.6,
+     1
+    ],
+    [
+     504.3,
+     370.8,
+     2
+    ],
+    [
+     550.4,
+     310.6,
+     2
+    ]
+   ],
+   "conf": 0.832,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000028.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000028.jpg",
+   "box": [
+    465.5,
+    235.7,
+    97.20000000000005,
+    138.2
+   ],
+   "points": [
+    [
+     466.4,
+     237.1,
+     2
+    ],
+    [
+     562.7,
+     235.7,
+     2
+    ],
+    [
+     562.2,
+     373.9,
+     2
+    ],
+    [
+     465.5,
+     372,
+     2
+    ],
+    [
+     512.7,
+     314.3,
+     2
+    ]
+   ],
+   "conf": 0.889,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_mid/frame_000029.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000029.jpg",
+   "box": [
+    443.4,
+    224.0,
+    115.8,
+    157.1
+   ],
+   "points": [
+    [
+     457.4,
+     226.6,
+     2
+    ],
+    [
+     556.8,
+     216.3,
+     2
+    ],
+    [
+     554.2,
+     365.0,
+     1
+    ],
+    [
+     457.9,
+     365.3,
+     2
+    ],
+    [
+     504.4,
+     303.0,
+     2
+    ]
+   ],
+   "conf": 0.87,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000030.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000030.jpg",
+   "box": [
+    433.2,
+    223.7,
+    122.5,
+    153.9
+   ],
+   "points": [
+    [
+     440.2,
+     232.4,
+     2
+    ],
+    [
+     540.3,
+     210.2,
+     2
+    ],
+    [
+     546.1,
+     356.9,
+     1
+    ],
+    [
+     443.8,
+     364.0,
+     2
+    ],
+    [
+     486.9,
+     306.9,
+     2
+    ]
+   ],
+   "conf": 0.894,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000032.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000032.jpg",
+   "box": [
+    410.0,
+    220.9,
+    123.0,
+    153.9
+   ],
+   "points": [
+    [
+     421.1,
+     223.2,
+     2
+    ],
+    [
+     523.4,
+     207.2,
+     2
+    ],
+    [
+     520.6,
+     366.1,
+     1
+    ],
+    [
+     416.8,
+     370.7,
+     2
+    ],
+    [
+     471.6,
+     300.9,
+     2
+    ]
+   ],
+   "conf": 0.82,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000033.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000033.jpg",
+   "box": [
+    397.8,
+    224.9,
+    120.9,
+    163.6
+   ],
+   "points": [
+    [
+     410.5,
+     228.0,
+     2
+    ],
+    [
+     501.9,
+     222.5,
+     2
+    ],
+    [
+     493.3,
+     375.7,
+     1
+    ],
+    [
+     401.2,
+     372.3,
+     2
+    ],
+    [
+     454.3,
+     306.6,
+     2
+    ]
+   ],
+   "conf": 0.813,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000034.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000034.jpg",
+   "box": [
+    377.9,
+    221.1,
+    117.0,
+    159.6
+   ],
+   "points": [
+    [
+     383.0,
+     230.4,
+     2
+    ],
+    [
+     487.1,
+     213.4,
+     2
+    ],
+    [
+     490.4,
+     361.1,
+     1
+    ],
+    [
+     390.6,
+     364.3,
+     2
+    ],
+    [
+     436.4,
+     304.9,
+     2
+    ]
+   ],
+   "conf": 0.874,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000035.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000035.jpg",
+   "box": [
+    368.7,
+    207.2,
+    116.3,
+    158.6
+   ],
+   "points": [
+    [
+     374.0,
+     224.3,
+     2
+    ],
+    [
+     473.6,
+     202.9,
+     2
+    ],
+    [
+     470.8,
+     354.6,
+     1
+    ],
+    [
+     368.1,
+     366.7,
+     2
+    ],
+    [
+     417.8,
+     303.7,
+     2
+    ]
+   ],
+   "conf": 0.876,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000040.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000040.jpg",
+   "box": [
+    285.0,
+    224.2,
+    115.1,
+    156.6
+   ],
+   "points": [
+    [
+     291.7,
+     235.7,
+     2
+    ],
+    [
+     387.6,
+     213.3,
+     2
+    ],
+    [
+     393.0,
+     355.1,
+     1
+    ],
+    [
+     293.3,
+     363.9,
+     2
+    ],
+    [
+     333.3,
+     307.1,
+     2
+    ]
+   ],
+   "conf": 0.793,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000042.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000042.jpg",
+   "box": [
+    271.4,
+    224.9,
+    98.90000000000003,
+    143.70000000000002
+   ],
+   "points": [
+    [
+     271.4,
+     238.6,
+     2
+    ],
+    [
+     357.5,
+     224.9,
+     2
+    ],
+    [
+     370.3,
+     359.7,
+     2
+    ],
+    [
+     283.5,
+     368.6,
+     2
+    ],
+    [
+     319.7,
+     309,
+     2
+    ]
+   ],
+   "conf": 0.801,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_mid/frame_000045.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000045.jpg",
+   "box": [
+    219.7,
+    253.0,
+    122.7,
+    159.2
+   ],
+   "points": [
+    [
+     222.2,
+     253.8,
+     2
+    ],
+    [
+     319.4,
+     244.0,
+     2
+    ],
+    [
+     332.2,
+     383.8,
+     2
+    ],
+    [
+     241.1,
+     383.6,
+     2
+    ],
+    [
+     277.5,
+     334.8,
+     2
+    ]
+   ],
+   "conf": 0.399,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000047.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000047.jpg",
+   "box": [
+    192.6,
+    249.9,
+    111.0,
+    144.5
+   ],
+   "points": [
+    [
+     201.3,
+     261.9,
+     2
+    ],
+    [
+     291.1,
+     249.9,
+     2
+    ],
+    [
+     292.7,
+     378.7,
+     1
+    ],
+    [
+     206.4,
+     386.5,
+     2
+    ],
+    [
+     241.1,
+     336.3,
+     2
+    ]
+   ],
+   "conf": 0.609,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000048.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000048.jpg",
+   "box": [
+    183.4,
+    255.4,
+    102.3,
+    144.2
+   ],
+   "points": [
+    [
+     192.9,
+     261.3,
+     2
+    ],
+    [
+     277.5,
+     251.3,
+     2
+    ],
+    [
+     282.5,
+     375.1,
+     1
+    ],
+    [
+     198.6,
+     378.6,
+     2
+    ],
+    [
+     233.9,
+     335.1,
+     2
+    ]
+   ],
+   "conf": 0.569,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000052.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000052.jpg",
+   "box": [
+    166.6,
+    253.6,
+    101.9,
+    134.7
+   ],
+   "points": [
+    [
+     177.7,
+     259.0,
+     2
+    ],
+    [
+     261.7,
+     252.8,
+     2
+    ],
+    [
+     265.6,
+     373.4,
+     2
+    ],
+    [
+     185.0,
+     375.7,
+     2
+    ],
+    [
+     219.7,
+     332.3,
+     2
+    ]
+   ],
+   "conf": 0.373,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000053.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000053.jpg",
+   "box": [
+    177.3,
+    254.7,
+    103.8,
+    147.6
+   ],
+   "points": [
+    [
+     181.0,
+     261.7,
+     2
+    ],
+    [
+     265.3,
+     256.5,
+     2
+    ],
+    [
+     270.6,
+     372.2,
+     2
+    ],
+    [
+     201.1,
+     368.7,
+     2
+    ],
+    [
+     227.3,
+     331.3,
+     2
+    ]
+   ],
+   "conf": 0.459,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000057.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000057.jpg",
+   "box": [
+    231.7,
+    231.0,
+    104.7,
+    140.1
+   ],
+   "points": [
+    [
+     251.7,
+     238.7,
+     2
+    ],
+    [
+     335.7,
+     225.7,
+     2
+    ],
+    [
+     335.6,
+     353.9,
+     1
+    ],
+    [
+     243.9,
+     360.7,
+     2
+    ],
+    [
+     288.2,
+     308.2,
+     2
+    ]
+   ],
+   "conf": 0.817,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000058.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000058.jpg",
+   "box": [
+    246.5,
+    223.2,
+    105.5,
+    140.0
+   ],
+   "points": [
+    [
+     256.3,
+     229.1,
+     2
+    ],
+    [
+     343.3,
+     213.9,
+     2
+    ],
+    [
+     349.1,
+     347.4,
+     1
+    ],
+    [
+     257.9,
+     352.9,
+     2
+    ],
+    [
+     299.0,
+     304.4,
+     2
+    ]
+   ],
+   "conf": 0.898,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_mid/frame_000059.jpg": {
+   "url": "../../k230_target_project/captures/pos_mid/frame_000059.jpg",
+   "box": [
+    269.1,
+    213.9,
+    105.7,
+    156.6
+   ],
+   "points": [
+    [
+     275.8,
+     225.2,
+     2
+    ],
+    [
+     364.7,
+     214.0,
+     2
+    ],
+    [
+     369.7,
+     350.8,
+     2
+    ],
+    [
+     280.4,
+     348.9,
+     2
+    ],
+    [
+     323.0,
+     296.9,
+     2
+    ]
+   ],
+   "conf": 0.787,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000001.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000001.jpg",
+   "box": [
+    249.7,
+    0,
+    152.2,
+    210.6
+   ],
+   "points": [
+    [
+     262.4,
+     0,
+     2
+    ],
+    [
+     401.9,
+     1.6,
+     2
+    ],
+    [
+     393.7,
+     210.6,
+     2
+    ],
+    [
+     249.7,
+     192.5,
+     2
+    ],
+    [
+     327.8,
+     111.1,
+     2
+    ]
+   ],
+   "conf": 0.982,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_near/frame_000002.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000002.jpg",
+   "box": [
+    246.0,
+    0.0,
+    184.6,
+    196.7
+   ],
+   "points": [
+    [
+     270.2,
+     4.0,
+     2
+    ],
+    [
+     402.9,
+     0.0,
+     2
+    ],
+    [
+     394.8,
+     177.5,
+     1
+    ],
+    [
+     267.5,
+     192.8,
+     2
+    ],
+    [
+     329.5,
+     98.0,
+     2
+    ]
+   ],
+   "conf": 0.924,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000003.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000003.jpg",
+   "box": [
+    246.4,
+    0.0,
+    188.2,
+    185.9
+   ],
+   "points": [
+    [
+     299.9,
+     0.0,
+     2
+    ],
+    [
+     400.3,
+     0.0,
+     2
+    ],
+    [
+     390.7,
+     155.4,
+     1
+    ],
+    [
+     278.7,
+     154.3,
+     2
+    ],
+    [
+     343.4,
+     73.7,
+     2
+    ]
+   ],
+   "conf": 0.743,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000004.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000004.jpg",
+   "box": [
+    247.5,
+    0.0,
+    196.8,
+    165.9
+   ],
+   "points": [
+    [
+     289.2,
+     1.0,
+     2
+    ],
+    [
+     386.2,
+     0.0,
+     2
+    ],
+    [
+     391.2,
+     124.7,
+     1
+    ],
+    [
+     282.5,
+     148.4,
+     2
+    ],
+    [
+     330.1,
+     68.3,
+     2
+    ]
+   ],
+   "conf": 0.876,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000006.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000006.jpg",
+   "box": [
+    243.8,
+    0.0,
+    182.9,
+    188.3
+   ],
+   "points": [
+    [
+     281.1,
+     0.0,
+     2
+    ],
+    [
+     393.6,
+     0.0,
+     2
+    ],
+    [
+     385.7,
+     163.6,
+     1
+    ],
+    [
+     267.3,
+     164.3,
+     2
+    ],
+    [
+     335.0,
+     76.4,
+     2
+    ]
+   ],
+   "conf": 0.804,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000007.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000007.jpg",
+   "box": [
+    235.4,
+    0.0,
+    183.6,
+    214.1
+   ],
+   "points": [
+    [
+     259.8,
+     1.3,
+     2
+    ],
+    [
+     398.2,
+     0.0,
+     2
+    ],
+    [
+     389.2,
+     187.1,
+     2
+    ],
+    [
+     256.0,
+     204.2,
+     2
+    ],
+    [
+     326.0,
+     108.1,
+     2
+    ]
+   ],
+   "conf": 0.96,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000008.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000008.jpg",
+   "box": [
+    234.9,
+    0.0,
+    181.4,
+    244.7
+   ],
+   "points": [
+    [
+     252.4,
+     8.4,
+     2
+    ],
+    [
+     393.2,
+     0.0,
+     2
+    ],
+    [
+     391.3,
+     199.6,
+     2
+    ],
+    [
+     255.8,
+     216.2,
+     2
+    ],
+    [
+     322.9,
+     125.7,
+     2
+    ]
+   ],
+   "conf": 0.955,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000013.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000013.jpg",
+   "box": [
+    233.9,
+    176.2,
+    187.2,
+    261.9
+   ],
+   "points": [
+    [
+     248.0,
+     209.6,
+     2
+    ],
+    [
+     394.4,
+     171.0,
+     2
+    ],
+    [
+     392.4,
+     396.2,
+     2
+    ],
+    [
+     251.5,
+     415.0,
+     2
+    ],
+    [
+     319.1,
+     322.7,
+     2
+    ]
+   ],
+   "conf": 0.978,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000015.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000015.jpg",
+   "box": [
+    230.0,
+    247.1,
+    188.4,
+    232.9
+   ],
+   "points": [
+    [
+     237.3,
+     275.4,
+     2
+    ],
+    [
+     387.0,
+     245.3,
+     2
+    ],
+    [
+     376.1,
+     461.3,
+     2
+    ],
+    [
+     245.9,
+     479.1,
+     2
+    ],
+    [
+     309.7,
+     385.8,
+     2
+    ]
+   ],
+   "conf": 0.983,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000026.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000026.jpg",
+   "box": [
+    308.4,
+    243.7,
+    198.1,
+    236.3
+   ],
+   "points": [
+    [
+     313.6,
+     272.4,
+     2
+    ],
+    [
+     463.5,
+     240.4,
+     2
+    ],
+    [
+     457.7,
+     461.7,
+     2
+    ],
+    [
+     319.9,
+     480.0,
+     2
+    ],
+    [
+     387.4,
+     384.4,
+     2
+    ]
+   ],
+   "conf": 0.965,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000027.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000027.jpg",
+   "box": [
+    312.5,
+    208.4,
+    203.5,
+    264.6
+   ],
+   "points": [
+    [
+     312.8,
+     239.3,
+     2
+    ],
+    [
+     474.7,
+     209.3,
+     2
+    ],
+    [
+     464.5,
+     435.9,
+     2
+    ],
+    [
+     328.1,
+     453.7,
+     2
+    ],
+    [
+     392.6,
+     355.2,
+     2
+    ]
+   ],
+   "conf": 0.992,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000028.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000028.jpg",
+   "box": [
+    313.4,
+    179.3,
+    201.3,
+    262.4
+   ],
+   "points": [
+    [
+     329.3,
+     208.5,
+     2
+    ],
+    [
+     479.0,
+     179.0,
+     2
+    ],
+    [
+     468.1,
+     394.6,
+     1
+    ],
+    [
+     335.0,
+     413.6,
+     2
+    ],
+    [
+     398.3,
+     322.3,
+     2
+    ]
+   ],
+   "conf": 0.995,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000047.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000047.jpg",
+   "box": [
+    160.1,
+    267.1,
+    193.0,
+    212.9
+   ],
+   "points": [
+    [
+     165.3,
+     285.7,
+     2
+    ],
+    [
+     302.5,
+     253.9,
+     2
+    ],
+    [
+     297.8,
+     462.1,
+     2
+    ],
+    [
+     167.7,
+     480.0,
+     2
+    ],
+    [
+     230.3,
+     401.7,
+     2
+    ]
+   ],
+   "conf": 0.951,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000048.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000048.jpg",
+   "box": [
+    180.8,
+    264.3,
+    181.4,
+    215.7
+   ],
+   "points": [
+    [
+     184.7,
+     281.1,
+     2
+    ],
+    [
+     324.5,
+     251.8,
+     2
+    ],
+    [
+     319.4,
+     464.8,
+     2
+    ],
+    [
+     190.9,
+     480.0,
+     2
+    ],
+    [
+     254.6,
+     399.5,
+     2
+    ]
+   ],
+   "conf": 0.98,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000052.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000052.jpg",
+   "box": [
+    247.0,
+    271.3,
+    198.0,
+    208.7
+   ],
+   "points": [
+    [
+     256.3,
+     285.4,
+     2
+    ],
+    [
+     407.2,
+     256.3,
+     2
+    ],
+    [
+     396.2,
+     461.5,
+     1
+    ],
+    [
+     270.3,
+     478.4,
+     2
+    ],
+    [
+     329.0,
+     387.7,
+     2
+    ]
+   ],
+   "conf": 0.987,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000053.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000053.jpg",
+   "box": [
+    277.4,
+    232.4,
+    174.4,
+    238.0
+   ],
+   "points": [
+    [
+     288.0,
+     259.1,
+     2
+    ],
+    [
+     431.7,
+     236.0,
+     2
+    ],
+    [
+     425.9,
+     457.8,
+     2
+    ],
+    [
+     295.9,
+     468.8,
+     2
+    ],
+    [
+     362.1,
+     377.2,
+     2
+    ]
+   ],
+   "conf": 0.946,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000054.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000054.jpg",
+   "box": [
+    309.3,
+    222.8,
+    176.7,
+    239.1
+   ],
+   "points": [
+    [
+     312.2,
+     248.1,
+     2
+    ],
+    [
+     464.8,
+     214.3,
+     2
+    ],
+    [
+     456.3,
+     432.1,
+     1
+    ],
+    [
+     320.1,
+     452.4,
+     2
+    ],
+    [
+     383.9,
+     355.1,
+     2
+    ]
+   ],
+   "conf": 0.968,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000055.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000055.jpg",
+   "box": [
+    344.8,
+    191.4,
+    194.9,
+    236.0
+   ],
+   "points": [
+    [
+     359.4,
+     210.1,
+     2
+    ],
+    [
+     506.0,
+     181.7,
+     2
+    ],
+    [
+     497.2,
+     405.1,
+     2
+    ],
+    [
+     360.3,
+     428.3,
+     2
+    ],
+    [
+     433.3,
+     333.1,
+     2
+    ]
+   ],
+   "conf": 0.953,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000057.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000057.jpg",
+   "box": [
+    406.6,
+    156.4,
+    196.1,
+    245.9
+   ],
+   "points": [
+    [
+     428.9,
+     183.9,
+     2
+    ],
+    [
+     573.4,
+     154.9,
+     2
+    ],
+    [
+     561.0,
+     375.8,
+     2
+    ],
+    [
+     427.3,
+     400.1,
+     2
+    ],
+    [
+     500.0,
+     300.1,
+     2
+    ]
+   ],
+   "conf": 0.967,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_near/frame_000059.jpg": {
+   "url": "../../k230_target_project/captures/pos_near/frame_000059.jpg",
+   "box": [
+    441.2,
+    116.8,
+    196.8,
+    257.3
+   ],
+   "points": [
+    [
+     472.6,
+     145.5,
+     2
+    ],
+    [
+     599.9,
+     137.4,
+     2
+    ],
+    [
+     586.9,
+     352.3,
+     2
+    ],
+    [
+     472.0,
+     355.3,
+     2
+    ],
+    [
+     540.5,
+     265.3,
+     2
+    ]
+   ],
+   "conf": 0.646,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000006.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000006.jpg",
+   "box": [
+    267.7,
+    87.1,
+    140.7,
+    203.29999999999998
+   ],
+   "points": [
+    [
+     280.7,
+     87.1,
+     2
+    ],
+    [
+     408.4,
+     101.8,
+     2
+    ],
+    [
+     376.6,
+     290.4,
+     2
+    ],
+    [
+     267.7,
+     280.6,
+     2
+    ],
+    [
+     337.3,
+     205.5,
+     2
+    ]
+   ],
+   "conf": 0.825,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_occl/frame_000007.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000007.jpg",
+   "box": [
+    245.2,
+    78.0,
+    180.5,
+    235.2
+   ],
+   "points": [
+    [
+     259.8,
+     94.1,
+     2
+    ],
+    [
+     405.4,
+     65.2,
+     2
+    ],
+    [
+     389.8,
+     284.4,
+     2
+    ],
+    [
+     262.1,
+     299.9,
+     2
+    ],
+    [
+     327.5,
+     210.7,
+     2
+    ]
+   ],
+   "conf": 0.92,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000009.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000009.jpg",
+   "box": [
+    241.0,
+    75.1,
+    187.2,
+    224.8
+   ],
+   "points": [
+    [
+     270.5,
+     96.3,
+     2
+    ],
+    [
+     393.7,
+     79.8,
+     2
+    ],
+    [
+     371.2,
+     270.4,
+     1
+    ],
+    [
+     263.7,
+     284.2,
+     2
+    ],
+    [
+     319.9,
+     206.6,
+     2
+    ]
+   ],
+   "conf": 0.791,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000011.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000011.jpg",
+   "box": [
+    240.6,
+    69.6,
+    185.6,
+    219.5
+   ],
+   "points": [
+    [
+     260.9,
+     88.6,
+     2
+    ],
+    [
+     378.4,
+     81.3,
+     2
+    ],
+    [
+     352.3,
+     263.5,
+     2
+    ],
+    [
+     257.7,
+     283.2,
+     2
+    ],
+    [
+     313.6,
+     203.1,
+     2
+    ]
+   ],
+   "conf": 0.883,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000012.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000012.jpg",
+   "box": [
+    242.3,
+    53.9,
+    184.5,
+    228.9
+   ],
+   "points": [
+    [
+     260.7,
+     90.4,
+     2
+    ],
+    [
+     385.0,
+     75.8,
+     2
+    ],
+    [
+     364.6,
+     254.3,
+     1
+    ],
+    [
+     266.5,
+     264.9,
+     2
+    ],
+    [
+     314.3,
+     194.2,
+     2
+    ]
+   ],
+   "conf": 0.924,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000014.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000014.jpg",
+   "box": [
+    239.5,
+    70.8,
+    186.1,
+    217.7
+   ],
+   "points": [
+    [
+     260.5,
+     91.2,
+     2
+    ],
+    [
+     390.7,
+     73.8,
+     2
+    ],
+    [
+     369.9,
+     251.5,
+     1
+    ],
+    [
+     266.3,
+     266.2,
+     2
+    ],
+    [
+     314.0,
+     192.6,
+     2
+    ]
+   ],
+   "conf": 0.846,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000015.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000015.jpg",
+   "box": [
+    241.3,
+    62.7,
+    187.6,
+    233.3
+   ],
+   "points": [
+    [
+     262.2,
+     81.5,
+     2
+    ],
+    [
+     389.1,
+     67.5,
+     2
+    ],
+    [
+     362.5,
+     261.7,
+     2
+    ],
+    [
+     262.4,
+     278.8,
+     2
+    ],
+    [
+     322.7,
+     197.0,
+     2
+    ]
+   ],
+   "conf": 0.895,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000016.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000016.jpg",
+   "box": [
+    237.4,
+    63.6,
+    185.1,
+    237.8
+   ],
+   "points": [
+    [
+     266.1,
+     82.4,
+     2
+    ],
+    [
+     385.6,
+     66.5,
+     2
+    ],
+    [
+     365.6,
+     263.5,
+     2
+    ],
+    [
+     257.7,
+     278.2,
+     2
+    ],
+    [
+     322.8,
+     197.2,
+     2
+    ]
+   ],
+   "conf": 0.856,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000017.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000017.jpg",
+   "box": [
+    238.0,
+    62.0,
+    178.1,
+    246.2
+   ],
+   "points": [
+    [
+     258.2,
+     83.6,
+     2
+    ],
+    [
+     400.9,
+     60.1,
+     2
+    ],
+    [
+     385.7,
+     263.3,
+     1
+    ],
+    [
+     261.5,
+     284.1,
+     2
+    ],
+    [
+     321.9,
+     196.1,
+     2
+    ]
+   ],
+   "conf": 0.932,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000018.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000018.jpg",
+   "box": [
+    242.1,
+    62.5,
+    179.5,
+    246.7
+   ],
+   "points": [
+    [
+     258.5,
+     77.5,
+     2
+    ],
+    [
+     393.5,
+     55.1,
+     2
+    ],
+    [
+     386.2,
+     276.5,
+     2
+    ],
+    [
+     255.4,
+     291.1,
+     2
+    ],
+    [
+     329.9,
+     198.7,
+     2
+    ]
+   ],
+   "conf": 0.97,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000020.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000020.jpg",
+   "box": [
+    243.1,
+    58.8,
+    175.7,
+    242.8
+   ],
+   "points": [
+    [
+     254.8,
+     92.0,
+     2
+    ],
+    [
+     396.8,
+     59.7,
+     2
+    ],
+    [
+     387.7,
+     268.0,
+     1
+    ],
+    [
+     253.3,
+     287.9,
+     2
+    ],
+    [
+     318.6,
+     195.8,
+     2
+    ]
+   ],
+   "conf": 0.956,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000021.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000021.jpg",
+   "box": [
+    239.8,
+    49.7,
+    178.3,
+    229.6
+   ],
+   "points": [
+    [
+     258.7,
+     84.4,
+     2
+    ],
+    [
+     387.2,
+     72.4,
+     2
+    ],
+    [
+     365.2,
+     256.9,
+     2
+    ],
+    [
+     264.3,
+     266.7,
+     2
+    ],
+    [
+     314.6,
+     190.2,
+     2
+    ]
+   ],
+   "conf": 0.84,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000022.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000022.jpg",
+   "box": [
+    250.9,
+    64.5,
+    132.6,
+    207.60000000000002
+   ],
+   "points": [
+    [
+     267.6,
+     64.5,
+     2
+    ],
+    [
+     383.5,
+     86.9,
+     2
+    ],
+    [
+     343.3,
+     272.1,
+     2
+    ],
+    [
+     250.9,
+     262.3,
+     2
+    ],
+    [
+     323.7,
+     186.9,
+     2
+    ]
+   ],
+   "conf": 0.878,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_occl/frame_000023.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000023.jpg",
+   "box": [
+    240.9,
+    49.9,
+    181.4,
+    231.2
+   ],
+   "points": [
+    [
+     263.2,
+     86.3,
+     2
+    ],
+    [
+     388.8,
+     66.6,
+     2
+    ],
+    [
+     370.5,
+     249.5,
+     1
+    ],
+    [
+     260.9,
+     272.3,
+     2
+    ],
+    [
+     319.1,
+     191.2,
+     2
+    ]
+   ],
+   "conf": 0.912,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000024.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000024.jpg",
+   "box": [
+    239.3,
+    49.3,
+    181.8,
+    232.1
+   ],
+   "points": [
+    [
+     262.0,
+     78.2,
+     2
+    ],
+    [
+     387.2,
+     59.7,
+     2
+    ],
+    [
+     366.7,
+     244.9,
+     1
+    ],
+    [
+     261.7,
+     267.5,
+     2
+    ],
+    [
+     320.3,
+     189.0,
+     2
+    ]
+   ],
+   "conf": 0.919,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000026.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000026.jpg",
+   "box": [
+    235.7,
+    44.8,
+    179.3,
+    225.7
+   ],
+   "points": [
+    [
+     266.3,
+     70.6,
+     2
+    ],
+    [
+     392.5,
+     56.9,
+     2
+    ],
+    [
+     370.9,
+     253.0,
+     1
+    ],
+    [
+     258.7,
+     267.8,
+     2
+    ],
+    [
+     323.0,
+     183.8,
+     2
+    ]
+   ],
+   "conf": 0.876,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000028.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000028.jpg",
+   "box": [
+    232.9,
+    47.4,
+    185.9,
+    234.7
+   ],
+   "points": [
+    [
+     254.1,
+     76.2,
+     2
+    ],
+    [
+     395.9,
+     53.8,
+     2
+    ],
+    [
+     380.8,
+     261.7,
+     1
+    ],
+    [
+     254.5,
+     278.4,
+     2
+    ],
+    [
+     319.4,
+     188.3,
+     2
+    ]
+   ],
+   "conf": 0.966,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000030.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000030.jpg",
+   "box": [
+    238.9,
+    54.6,
+    182.9,
+    248.0
+   ],
+   "points": [
+    [
+     255.3,
+     90.1,
+     2
+    ],
+    [
+     398.4,
+     62.4,
+     2
+    ],
+    [
+     384.9,
+     267.8,
+     1
+    ],
+    [
+     252.4,
+     287.5,
+     2
+    ],
+    [
+     318.0,
+     194.1,
+     2
+    ]
+   ],
+   "conf": 0.975,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000031.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000031.jpg",
+   "box": [
+    236.2,
+    66.5,
+    187.2,
+    233.7
+   ],
+   "points": [
+    [
+     262.0,
+     96.6,
+     2
+    ],
+    [
+     383.0,
+     81.8,
+     2
+    ],
+    [
+     370.7,
+     278.6,
+     2
+    ],
+    [
+     253.4,
+     283.5,
+     2
+    ],
+    [
+     316.6,
+     201.5,
+     2
+    ]
+   ],
+   "conf": 0.794,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000032.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000032.jpg",
+   "box": [
+    241.3,
+    69.1,
+    176.3,
+    226.7
+   ],
+   "points": [
+    [
+     270.3,
+     112.6,
+     2
+    ],
+    [
+     386.9,
+     85.7,
+     2
+    ],
+    [
+     383.1,
+     274.5,
+     1
+    ],
+    [
+     255.4,
+     289.4,
+     2
+    ],
+    [
+     320.4,
+     207.0,
+     2
+    ]
+   ],
+   "conf": 0.808,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000033.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000033.jpg",
+   "box": [
+    244.9,
+    72.5,
+    169.9,
+    219.3
+   ],
+   "points": [
+    [
+     271.4,
+     104.7,
+     2
+    ],
+    [
+     387.0,
+     82.5,
+     2
+    ],
+    [
+     384.6,
+     273.4,
+     1
+    ],
+    [
+     255.2,
+     286.2,
+     2
+    ],
+    [
+     323.9,
+     203.0,
+     2
+    ]
+   ],
+   "conf": 0.724,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000034.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000034.jpg",
+   "box": [
+    240.5,
+    107.9,
+    175.9,
+    189.9
+   ],
+   "points": [
+    [
+     275.8,
+     130.4,
+     2
+    ],
+    [
+     382.4,
+     99.6,
+     2
+    ],
+    [
+     382.8,
+     273.7,
+     1
+    ],
+    [
+     263.0,
+     287.2,
+     2
+    ],
+    [
+     318.4,
+     211.3,
+     2
+    ]
+   ],
+   "conf": 0.605,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000036.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000036.jpg",
+   "box": [
+    243.9,
+    100.8,
+    174.8,
+    195.1
+   ],
+   "points": [
+    [
+     274.4,
+     124.6,
+     2
+    ],
+    [
+     381.7,
+     96.6,
+     2
+    ],
+    [
+     385.5,
+     273.2,
+     1
+    ],
+    [
+     264.4,
+     287.2,
+     2
+    ],
+    [
+     321.7,
+     210.0,
+     2
+    ]
+   ],
+   "conf": 0.813,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000038.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000038.jpg",
+   "box": [
+    246.9,
+    113.3,
+    173.0,
+    185.3
+   ],
+   "points": [
+    [
+     285.2,
+     139.8,
+     2
+    ],
+    [
+     386.3,
+     115.9,
+     2
+    ],
+    [
+     390.0,
+     273.8,
+     1
+    ],
+    [
+     278.5,
+     277.5,
+     2
+    ],
+    [
+     326.1,
+     214.1,
+     2
+    ]
+   ],
+   "conf": 0.728,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_occl/frame_000039.jpg": {
+   "url": "../../k230_target_project/captures/pos_occl/frame_000039.jpg",
+   "box": [
+    254.2,
+    44.0,
+    196.9,
+    235.4
+   ],
+   "points": [
+    [
+     277.0,
+     63.7,
+     2
+    ],
+    [
+     403.1,
+     44.9,
+     2
+    ],
+    [
+     390.5,
+     252.7,
+     2
+    ],
+    [
+     276.9,
+     261.1,
+     2
+    ],
+    [
+     339.8,
+     177.4,
+     2
+    ]
+   ],
+   "conf": 0.949,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000001.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000001.jpg",
+   "box": [
+    253.8,
+    74.4,
+    67.0,
+    107.1
+   ],
+   "points": [
+    [
+     253.8,
+     74.4,
+     2
+    ],
+    [
+     320.8,
+     77.4,
+     2
+    ],
+    [
+     320.8,
+     180.3,
+     2
+    ],
+    [
+     254.2,
+     181.5,
+     2
+    ],
+    [
+     288.3,
+     137.7,
+     2
+    ]
+   ],
+   "conf": 0.876,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_robot/frame_000002.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000002.jpg",
+   "box": [
+    247.5,
+    65.2,
+    97.3,
+    116.6
+   ],
+   "points": [
+    [
+     273.3,
+     66.1,
+     2
+    ],
+    [
+     339.2,
+     62.2,
+     2
+    ],
+    [
+     336.3,
+     168.7,
+     1
+    ],
+    [
+     261.2,
+     170.9,
+     2
+    ],
+    [
+     296.3,
+     129.9,
+     1
+    ]
+   ],
+   "conf": 0.936,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000006.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000006.jpg",
+   "box": [
+    326.5,
+    140.6,
+    86.7,
+    129.5
+   ],
+   "points": [
+    [
+     336.3,
+     147.5,
+     2
+    ],
+    [
+     404.8,
+     146.9,
+     2
+    ],
+    [
+     409.0,
+     259.4,
+     2
+    ],
+    [
+     340.1,
+     257.9,
+     2
+    ],
+    [
+     371.7,
+     214.4,
+     2
+    ]
+   ],
+   "conf": 0.66,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000009.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000009.jpg",
+   "box": [
+    266.0,
+    209.4,
+    99.2,
+    133.4
+   ],
+   "points": [
+    [
+     290.0,
+     221.0,
+     2
+    ],
+    [
+     361.6,
+     212.1,
+     2
+    ],
+    [
+     364.3,
+     332.7,
+     1
+    ],
+    [
+     282.9,
+     327.5,
+     2
+    ],
+    [
+     319.7,
+     285.4,
+     2
+    ]
+   ],
+   "conf": 0.816,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000012.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000012.jpg",
+   "box": [
+    346.6,
+    168.7,
+    117.5,
+    151.3
+   ],
+   "points": [
+    [
+     370.6,
+     171.8,
+     2
+    ],
+    [
+     446.1,
+     173.6,
+     2
+    ],
+    [
+     439.8,
+     302.6,
+     1
+    ],
+    [
+     359.7,
+     297.3,
+     2
+    ],
+    [
+     401.2,
+     247.6,
+     2
+    ]
+   ],
+   "conf": 0.832,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000014.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000014.jpg",
+   "box": [
+    339.7,
+    199.5,
+    104.3,
+    131.1
+   ],
+   "points": [
+    [
+     358.0,
+     210.4,
+     2
+    ],
+    [
+     428.0,
+     215.4,
+     2
+    ],
+    [
+     428.9,
+     329.5,
+     2
+    ],
+    [
+     360.3,
+     321.6,
+     2
+    ],
+    [
+     391.5,
+     276.2,
+     1
+    ]
+   ],
+   "conf": 0.883,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000017.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000017.jpg",
+   "box": [
+    308.1,
+    207.4,
+    99.7,
+    135.4
+   ],
+   "points": [
+    [
+     328.5,
+     215.7,
+     2
+    ],
+    [
+     399.7,
+     211.5,
+     2
+    ],
+    [
+     397.3,
+     335.3,
+     1
+    ],
+    [
+     322.2,
+     327.1,
+     2
+    ],
+    [
+     359.3,
+     280.7,
+     1
+    ]
+   ],
+   "conf": 0.891,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000019.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000019.jpg",
+   "box": [
+    302.6,
+    190.5,
+    104.1,
+    138.5
+   ],
+   "points": [
+    [
+     319.7,
+     194.5,
+     2
+    ],
+    [
+     391.1,
+     191.6,
+     2
+    ],
+    [
+     397.1,
+     313.4,
+     1
+    ],
+    [
+     314.6,
+     309.8,
+     2
+    ],
+    [
+     355.8,
+     262.3,
+     2
+    ]
+   ],
+   "conf": 0.849,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000022.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000022.jpg",
+   "box": [
+    301.8,
+    170.1,
+    92.0,
+    133.4
+   ],
+   "points": [
+    [
+     304.3,
+     170.1,
+     2
+    ],
+    [
+     393.8,
+     172.7,
+     2
+    ],
+    [
+     388.7,
+     303.5,
+     2
+    ],
+    [
+     301.8,
+     299.1,
+     2
+    ],
+    [
+     346.7,
+     246.9,
+     2
+    ]
+   ],
+   "conf": 0.922,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_robot/frame_000023.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000023.jpg",
+   "box": [
+    286.8,
+    184.2,
+    106.5,
+    153.8
+   ],
+   "points": [
+    [
+     298.8,
+     187.1,
+     2
+    ],
+    [
+     385.0,
+     187.6,
+     2
+    ],
+    [
+     387.5,
+     319.5,
+     2
+    ],
+    [
+     305.6,
+     315.2,
+     2
+    ],
+    [
+     343.1,
+     263.7,
+     2
+    ]
+   ],
+   "conf": 0.832,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000029.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000029.jpg",
+   "box": [
+    312.2,
+    192.3,
+    108.7,
+    133.6
+   ],
+   "points": [
+    [
+     339.3,
+     194.7,
+     2
+    ],
+    [
+     417.4,
+     187.8,
+     2
+    ],
+    [
+     412.7,
+     325.4,
+     1
+    ],
+    [
+     320.7,
+     323.0,
+     2
+    ],
+    [
+     369.6,
+     267.7,
+     2
+    ]
+   ],
+   "conf": 0.786,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000030.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000030.jpg",
+   "box": [
+    310.5,
+    206.9,
+    100.6,
+    146.1
+   ],
+   "points": [
+    [
+     329.0,
+     205.1,
+     2
+    ],
+    [
+     409.6,
+     199.5,
+     2
+    ],
+    [
+     404.9,
+     331.8,
+     1
+    ],
+    [
+     319.6,
+     334.0,
+     2
+    ],
+    [
+     361.7,
+     284.8,
+     2
+    ]
+   ],
+   "conf": 0.918,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000033.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000033.jpg",
+   "box": [
+    295.3,
+    239.5,
+    110.2,
+    133.8
+   ],
+   "points": [
+    [
+     315.7,
+     241.9,
+     2
+    ],
+    [
+     400.1,
+     233.3,
+     2
+    ],
+    [
+     394.2,
+     368.7,
+     1
+    ],
+    [
+     310.6,
+     368.6,
+     2
+    ],
+    [
+     351.5,
+     317.2,
+     2
+    ]
+   ],
+   "conf": 0.856,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000034.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000034.jpg",
+   "box": [
+    311.6,
+    239.2,
+    105.4,
+    148.9
+   ],
+   "points": [
+    [
+     330.0,
+     240.9,
+     2
+    ],
+    [
+     413.2,
+     231.8,
+     2
+    ],
+    [
+     409.8,
+     367.0,
+     1
+    ],
+    [
+     324.1,
+     368.4,
+     2
+    ],
+    [
+     365.3,
+     317.9,
+     2
+    ]
+   ],
+   "conf": 0.83,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000035.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000035.jpg",
+   "box": [
+    309.7,
+    226.1,
+    111.3,
+    157.1
+   ],
+   "points": [
+    [
+     327.6,
+     237.3,
+     2
+    ],
+    [
+     409.8,
+     228.8,
+     2
+    ],
+    [
+     406.0,
+     364.0,
+     1
+    ],
+    [
+     320.6,
+     365.6,
+     2
+    ],
+    [
+     363.7,
+     314.6,
+     2
+    ]
+   ],
+   "conf": 0.886,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000041.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000041.jpg",
+   "box": [
+    285.7,
+    205.4,
+    119.7,
+    167.2
+   ],
+   "points": [
+    [
+     298.3,
+     217.4,
+     2
+    ],
+    [
+     392.8,
+     205.4,
+     2
+    ],
+    [
+     389.4,
+     350.7,
+     1
+    ],
+    [
+     290.9,
+     357.4,
+     2
+    ],
+    [
+     340.0,
+     298.3,
+     2
+    ]
+   ],
+   "conf": 0.872,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000046.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000046.jpg",
+   "box": [
+    300.9,
+    185,
+    99.10000000000002,
+    144.39999999999998
+   ],
+   "points": [
+    [
+     303.8,
+     185,
+     2
+    ],
+    [
+     400,
+     187.9,
+     2
+    ],
+    [
+     396.8,
+     329.4,
+     2
+    ],
+    [
+     300.9,
+     328.5,
+     2
+    ],
+    [
+     349.2,
+     269.6,
+     2
+    ]
+   ],
+   "conf": 0.834,
+   "done": true,
+   "manual": true,
+   "auto": false
+  },
+  "pos_robot/frame_000053.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000053.jpg",
+   "box": [
+    304.6,
+    191.7,
+    114.8,
+    164.2
+   ],
+   "points": [
+    [
+     315.2,
+     195.0,
+     2
+    ],
+    [
+     410.9,
+     188.3,
+     2
+    ],
+    [
+     405.6,
+     335.6,
+     1
+    ],
+    [
+     307.8,
+     338.4,
+     2
+    ],
+    [
+     356.7,
+     280.9,
+     2
+    ]
+   ],
+   "conf": 0.83,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000054.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000054.jpg",
+   "box": [
+    304.4,
+    193.9,
+    114.7,
+    165.1
+   ],
+   "points": [
+    [
+     314.3,
+     200.9,
+     2
+    ],
+    [
+     407.4,
+     188.6,
+     2
+    ],
+    [
+     406.8,
+     334.8,
+     1
+    ],
+    [
+     307.6,
+     339.0,
+     2
+    ],
+    [
+     355.7,
+     284.1,
+     2
+    ]
+   ],
+   "conf": 0.811,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000056.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000056.jpg",
+   "box": [
+    300.3,
+    190.5,
+    115.8,
+    160.3
+   ],
+   "points": [
+    [
+     312.0,
+     200.9,
+     2
+    ],
+    [
+     405.0,
+     194.1,
+     2
+    ],
+    [
+     405.5,
+     343.5,
+     2
+    ],
+    [
+     309.3,
+     339.7,
+     2
+    ],
+    [
+     358.5,
+     280.1,
+     2
+    ]
+   ],
+   "conf": 0.815,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000057.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000057.jpg",
+   "box": [
+    298.7,
+    187.7,
+    115.3,
+    158.3
+   ],
+   "points": [
+    [
+     310.0,
+     199.2,
+     2
+    ],
+    [
+     402.0,
+     195.4,
+     2
+    ],
+    [
+     405.1,
+     341.2,
+     2
+    ],
+    [
+     308.1,
+     335.6,
+     2
+    ],
+    [
+     357.7,
+     275.9,
+     2
+    ]
+   ],
+   "conf": 0.793,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000061.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000061.jpg",
+   "box": [
+    297.7,
+    180.9,
+    116.2,
+    165.3
+   ],
+   "points": [
+    [
+     308.7,
+     195.4,
+     2
+    ],
+    [
+     407.6,
+     183.8,
+     2
+    ],
+    [
+     409.6,
+     328.9,
+     1
+    ],
+    [
+     312.5,
+     328.5,
+     2
+    ],
+    [
+     357.5,
+     269.7,
+     2
+    ]
+   ],
+   "conf": 0.871,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000062.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000062.jpg",
+   "box": [
+    297.1,
+    184.1,
+    115.6,
+    163.2
+   ],
+   "points": [
+    [
+     304.0,
+     195.8,
+     2
+    ],
+    [
+     405.9,
+     179.1,
+     2
+    ],
+    [
+     410.9,
+     330.6,
+     2
+    ],
+    [
+     306.8,
+     332.6,
+     2
+    ],
+    [
+     354.7,
+     271.2,
+     2
+    ]
+   ],
+   "conf": 0.856,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000066.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000066.jpg",
+   "box": [
+    315.9,
+    203.8,
+    113.2,
+    159.7
+   ],
+   "points": [
+    [
+     332.0,
+     210.9,
+     2
+    ],
+    [
+     418.5,
+     215.1,
+     2
+    ],
+    [
+     419.7,
+     358.1,
+     2
+    ],
+    [
+     326.5,
+     349.2,
+     2
+    ],
+    [
+     375.0,
+     285.6,
+     2
+    ]
+   ],
+   "conf": 0.897,
+   "done": true,
+   "manual": false,
+   "auto": true
+  },
+  "pos_robot/frame_000067.jpg": {
+   "url": "../../k230_target_project/captures/pos_robot/frame_000067.jpg",
+   "box": [
+    330.5,
+    239.5,
+    112.8,
+    163.8
+   ],
+   "points": [
+    [
+     349.3,
+     249.6,
+     2
+    ],
+    [
+     433.9,
+     252.3,
+     2
+    ],
+    [
+     428.0,
+     385.4,
+     1
+    ],
+    [
+     344.1,
+     380.0,
+     2
+    ],
+    [
+     386.8,
+     324.7,
+     2
+    ]
+   ],
+   "conf": 0.869,
+   "done": true,
+   "manual": false,
+   "auto": true
+  }
+ }
+}

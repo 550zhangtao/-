@@ -1,0 +1,13 @@
+# udev 规则（可选）：把 K230 固定成 /dev/k230，并放开权限
+#
+# 本机 /dev/ttyACM0 已经是 crw-rw-rw-（0666），不需要这个文件。
+# 换到别的机器、或者遇到 Permission denied 时再装：
+#
+#   sudo cp scripts/99-k230.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#   # 重新插拔一次 USB，然后就会多出 /dev/k230
+#
+# 装好后可以把 --port /dev/k230 传给各脚本，避免端口号在 ACM0/ACM1 之间跳。
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="abd1", MODE="0666", GROUP="plugdev", SYMLINK+="k230"

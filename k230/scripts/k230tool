@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# 在任意目录调用本包（不安装也能用）：
+#   ./scripts/k230tool live
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m k230tool "$@"

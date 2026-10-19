@@ -1,0 +1,406 @@
+# -*- coding: utf-8 -*-
+"""
+gimbal_agent.py —— K230 常驻代理：ESP32 说开始才开始跑识别
+===========================================================
+
+设计（2026-10-20 实机踩坑后定稿）
+--------------------------------
+* 上电常驻，**先不开相机**（开相机却不取帧会把 VICAP 管线堵死，实测能卡到
+  REPL 都没反应、只能断电）；
+* 相机/模型在**第一次收到 `$E,START!`** 时才打开（~1.5s，之后一直复用，不再重开）；
+* 空闲时（还没 START，或已经 STOP）**持续排空两路帧**，保证管线不堵，
+  这样 R2 一按立刻出帧；
+* `$E,STOP!` 只是停止推理（不再占 KPU），相机继续排空，随时可以再 START；
+* 相机配置、AI2D 反变换、pose 后处理全部沿用已验证的
+  `yolo_preview_ide.py` / `yolo_pose.py`（双通道、RGBP888 通道送推理）。
+
+与 ESP32 的协议
+---------------
+    ESP32 -> K230 : `$E,START!` / `$E,STOP!`
+    K230 -> ESP32 : `$KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>!`（每帧）
+    状态回执      : `$E,K230,READY!` / `START_OK!` / `STOP_OK!` / `ERR,INIT!`
+
+部署
+----
+    python3 -m k230tool push board/gimbal_agent.py --dest /sdcard/main.py
+上电（不需要 USB，5V 独立供电即可）自动运行。想用 CanMV IDE 调试：
+在 /sdcard 建空文件 `offline_off` 再上电，本脚本会直接退出停在 REPL。
+"""
+
+import gc
+import os
+import sys
+import time
+
+import machine
+from media.sensor import *
+from media.media import *
+from libs.YOLO import YOLOv8
+import libs.YOLO as _YL
+from ulab import numpy as _np
+
+# ============================ 配置 ============================
+MODEL = "/sdcard/models/target_pose.kmodel"
+LABELS = ["target"]
+MODEL_IN = [320, 320]
+W, H = 640, 480
+SENSOR_ID = 2
+CONF = 0.25
+NMS = 0.45
+MAX_BOXES = 20
+KP_NUM = 5
+KP_DIM = 3
+BULL_MIN_V = 0.30
+
+UART_ENABLE = 1
+UART_ID = 3                     # 12Pin UART3: TX=GPIO32, RX=GPIO33
+UART_TX = 32
+UART_RX = 33
+UART_BAUD = 115200
+
+PRINT_EVERY = 60
+DISABLE_FILE = "offline_off"
+IDLE_MS = 30
+# 严格"只由 ESP32 的 R2/START 触发"：默认 0 = 不自动开跑。
+# 上电后没人按 R2 -> K230 一直空转等命令（上电默认无模式）。
+# 想让它上电 N 毫秒后自己开跑，把这里改成 5000 之类即可。
+AUTO_START_MS = 0
+# =============================================================
+
+_uart = None
+_sensor = None
+_yolo = None
+_cam_open = False
+_ready = False
+_running = False
+_rxbuf = ""
+_fail = 0
+
+_keep = {}
+try:
+    _m = sys.modules
+    _k = _m.get("_k230_ai_keepalive")
+    if _k is None:
+        _m["_k230_ai_keepalive"] = _keep
+    else:
+        _keep = _k
+except Exception:
+    pass
+
+
+def _pose_postprocess(new_result, active_size, model_size, out_size,
+                      nc, kp_num, kp_dim, conf, nms, max_boxes):
+    """单目标 top-1 Pose 解码（板端 aidemo 没有 pose 后处理，运行时替换）。"""
+    scores = new_result[:, 4]
+    idx = int(_np.argmax(scores))
+    score = float(scores[idx])
+    if score < conf:
+        return ([], [], [], [])
+    row = new_result[idx]
+    ah, aw = out_size
+    mh, mw = model_size
+    scale = min(mw / float(aw), mh / float(ah))
+    x = float(row[0]) / scale          # AI2D 左上角对齐, pad 恒为 0
+    y = float(row[1]) / scale
+    w = float(row[2]) / scale
+    h = float(row[3]) / scale
+    kp = []
+    for k in range(kp_num):
+        kp.append(float(row[5 + k * kp_dim]) / scale)
+        kp.append(float(row[5 + k * kp_dim + 1]) / scale)
+        kp.append(float(row[5 + k * kp_dim + 2]))
+    return ([_np.array([x, y, w, h])], [0], [score], [_np.array(kp)])
+
+
+class _PoseAidemo:
+    def yolov8_pose_postprocess(self, new_result, active_size, model_size,
+                                out_size, nc, kp_num, kp_dim, conf, nms,
+                                max_boxes):
+        return _pose_postprocess(new_result, active_size, model_size, out_size,
+                                 nc, kp_num, kp_dim, conf, nms, max_boxes)
+
+
+_YL.aidemo = _PoseAidemo()
+
+
+# ---------------- UART ----------------
+def _init_uart():
+    global _uart
+    if not UART_ENABLE:
+        return
+    try:
+        fpioa = machine.FPIOA()
+        if UART_ID == 3:
+            fpioa.set_function(UART_TX, fpioa.UART3_TXD, ie=0, oe=1)
+            fpioa.set_function(UART_RX, fpioa.UART3_RXD, ie=1, oe=0)
+            unum = machine.UART.UART3
+        else:
+            fpioa.set_function(UART_TX, fpioa.UART1_TXD, ie=0, oe=1)
+            fpioa.set_function(UART_RX, fpioa.UART1_RXD, ie=1, oe=0)
+            unum = machine.UART.UART1
+        _uart = machine.UART(unum, baudrate=UART_BAUD,
+                             bits=machine.UART.EIGHTBITS,
+                             parity=machine.UART.PARITY_NONE,
+                             stop=machine.UART.STOPBITS_ONE)
+        print("agent: uart%d tx=%d rx=%d %d" % (UART_ID, UART_TX, UART_RX, UART_BAUD))
+    except Exception as e:
+        _uart = None
+        print("agent: uart init failed:", e)
+
+
+def _reply(msg):
+    if _uart is None:
+        return
+    try:
+        _uart.write("$E,K230,%s!\n" % msg)
+    except Exception:
+        pass
+
+
+def _poll_cmd():
+    global _rxbuf
+    if _uart is None:
+        return None
+    try:
+        if not _uart.any():
+            return None
+        data = _uart.read()
+    except Exception:
+        return None
+    if not data:
+        return None
+    try:
+        _rxbuf += data.decode()
+    except Exception:
+        return None
+    if len(_rxbuf) > 600:
+        _rxbuf = _rxbuf[-300:]
+    cmd = None
+    while True:
+        i = _rxbuf.find("!")
+        j = _rxbuf.find("\n")
+        if i < 0 and j < 0:
+            break
+        if i < 0:
+            idx = j
+        elif j < 0:
+            idx = i
+        else:
+            idx = i if i < j else j
+        line = _rxbuf[:idx].strip()
+        _rxbuf = _rxbuf[idx + 1:]
+        if "START" in line:
+            cmd = "START"
+        elif "STOP" in line:
+            cmd = "STOP"
+    return cmd
+
+
+# ---------------- 相机 / 模型（按需打开） ----------------
+def _open_camera():
+    """双通道配置，与 yolo_preview_ide.py / yolo_pose.py 完全一致（已验证）。"""
+    global _sensor, _cam_open
+    if _cam_open:
+        return True
+    try:
+        _sensor = Sensor(id=SENSOR_ID)
+        _sensor.reset()
+        _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_1)
+        _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
+        _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_2)
+        _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
+        MediaManager.init()
+        _sensor.run()
+        time.sleep_ms(300)
+        _cam_open = True
+        print("agent: camera open")
+        return True
+    except Exception as e:
+        _cam_open = False
+        print("agent: camera open failed:", e)
+        try:
+            sys.print_exception(e)
+        except Exception:
+            pass
+        return False
+
+
+def _open_model():
+    global _yolo, _ready
+    if _ready:
+        return True
+    try:
+        _yolo = YOLOv8(task_type="pose", mode="image", kmodel_path=MODEL,
+                       labels=LABELS, rgb888p_size=[W, H],
+                       model_input_size=MODEL_IN, display_size=[W, H],
+                       conf_thresh=CONF, nms_thresh=NMS,
+                       kp_num=KP_NUM, kp_dim=KP_DIM,
+                       max_boxes_num=MAX_BOXES, debug_mode=0)
+        _yolo.config_preprocess()
+        try:
+            gc.threshold(96 * 1024)
+        except Exception:
+            pass
+        _ready = True
+        print("agent: model ready (%s)" % MODEL)
+        return True
+    except Exception as e:
+        _ready = False
+        print("agent: model open failed:", e)
+        try:
+            sys.print_exception(e)
+        except Exception:
+            pass
+        return False
+
+
+def _drain_frames():
+    """空闲时排空两路帧：不取帧会把 VICAP 管线堵死（实测会卡死整块板）。"""
+    if not _cam_open:
+        return
+    try:
+        _sensor.snapshot(chn=CAM_CHN_ID_1)
+        _sensor.snapshot(chn=CAM_CHN_ID_2)
+    except Exception as e:
+        print("agent: drain failed:", e)
+
+
+# ---------------- 推理 + 回传 ----------------
+def _send_frame(seq, boxes, scores, kpts):
+    if _uart is None:
+        return
+    run = 1 if boxes else 0
+    if run:
+        b = boxes[0]
+        cx = int(b[0] + b[2] * 0.5)
+        cy = int(b[1] + b[3] * 0.5)
+        conf = int(float(scores[0]) * 1000)
+        kp = kpts[0]
+        if len(kp) >= 15 and float(kp[14]) >= BULL_MIN_V:
+            bx, by = int(kp[12]), int(kp[13])
+        else:
+            bx = by = -1
+    else:
+        cx = cy = bx = by = -1
+        conf = 0
+    _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d!\n" %
+                (seq, run, cx, cy, bx, by, conf))
+    try:
+        _uart.flush()
+    except Exception:
+        pass
+
+
+def _stream_frame(seq):
+    _sensor.snapshot(chn=CAM_CHN_ID_1)                   # 排空显示通道
+    arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
+    res = _yolo.run(arr)
+    if res and len(res) >= 4:
+        boxes, scores, kpts = res[0], res[2], res[3]
+    else:
+        boxes, scores, kpts = [], [], []
+    _send_frame(seq, boxes, scores, kpts)
+    return len(boxes)
+
+
+def _drop_pipeline():
+    """连续出错时丢相机，等下一次 START 重开（模型保留，避免 KPU 反复构造）。"""
+    global _cam_open, _running, _fail
+    _fail = 0
+    _running = False
+    _cam_open = False
+    try:
+        _sensor.stop()
+    except Exception:
+        pass
+    try:
+        MediaManager.deinit()
+    except Exception:
+        pass
+    print("agent: camera dropped, 等下一次 $E,START!")
+
+
+def main():
+    global _running, _fail
+
+    try:
+        if DISABLE_FILE in os.listdir("/sdcard"):
+            print("agent: /sdcard/%s 存在, 跳过自动运行" % DISABLE_FILE)
+            return
+    except Exception:
+        pass
+
+    _init_uart()
+    _reply("READY")
+    print("agent: 常驻就绪（相机按需打开），等 $E,START! / $E,STOP!")
+
+    seq = 0
+    fps = 0.0
+    t_last = time.ticks_ms()
+    spent = 0
+    boot_ms = time.ticks_ms()
+    heard_cmd = False
+    auto_done = False
+
+    while True:
+        cmd = _poll_cmd()
+        if cmd:
+            heard_cmd = True
+        # 冷启动自愈：上电后一直没人喊 START，就自己开跑（只触发一次；AUTO_START_MS=0 关闭）
+        if (cmd is None and not heard_cmd and not _running and not auto_done
+                and AUTO_START_MS and time.ticks_diff(time.ticks_ms(), boot_ms) >= AUTO_START_MS):
+            auto_done = True
+            cmd = "START"
+            print("agent: %dms 没收到 START, 自动开跑" % AUTO_START_MS)
+        if cmd == "START":
+            ok = _open_camera() and _open_model()
+            _running = ok
+            _reply("START_OK" if ok else "ERR,INIT")
+            print("agent: START -> %s" % ("streaming" if ok else "init failed"))
+        elif cmd == "STOP":
+            _running = False
+            _reply("STOP_OK")
+            print("agent: STOP -> idle")
+
+        if _running and _ready and _cam_open:
+            try:
+                _stream_frame(seq)
+                seq += 1
+                _fail = 0
+                spent += 1
+                dt = time.ticks_diff(time.ticks_ms(), t_last)
+                t_last = time.ticks_ms()
+                if dt > 0:
+                    inst = 1000.0 / dt
+                    fps = inst if fps == 0 else (0.8 * fps + 0.2 * inst)
+                if PRINT_EVERY and (spent % PRINT_EVERY) == 0:
+                    print("agent: %d frames, %.1ffps" % (spent, fps))
+                if (spent & 0x07) == 0:
+                    gc.collect()
+            except Exception as e:
+                _fail += 1
+                print("agent: stream error(%d):" % _fail, e)
+                if _fail >= 3:
+                    _drop_pipeline()
+                time.sleep_ms(50)
+        else:
+            _drain_frames()
+            time.sleep_ms(IDLE_MS)
+
+
+if __name__ == "__main__":
+    while True:
+        try:
+            main()
+            break
+        except KeyboardInterrupt:
+            print("agent: interrupted")
+            break
+        except Exception as e:
+            print("agent ERROR", type(e).__name__, e)
+            try:
+                sys.print_exception(e)
+            except Exception:
+                pass
+            _drop_pipeline()
+            time.sleep_ms(2000)     # 不复位整机：复位循环会让板子彻底连不上

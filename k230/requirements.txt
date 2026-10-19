@@ -1,0 +1,5 @@
+# K230 摄像头回传 —— PC 端依赖
+# 安装： pip3 install -r requirements.txt
+pyserial>=3.5
+opencv-python>=4.5
+numpy>=1.20

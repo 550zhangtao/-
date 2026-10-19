@@ -1,0 +1,150 @@
+# 排错手册
+
+## 1. 连不上板子
+
+| 现象 | 检查 | 处理 |
+| --- | --- | --- |
+| `没有找到 K230 串口` | `lsusb \| grep 1209` | 确认 USB 插在板子的 **USB0（调试口）**，换一根数据线 |
+| `lsusb` 有但 `/dev/ttyACM*` 没有 | `dmesg \| tail`（可能需要 sudo） | 重新插拔；装 `scripts/99-k230.rules`；确认 cdc_acm 驱动 |
+| `打开 /dev/ttyACM0 失败: busy` | `fuser -v /dev/ttyACM0` | 串口被 CanMV IDE/VSCode 插件/另一个 k230tool 占用，先全部断开 |
+| `Permission denied` | `ls -l /dev/ttyACM0` | 装 udev 规则，或 `sudo usermod -aG dialout $USER` 后重新登录 |
+| 端口号在 ACM0/ACM1 之间跳 | — | 工具按 VID:PID `1209:abd1` 自动发现，**不要硬编码端口** |
+
+## 2. 板端状态异常
+
+### `sensor(2) is already inited`
+
+上一次脚本没有干净释放摄像头。`MediaManager.deinit()` 清不掉，只能复位。
+
+- 本工具：`K230Stream` 检测到后会自动 `hard_reset()` 重试；
+- 手动：按板子 RESET，或执行
+
+```python
+import machine
+machine.reset()
+```
+
+### 跑完 AI 脚本后 REPL 无响应 / 写串口超时
+
+K230 的 KPU 原生对象析构死锁（已知固件问题）。表现：脚本已经打印完，
+但 PC 再发 `Ctrl-C`/`\x01` 没有任何回应，USB 设备还在。
+
+- 本包 `board/yolo_stream.py`：退出时保活 KPU 引用并 `machine.reset()`，
+  默认 `reset_on_exit=1`；
+- 如果仍然卡住：按 RESET 或拔插 USB；
+- 不要尝试在脚本里直接 `del kpu` / `kpu.release()` / `gc.collect()` 清理。
+
+### 堆内存不足 / `snapshot()` 卡死
+
+反复 exec 会吃 MicroPython 堆。工具在开流前检查 `gc.mem_free()`，
+低于 1.5 MB 会自动软复位。也可以：
+
+```python
+import gc
+gc.collect()
+```
+
+或直接 RESET。
+
+## 3. 收不到画面 / 帧率低
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 0 帧 | 传感器残留、镜头排线、供电 | 先 `probe`；看板端日志；必要时复位 |
+| 画面全黑 | 镜头盖/排线/曝光 | 摘镜头盖，检查 CSI 排线；`probe` 会报传感器型号 |
+| 只有 2~3 fps | USB Hub/慢口、线材差 | 直插电脑 USB 口，换线 |
+| 12 fps 左右 | 正常（640×480 JPEG 瓶颈） | 想快用 `-w 320 -h 240` 或 `--no-ai` |
+| AI 只有 ~8 fps | JPEG 73 ms + 推理 28 ms | 降分辨率/质量，或只传检测结果不回传大图（需改板端脚本） |
+| 坏包增长 | 干扰/线材/固件改写输出 | 换线；确认固件版本；`probe` 的协议校验 |
+
+## 4. YOLOv8 相关
+
+### 板端报 `OSError: sensor(2) is already inited`
+
+见 2.1；另外确认没有两个 k230tool 同时跑。
+
+### 模型加载失败 / 输出乱码
+
+- kmodel 与固件/nncase 版本不匹配：用与固件同版本的 nncase 重新编译；
+- 输出通道数不对：`libs/YOLO` 期望 `[1, 4+nc, 2100]`（320 输入）；
+- 类别数/标签顺序不一致：`data.yaml`、`--labels`、kmodel 训练时一致。
+
+### 检测不到标靶
+
+1. 先看 `live/latest.jpg` 确认画面里真的有标靶、没被遮挡；
+2. 降阈值：`--conf 0.05`；
+3. 检查模型：`python3 -m k230tool models`，换 `v2_std1.kmodel` 试；
+4. 标靶太小：靠近，或用更大输入（416/480）重训重编；
+5. 训练数据与现场差异大：重新采集、训练。
+
+### 框位置偏 / 误检
+
+- 模型训练数据不足或场景差异大；
+- kmodel 预处理不对：必须按 `input_range=[0,1]`、`mean=0`、`std=1` 编译，
+  板端不要重复归一化；
+- 坐标映射：`board/yolo_stream.py` 用 `mode="image"`，检测框和 JPEG 同为
+  `aw×ah`；如果改了 `--aw/--ah` 与 `-w/-h` 不一致，PC 会按 `det` 里的
+  `w/h` 缩放，仍然正确；
+- 用 `tools/autolabel_target.py --preview` 看标注是否准确。
+
+## 5. 训练 / 编译
+
+| 报错 | 处理 |
+| --- | --- |
+| `ModuleNotFoundError: ultralytics` | `pip3 install ultralytics` |
+| `Dataset 'data.yaml' images not found` | `data.yaml` 里 `path` 改成绝对路径；用 `dataset_from_captures.py` 生成 |
+| `CUDA out of memory` | 降 `--batch` / `--imgsz`，或 `--device cpu` |
+| `Failed to get hostfxr path` | 装 .NET 7，`export DOTNET_ROOT=$HOME/.dotnet` |
+| `NNCASE_PLUGIN_PATH is not set` | 只影响 KPU 插件；`compile_kmodel.py` 会在 import 前自动设置 |
+| `Feed Value Is Invalid, need u8[1,3,320,320]` | 校准数据形状应为 `[N,1,3,H,W]`；用本包工具 |
+| `Unsupported operator` | ONNX 里有 K230 不支持的算子（NMS/后处理等）；用原始输出重新导出 |
+| 编译成功但板端加载失败 | nncase 与固件版本不匹配；换同版本；或先跑官方示例 kmodel 验证固件 |
+| kmodel 比预期大很多 | 没开 PTQ 或权重是 float；本工具默认 uint8 PTQ |
+
+### 确认 ONNX 输出正确
+
+```bash
+python3 tools/export_onnx.py --weights best.pt --imgsz 320 --out best.onnx
+# 应打印：output0 [1, 4+nc, 2100]
+```
+
+如果是 `[1,300,6]`，说明导出带了 NMS/end2end，板端不认。
+
+## 6. live / Agent
+
+| 现象 | 处理 |
+| --- | --- |
+| `latest.jpg` 不更新 | `python3 -m k230tool status` 看 `age_ms`/`connected`；看后台日志 |
+| `status` 说 `port_ok:false` | 板子正在复位（AI 停止后约 8 秒）或串口被占用 |
+| `snapshot` 很慢 | 没有 live 在跑，临时开流+复位约 15 秒；先启动 live 再 snapshot |
+| `live` 退出后板子要等一会 | 正常：AI 脚本退出会 `machine.reset()` |
+| 两个程序抢串口 | 串口独占；停掉一个 |
+
+## 7. CanMV IDE 相关
+
+- IDE 连不上：先停 `k230tool live/monitor`，等板子复位完；
+- IDE 运行 `yolo_preview_ide.py` 后断开：停止脚本会复位板子，重新连接即可；
+- IDE 预览黑屏：确认 `DISPLAY_MODE="virt"` 且 `to_ide=True`；换 `"hdmi"` 试本地屏；
+- 不要在 IDE 里同时 import 本包的 PC 端模块（那是给 PC 用的）。
+
+### `AttributeError: type object 'Display' has no attribute 'JD9852'`
+
+板端 `/sdcard/libs/PipeLine.py` / `DisplayConfig.py` 比固件新（固件 v1.4.3
+没有 JD9852 这个屏幕驱动），官方 YOLO 例程用 `PipeLine` 会在这里报错。
+
+处理：
+- 用本包的 `board/yolo_preview_ide.py`（**不依赖 PipeLine**，直接
+  Sensor + Display），已实测兼容 v1.4.3；
+- 或者把 `/sdcard/libs` 换成与固件同版本的；
+- 或者升级固件到与 libs 匹配的版本。
+
+## 8. 一键收集诊断信息
+
+```bash
+python3 -m k230tool status
+python3 -m k230tool probe --quick
+python3 -m k230tool models
+python3 tools/check_env.py
+```
+
+把这些输出贴出来，基本能定位 90% 的问题。

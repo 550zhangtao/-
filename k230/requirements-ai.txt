@@ -1,0 +1,19 @@
+# 训练 / ONNX 导出 / kmodel 编译依赖（只在需要训练或转换时安装）
+#
+#   pip3 install -r requirements-ai.txt
+#
+# nncase 额外需要 .NET 7 runtime：
+#   Ubuntu: sudo apt install dotnet-runtime-7.0  (或 ~/.dotnet)
+#   export DOTNET_ROOT=$HOME/.dotnet
+#
+# nncase 版本要与板端固件匹配；本机 CanMV v1.4.3 实测 2.11.0 可编译，
+# 若板端加载失败，换成固件对应的 nncase 版本重新编译。
+
+ultralytics>=8.0
+onnx>=1.12
+onnxruntime>=1.15
+onnxsim>=0.4.30
+onnxslim>=0.1.30
+nncase>=2.9
+nncase-kpu>=2.9
+pillow>=9.0
