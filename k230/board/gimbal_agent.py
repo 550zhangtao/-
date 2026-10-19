@@ -394,13 +394,22 @@ if __name__ == "__main__":
             main()
             break
         except KeyboardInterrupt:
-            print("agent: interrupted")
+            print("agent: interrupted -> 退出，REPL 交还给 IDE")
             break
         except Exception as e:
+            msg = str(e)
+            low = msg.lower()
+            # CanMV IDE / VSCode 插件按"停止"时抛的是 Exception("IDE interrupt")，
+            # 不是 KeyboardInterrupt。这种情况必须**退出**把 REPL 交还；否则代理会
+            # 自我重启、REPL 一直被占，IDE 就报"当前固件不支持 REPL 输入"。
+            if "interrupt" in low or "ide" in low:
+                print("agent: 被 IDE 中断(%s) -> 退出，REPL 交还；重新上电或"
+                      "用 IDE 运行 /sdcard/main.py 可恢复" % msg)
+                break
             print("agent ERROR", type(e).__name__, e)
             try:
                 sys.print_exception(e)
             except Exception:
                 pass
             _drop_pipeline()
-            time.sleep_ms(2000)     # 不复位整机：复位循环会让板子彻底连不上
+            time.sleep_ms(2000)     # 真异常才重来；不复位整机
