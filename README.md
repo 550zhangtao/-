@@ -66,7 +66,20 @@ python3 -m k230tool push board/gimbal_agent.py --dest /sdcard/main.py
 ```
 
 CanMV 上电自动执行 `/sdcard/main.py`：常驻等命令 → 收到 `$E,START!` 才开相机跑识别。
-想回 CanMV IDE 调试：板端建 `offline_off` 文件后断电重上电，代理会退出停在 REPL。
+
+### 4) CanMV IDE 预览（调试视觉）
+
+板端**常驻代理会占着 REPL**，用 IDE 预览前先切到"IDE 模式"（代理不再自启、相机空闲）：
+
+```bash
+cd k230
+bash scripts/ide_mode.sh       # 板端建 /sdcard/offline_off 并复位 -> 停在 REPL
+# 打开 CanMV IDE / VSCode CanMV 插件，运行 board/yolo_preview_ide.py
+bash scripts/offline_mode.sh   # 调试完恢复：删 offline_off 并复位，代理重新自启
+```
+
+预览脚本默认已配好（`/sdcard/models/target_pose.kmodel`、`VIEW="full"`、`VIEW_SCALE=0.55`、
+`CONF=0.25`），点运行即可看到检测框 + 四角轮廓 + 红色靶心，同时仍会向 ESP32 发 `$KT`。
 
 ### 3) ESP32 侧
 
