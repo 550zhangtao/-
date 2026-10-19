@@ -216,6 +216,11 @@
   - ESP32 进 `GIMBAL_TRACK`（手柄 R2 / USB `gtrack`）-> 发 `$E,START!`；
     离开跟踪（R1 / `gnone`）-> 发 `$E,STOP!`（`k230Cmd()`）；
     **上电默认 `GIMBAL_NONE`，只发一次 STOP，不会自己开跑**；
+  - **IDE 停止 ≠ 致命错误（2026-10-20 修）**：CanMV IDE / VSCode 插件按"停止"抛的是
+    `Exception("IDE interrupt")`（不是 `KeyboardInterrupt`）。旧版代理把它当致命错误
+    → `_drop_pipeline()` + 2s 后重启，REPL 一直被占，IDE 就报"当前固件不支持 REPL 输入"。
+    现在识别到 `interrupt`/`ide` 关键字就打印提示并**退出把 REPL 交还**；
+    要恢复代理：断电重上电，或在 IDE 里运行 `/sdcard/main.py`。
   - 跟踪中 2.5s 没 `$KT` -> 每 3s 重发 START；K230 重启会发 `$E,K230,READY!`，
     ESP32 收到且当前在 TRACK 就补发 START（两边先后启动都能自愈）；
   - K230 侧 `board/gimbal_agent.py`：放 `/sdcard/main.py`，上电常驻；
