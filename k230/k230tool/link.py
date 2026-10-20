@@ -37,6 +37,7 @@ import glob
 import json
 import re
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -211,6 +212,107 @@ def port_holders(dev: str):
 
 def canmv_backend_holding(dev: str) -> bool:
     return any("canmv" in comm.lower() for _pid, comm in port_holders(dev))
+
+
+# ----------------------------------------------------------------- USB 拓扑
+# K230 的 USB 是原生 CDC：machine.reset() 会让设备真正从总线上消失再出现。
+# 下面这些函数不打开串口，因此可以在板端脚本运行、REPL 被占用时安全使用。
+USB_RESET_IOCTL = 0x5514          # linux/usbdevice_fs.h: USBDEVFS_RESET
+
+
+def _read_sysfs(path: str) -> Optional[str]:
+    try:
+        with open(path, "r") as fp:
+            return fp.read().strip()
+    except Exception:
+        return None
+
+
+def _usb_sysfs_from_tty(dev: str) -> Optional[str]:
+    """由 /dev/ttyACM0 找到它所属的 USB 设备 sysfs 目录（如 .../1-9）。"""
+    real = os.path.realpath("/sys/class/tty/%s/device" % os.path.basename(dev))
+    p = Path(real)
+    for parent in [p] + list(p.parents):
+        if (parent / "idVendor").exists():
+            return str(parent)
+    return None
+
+
+def list_canmv_usb_infos():
+    """列出当前枚举到的 K230 USB 设备（VID:PID = 1209:abd1）。"""
+    infos = []
+    for d in sorted(glob.glob("/sys/bus/usb/devices/*")):
+        if _read_sysfs(os.path.join(d, "idVendor")) != "1209":
+            continue
+        if _read_sysfs(os.path.join(d, "idProduct")) != "abd1":
+            continue
+        try:
+            busnum = int(_read_sysfs(os.path.join(d, "busnum")) or 0)
+            devnum = int(_read_sysfs(os.path.join(d, "devnum")) or 0)
+        except ValueError:
+            busnum = devnum = 0
+        ttys = sorted(glob.glob(d + ":*/tty/ttyACM*"))
+        infos.append({
+            "sysfs": d,
+            "bus": busnum,
+            "dev": devnum,
+            "vid": "1209",
+            "pid": "abd1",
+            "tty": ("/dev/" + os.path.basename(ttys[0])) if ttys else None,
+        })
+    return infos
+
+
+def usb_device_info(dev: Optional[str] = None) -> Optional[dict]:
+    """返回 K230 的 USB 拓扑信息；dev 给定时优先匹配该 tty。"""
+    infos = list_canmv_usb_infos()
+    if dev:
+        d = _usb_sysfs_from_tty(dev)
+        if d:
+            for info in infos:
+                if info["sysfs"] == d:
+                    return info
+    return infos[0] if infos else None
+
+
+def usb_present(dev: Optional[str] = None) -> bool:
+    return usb_device_info(dev) is not None
+
+
+def usb_reset(dev: Optional[str] = None) -> dict:
+    """对 K230 做一次 USB 端口复位（等价于“软件拔插”）。
+
+    只复位 USB 外设/重新枚举，不会复位 SoC，也不碰 BOOT 引脚；
+    板端固件若已经彻底卡死，仍然需要断电。需要 /dev/bus/usb/... 的写权限。
+    """
+    info = usb_device_info(dev)
+    if not info:
+        raise BoardError("没有找到 K230 USB 设备（1209:abd1）")
+    if not info.get("bus") or not info.get("dev"):
+        raise BoardError("读不到 USB busnum/devnum：%s" % info.get("sysfs"))
+    node = "/dev/bus/usb/%03d/%03d" % (info["bus"], info["dev"])
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows/macOS 不支持
+        raise BoardError("当前系统没有 fcntl，无法做 USB 软件拔插")
+    try:
+        fd = os.open(node, os.O_RDWR)
+    except OSError as exc:
+        raise BoardError(
+            "打不开 %s（%s）。USB 软件拔插需要该设备节点的写权限；"
+            "可安装 scripts/99-k230.rules 或临时用 sudo 运行。"
+            % (node, exc))
+    try:
+        fcntl.ioctl(fd, USB_RESET_IOCTL)
+    except OSError as exc:
+        raise BoardError("USBDEVFS_RESET 失败（%s）：%s" % (node, exc))
+    finally:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+    return info
+
 
 def find_port(verbose: bool = False) -> Optional[str]:
     """找到一块可用的 K230 串口，找不到返回 None。"""
@@ -545,52 +647,220 @@ class K230Link:
                     break
         self.exit_raw()
 
-    def hard_reset(self, timeout: float = 25.0,
-                   on_wait=None) -> str:
-        """软复位板子（USB 会重新枚举，端口号可能变化）。
+    def interrupt_to_repl(self, timeout: float = 12.0, on_wait=None) -> None:
+        """反复 Ctrl-C + Ctrl-A，把板端脚本打断并切回 raw REPL。
 
-        注意不能靠「端口名变了」来判断重连：重枚举后很可能还是 /dev/ttyACM0，
-        只能靠「REPL 是否重新应答」来判定。
+        与 stop_script() 的区别：
+        * 不会只发一次 Ctrl-C 就放弃；
+        * 板端脚本如果自己调了 machine.reset()（例如 CanMV 预览的 finally），
+          会等 USB 重新枚举后重新进入 REPL；
+        * 只有确实回不来才抛错，错误信息会区分“脚本卡死”和“USB 卡死”。
         """
+        deadline = time.monotonic() + timeout
+        last_exc: Optional[Exception] = None
+        while time.monotonic() < deadline:
+            if not self.ser or not self.ser.is_open:
+                try:
+                    self.open()
+                except Exception as exc:
+                    last_exc = exc
+                    time.sleep(0.4)
+                    continue
+            try:
+                self.ser.reset_input_buffer()
+                for _ in range(4):
+                    self.ser.write(b"\x03")
+                    time.sleep(0.06)
+                # Ctrl-A -> raw REPL
+                self.ser.write(b"\x01")
+                t0 = time.monotonic()
+                acc = bytearray()
+                while time.monotonic() - t0 < 1.2:
+                    chunk = self.ser.read(4096)
+                    if chunk:
+                        acc += chunk
+                        if b"raw REPL" in acc:
+                            self._buf = bytearray()
+                            return
+                # 可能还在 friendly REPL / 刚打印完 traceback，再试一次
+                self.ser.write(b"\x03")
+                time.sleep(0.1)
+                self.ser.write(b"\x01")
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < 0.8:
+                    chunk = self.ser.read(4096)
+                    if chunk and b"raw REPL" in (bytes(acc) + chunk):
+                        self._buf = bytearray()
+                        return
+            except (serial.SerialException, OSError, TypeError) as exc:
+                last_exc = exc
+                self.close()
+                time.sleep(0.4)
+                continue
+            time.sleep(0.15)
+
+        # 脚本可能刚刚自己复位：给它一次重新枚举的机会
         try:
-            if self.ser:
-                self.exec_and_collect("import machine\nmachine.reset()\n",
-                                      timeout=1.0)
-        except Exception:
-            pass
-        self.close()
-        if on_wait:
-            on_wait("等待板子重启…")
+            if on_wait:
+                on_wait("Ctrl-C 没有立刻让出 REPL，等待板子重新枚举…")
+            self.wait_for_repl(timeout=min(timeout, 12.0), settle=0.8,
+                               on_wait=on_wait)
+            return
+        except Exception as exc:
+            raise BoardError(
+                "板端脚本 %.0f 秒内没有让出 REPL（%s）。\n"
+                "  先再执行一次 `python3 -m k230tool reset`；\n"
+                "  若 USB 还在但 Ctrl-C 完全无响应，说明脚本卡在原生调用里，\n"
+                "  只能按板子 RESET 或断电重上电。"
+                % (timeout, last_exc or exc))
 
-        # 阶段 1：等它掉线（最多 6 秒）。复位快的板子可能捕捉不到，无所谓。
+    def wait_for_usb(self, timeout: float = 30.0, settle: float = 1.0,
+                     on_wait=None, gone_timeout: float = 4.0) -> str:
+        """等待 K230 的 USB 设备重新枚举并稳定下来（不读写串口）。
+
+        关键点：复位后先等设备真正消失/换 devnum，再等 tty 出现并稳定
+        `settle` 秒，最后才返回。不要在枚举过程中反复 probe_repl()：
+        刚启动时发 Ctrl-C 会打断 boot.py/main.py，反而把板子留在半启动状态。
+        """
+        info0 = usb_device_info(self.port)
+        old_dev = info0.get("dev") if info0 else None
+        deadline = time.monotonic() + timeout
+
+        # 阶段 1：等旧设备消失或 devnum 变化（最多 gone_timeout 秒）
         t0 = time.monotonic()
-        while time.monotonic() - t0 < 6.0:
-            if not any(probe_repl(dev, timeout=0.15) for dev in list_acm_ports()):
+        while time.monotonic() - t0 < min(gone_timeout, timeout):
+            infos = list_canmv_usb_infos()
+            if not infos:
                 break
-            time.sleep(0.2)
+            if old_dev and all(i.get("dev") != old_dev for i in infos):
+                break
+            time.sleep(0.1)
 
-        # 阶段 2：等它重新带回 REPL
-        t0 = time.monotonic()
-        while time.monotonic() - t0 < timeout:
-            for dev in list_acm_ports():
-                if probe_repl(dev, timeout=0.25):
-                    self.port = dev
+        # 阶段 2：等新 tty 出现并稳定
+        stable_since: Optional[float] = None
+        while time.monotonic() < deadline:
+            ttys = [i["tty"] for i in list_canmv_usb_infos() if i.get("tty")]
+            if ttys:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                    if on_wait:
+                        on_wait("USB 已重新枚举：%s" % ttys[-1])
+                if time.monotonic() - stable_since >= settle:
+                    self.port = ttys[-1]
+                    return self.port
+            else:
+                stable_since = None
+            time.sleep(0.1)
+
+        raise BoardError(
+            "复位后 %.0f 秒内 USB 没有重新枚举。\n"
+            "  先看 dmesg / lsusb 是否有 1209:abd1；若 USB 设备在但 tty 没了，\n"
+            "  可执行 `python3 -m k230tool reset`（内部会自动尝试 USB 软件拔插）。"
+            % timeout)
+
+    def wait_for_repl(self, timeout: float = 30.0, settle: float = 1.0,
+                      on_wait=None) -> str:
+        """等待 USB 重新枚举并确认 REPL 可用；成功时串口保持打开。"""
+        self.close()
+        deadline = time.monotonic() + timeout
+        try:
+            dev = self.wait_for_usb(timeout=timeout, settle=settle,
+                                    on_wait=on_wait)
+        except BoardError:
+            dev = self.port
+        while time.monotonic() < deadline:
+            ports = list_acm_ports()
+            if dev:
+                ports = [dev] + [p for p in ports if p != dev]
+            for port in ports:
+                if probe_repl(port, timeout=0.25):
+                    self.port = port
                     self.open()
                     if on_wait:
-                        on_wait("已重新连接 %s" % dev)
-                    return dev
+                        on_wait("REPL 已恢复：%s" % port)
+                    return port
             time.sleep(0.3)
+        raise BoardError(
+            "复位后 USB 已枚举，但 REPL 在 %.0f 秒内没有应答。\n"
+            "  如果 /sdcard/offline_off 不存在，可能是 /sdcard/main.py 又自动跑起来\n"
+            "  并占用了 REPL；用 `python3 -m k230tool mode debug` 切回调试模式。\n"
+            "  如果连 Ctrl-C 都完全无响应，只能按 RESET 或断电。"
+            % timeout)
 
-        # 兜底：VID:PID 精确匹配（端口名可能完全不同）
-        self.port = None
-        dev = find_port()
-        if dev and probe_repl(dev, timeout=0.3):
-            self.port = dev
+    def soft_reset(self, wait_repl: bool = True, timeout: float = 30.0,
+                   settle: float = 1.0, on_wait=None) -> str:
+        """真正的软复位：raw REPL 里执行 machine.reset()，等待 USB 重新枚举。
+
+        wait_repl=True  : 调试模式；等 REPL 回来并保持串口打开。
+        wait_repl=False : 工作模式；/sdcard/main.py 会占用 REPL，只等 USB/tty 稳定。
+        """
+        if not self.ser or not self.ser.is_open:
             self.open()
+        try:
+            self.enter_raw(timeout=2.0)
+        except BoardError:
+            self.interrupt_to_repl(timeout=min(8.0, timeout), on_wait=on_wait)
+
+        # 先打印一个标记再复位：主机能确认命令确实被执行了。250ms 足够把
+        # USB 缓冲刷出去，避免复位瞬间 USB 还在写导致枚举异常。
+        src = ("import sys, time\n"
+               "print('K230_RESET')\n"
+               "sys.stdout.flush()\n"
+               "time.sleep_ms(250)\n"
+               "import machine\n"
+               "machine.reset()\n")
+        self._upload(src)
+        t0 = time.monotonic()
+        acc = bytearray()
+        while time.monotonic() - t0 < 1.5:
+            try:
+                chunk = self.ser.read(4096)
+            except Exception:
+                break
+            if chunk:
+                acc += chunk
+                if b"K230_RESET" in acc:
+                    break
+        # 不要 exit_raw：板子马上/已经复位，再写 \x02 只会污染新会话
+        self.close()
+        if on_wait:
+            on_wait("已发送 machine.reset()，等待 USB 重新枚举…")
+        if wait_repl:
+            return self.wait_for_repl(timeout=timeout, settle=settle,
+                                      on_wait=on_wait)
+        return self.wait_for_usb(timeout=timeout, settle=settle,
+                                 on_wait=on_wait)
+
+    def hard_reset(self, timeout: float = 30.0, on_wait=None,
+                   wait_repl: bool = True) -> str:
+        """兼容旧接口的软复位；失败时尝试 USB 软件拔插兜底。
+
+        wait_repl=False 用于工作模式（main.py 会自动运行并占用 REPL）。
+        """
+        try:
+            if self.ser and self.ser.is_open:
+                try:
+                    self.interrupt_to_repl(timeout=8.0, on_wait=on_wait)
+                except Exception:
+                    pass
+            return self.soft_reset(wait_repl=wait_repl, timeout=timeout,
+                                   settle=1.0, on_wait=on_wait)
+        except BoardError as first:
+            # 枚举层卡死时，USBDEVFS_RESET 可以免物理拔插恢复 tty。
+            # 注意：它不会复位 SoC；固件本身卡死仍然要断电。
+            if not usb_present(self.port or None):
+                raise
             if on_wait:
-                on_wait("已重新连接 %s" % dev)
-            return dev
-        raise BoardError("软复位后没能重新连上板子，请拔插一次 USB")
+                on_wait("复位超时，尝试 USB 软件拔插…")
+            try:
+                usb_reset(self.port or None)
+                if wait_repl:
+                    return self.wait_for_repl(timeout=timeout, settle=1.0,
+                                              on_wait=on_wait)
+                return self.wait_for_usb(timeout=timeout, settle=1.0,
+                                         on_wait=on_wait)
+            except Exception as exc:
+                raise BoardError("%s\n  USB 软件拔插也失败：%s" % (first, exc))
 
 
 # ----------------------------------------------------------------- 线程化数据流

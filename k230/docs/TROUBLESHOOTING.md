@@ -24,6 +24,29 @@ import machine
 machine.reset()
 ```
 
+### 软复位后要拔插 USB / 工作模式切不回调试
+
+**根因**：旧 `k230tool reset` 只发 Ctrl-C + Ctrl-D。Ctrl-D 只是 MicroPython
+VM 软重启，不会清相机/KPU；工作模式下 `/sdcard/main.py` 会立刻重新占住
+REPL，看起来就像“复位没反应”。如果直接 Ctrl-C 杀正在跑识别的脚本，
+KPU/相机原生对象析构还可能死锁，把整块板卡到 USB 不枚举，只能拔插。
+
+**现在的处理**：
+
+```bash
+bash scripts/mode.sh debug    # 工作 -> 调试（不用 Ctrl-C，不用拔插）
+bash scripts/mode.sh work     # 调试 -> 工作
+bash scripts/mode.sh status   # 只读查看
+python3 -m k230tool reset     # 真 machine.reset + 等 USB 重新枚举
+```
+
+`mode debug` 让 ESP32 连发 3 条 `$E,STOP!`（`gnone`），新版
+`board/gimbal_agent.py` 识别为调试暗号：写 `offline_off` 后立即
+`machine.reset()`；复位发生在对象析构之前，不会死锁。
+旧版 `main.py` 没有暗号时，会提示一次性用 TF 卡建 `offline_off` 升级。
+
+**不要**再对正在跑识别的工作脚本连发 Ctrl-C。
+
 ### 跑完 AI 脚本后 REPL 无响应 / 写串口超时
 
 K230 的 KPU 原生对象析构死锁（已知固件问题）。表现：脚本已经打印完，
@@ -31,7 +54,7 @@ K230 的 KPU 原生对象析构死锁（已知固件问题）。表现：脚本�
 
 - 本包 `board/yolo_stream.py`：退出时保活 KPU 引用并 `machine.reset()`，
   默认 `reset_on_exit=1`；
-- 如果仍然卡住：按 RESET 或拔插 USB；
+- 如果仍然卡住：先 `bash scripts/mode.sh debug`；仍无响应再按 RESET / 断电；
 - 不要尝试在脚本里直接 `del kpu` / `kpu.release()` / `gc.collect()` 清理。
 
 ### 堆内存不足 / `snapshot()` 卡死
@@ -122,8 +145,12 @@ python3 tools/export_onnx.py --weights best.pt --imgsz 320 --out best.onnx
 
 ## 7. CanMV IDE 相关
 
-- IDE 连不上：先停 `k230tool live/monitor`，等板子复位完；
-- IDE 运行 `yolo_preview_ide.py` 后断开：停止脚本会复位板子，重新连接即可；
+- IDE 连不上：先停 `k230tool live/monitor`；如果板子在跑工作代理，
+  执行 `bash scripts/mode.sh debug`（不要直接拔插）；
+- IDE 运行 `yolo_preview_ide.py` 后断开：停止脚本会 `machine.reset()`，
+  等 USB 重新枚举（约 2~3 秒）再重连即可；
+- 工作模式下 IDE 连不上是正常的：REPL 被 `/sdcard/main.py` 占用，
+  先 `mode.sh debug`；
 - IDE 预览黑屏：确认 `DISPLAY_MODE="virt"` 且 `to_ide=True`；换 `"hdmi"` 试本地屏；
 - 不要在 IDE 里同时 import 本包的 PC 端模块（那是给 PC 用的）。
 

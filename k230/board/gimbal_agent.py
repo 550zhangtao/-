@@ -20,11 +20,18 @@ gimbal_agent.py —— K230 常驻代理：ESP32 说开始才开始跑识别
     K230 -> ESP32 : `$KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>!`（每帧）
     状态回执      : `$E,K230,READY!` / `START_OK!` / `STOP_OK!` / `ERR,INIT!`
 
+免 REPL 切调试
+--------------
+    1.5 秒内连续收到 3 条 `$E,STOP!`（PC 可让 ESP32 连发 `gnone`）：
+    写 `/sdcard/offline_off` 后立刻 `machine.reset()`。复位发生在 Python
+    对象析构之前，不会触发 KPU/相机死锁；复位后本脚本看到 marker 直接退出，
+    REPL 交还给 CanMV IDE。PC 侧入口：`bash scripts/mode.sh debug`。
+
 部署
 ----
-    python3 -m k230tool push board/gimbal_agent.py --dest /sdcard/main.py
+    python3 -m k230tool mode work --agent board/gimbal_agent.py
 上电（不需要 USB，5V 独立供电即可）自动运行。想用 CanMV IDE 调试：
-在 /sdcard 建空文件 `offline_off` 再上电，本脚本会直接退出停在 REPL。
+`bash scripts/mode.sh debug`（不要再手工 Ctrl-C / 拔插）。
 """
 
 import gc
@@ -75,6 +82,14 @@ _ready = False
 _running = False
 _rxbuf = ""
 _fail = 0
+
+# 工作模式下 REPL 被本脚本占用，不能再靠 Ctrl-C 切模式（实测会把板子
+# 打进 USB 不枚举状态）。ESP32 的 gnone 命令会发 `$E,STOP!`，连续 3 条
+# STOP（1.5s 内）作为“切调试模式”的暗号：PC 不需要 REPL，也不需要改
+# ESP32 固件。
+_stop_marks = []
+_DEBUG_STOP_COUNT = 3
+_DEBUG_STOP_WINDOW_MS = 1500
 
 _keep = {}
 try:
@@ -157,6 +172,23 @@ def _reply(msg):
         pass
 
 
+def _record_stop():
+    """3 条 STOP 在 1.5s 内 -> True。用于免 REPL 的“切调试”暗号。"""
+    global _stop_marks
+    try:
+        now = time.ticks_ms()
+        _stop_marks.append(now)
+        while (_stop_marks and
+               time.ticks_diff(now, _stop_marks[0]) > _DEBUG_STOP_WINDOW_MS):
+            _stop_marks.pop(0)
+        if len(_stop_marks) >= _DEBUG_STOP_COUNT:
+            _stop_marks = []
+            return True
+    except Exception:
+        _stop_marks = []
+    return False
+
+
 def _poll_cmd():
     global _rxbuf
     if _uart is None:
@@ -192,8 +224,42 @@ def _poll_cmd():
         if "START" in line:
             cmd = "START"
         elif "STOP" in line:
-            cmd = "STOP"
+            cmd = "DEBUG" if _record_stop() else "STOP"
+            if cmd == "DEBUG":
+                break
     return cmd
+
+
+# ---------------- 免 REPL 切调试 ----------------
+def _enter_debug_mode():
+    """写 offline_off 后立即整机复位：不析构 KPU/相机，避免原生对象死锁。"""
+    global _running
+    _running = False
+    try:
+        f = open("/sdcard/offline_off", "w")
+        f.write("1")
+        f.close()
+        size = os.stat("/sdcard/offline_off")[6]
+        if size <= 0:
+            raise OSError("marker size 0")
+    except Exception as e:
+        print("agent: DEBUG marker failed:", e)
+        _reply("ERR,DEBUG")
+        return False
+    try:
+        print("agent: DEBUG requested -> offline_off written, reset to REPL")
+        sys.stdout.flush()
+    except Exception:
+        pass
+    _reply("DEBUG_OK")
+    time.sleep_ms(200)
+    try:
+        import machine
+        machine.reset()
+    except Exception as e:
+        print("agent: machine.reset failed:", e)
+        return False
+    return True
 
 
 # ---------------- 相机 / 模型（按需打开） ----------------
@@ -344,6 +410,11 @@ def main():
 
     while True:
         cmd = _poll_cmd()
+        if cmd == "DEBUG":
+            # 写 offline_off 后立刻复位；不要先 _drop_pipeline()/gc，
+            # 否则会在 KPU/相机原生对象析构时死锁（实测会把整块板卡死）。
+            _enter_debug_mode()
+            return
         if cmd:
             heard_cmd = True
         # 冷启动自愈：上电后一直没人喊 START，就自己开跑（只触发一次；AUTO_START_MS=0 关闭）

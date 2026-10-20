@@ -14,6 +14,10 @@ k230tool —— 统一命令行入口
     python3 -m k230tool push 文件 --dest ...  # PC -> 板
     python3 -m k230tool pull /sdcard/... .    # 板 -> PC
     python3 -m k230tool models                # 列板端模型
+    python3 -m k230tool mode debug            # 切 IDE 调试（REPL 空闲）
+    python3 -m k230tool mode work             # 切板端工作（自动跑 main.py）
+    python3 -m k230tool mode status           # 只读查看当前模式
+    python3 -m k230tool reset                 # 真软复位（不拔插 USB）
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ PASSTHROUGH = {
     "serve": ("serve_mjpeg", "HTTP MJPEG 网络摄像头"),
     "push": ("push_file", "PC -> 板端文件"),
     "pull": ("pull_file", "板端 -> PC 文件"),
+    "mode": ("mode", "调试/工作模式切换（debug/work/status/reset）"),
 }
 
 
@@ -106,31 +111,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("models", help="列出板端 /sdcard/models 与本地 models/")
     p.add_argument("--port", default=None)
 
-    p = sub.add_parser("reset", help="软复位板子（Ctrl-C + Ctrl-D），用于板端脚本卡死")
+    p = sub.add_parser(
+        "reset",
+        help="真软复位（machine.reset + 等待 USB 重连，不拔插）")
     p.add_argument("--port", default=None)
     return ap
 
 
 def cmd_reset(port=None) -> int:
-    import time
-    from .link import K230Link, find_port, port_holders
-    dev = port or find_port()
-    if not dev:
-        print("没有找到 K230 串口")
-        return 1
-    holders = port_holders(dev)
-    if holders:
-        print("串口占用:", ", ".join("%d(%s)" % h for h in holders))
-    link = K230Link(port=dev).open()
-    try:
-        link.sync()                      # Ctrl-C 打断板端脚本
-        link.ser.write(b"\x04")          # Ctrl-D 软复位
-        time.sleep(0.6)
-        out = link.ser.read(4096)
-        print("已发送软复位（%s），板端输出: %r" % (dev, out[:80]))
-        return 0
-    finally:
-        link.close()
+    # 复用 mode reset：先抢回 REPL，读当前模式，再 machine.reset() 并等 USB 恢复。
+    # 旧实现只发 Ctrl-D（VM 软重启），不会清相机/KPU，工作模式下 main.py
+    # 会立刻重新占住 REPL，看起来就像“软复位没反应、只能拔插 USB”。
+    from . import mode as mode_mod
+    argv = ["reset"] + (["--port", port] if port else [])
+    return mode_mod.main(argv)
 
 
 def cmd_models(port=None) -> int:

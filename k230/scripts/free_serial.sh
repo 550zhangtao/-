@@ -22,5 +22,5 @@ if [ "${1:-}" = "--kill" ]; then
   echo "== 结束后占用 =="
   fuser -v "$PORT" 2>&1 || echo "(已释放)"
   echo
-  echo "提示：板端脚本可能还在跑，执行  ./scripts/k230tool reset  软复位板子"
+  echo "提示：板端脚本可能还在跑，执行  bash scripts/mode.sh debug  切回调试（会真软复位）"
 fi

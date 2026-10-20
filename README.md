@@ -36,8 +36,9 @@ K230 视觉端（YOLOv8-Pose 靶纸/靶心检测）、USB 调试工具与模型�
 │   ├── tools/                      Pose 标注 / 训练 / 导出 / 编译 / 评估
 │   ├── models/                     kmodel / pt / onnx 权重（见 models/README.md）
 │   ├── docs/                       UART 协议、部署、标注、排错、架构
-│   ├── scripts/                    udev 规则、离线部署、启动脚本
+│   ├── scripts/                    udev 规则、离线部署、模式切换（mode.sh）
 │   └── live/                       运行时输出（latest.jpg / latest.json，git 忽略）
+├── scripts/                        根目录快捷入口：mode.sh / ide_mode.sh / offline_mode.sh
 └── hardware/                       板卡资料 / 引脚图 / 原理图 / 电机与发射器手册
 ```
 
@@ -67,16 +68,28 @@ python3 -m k230tool push board/gimbal_agent.py --dest /sdcard/main.py
 
 CanMV 上电自动执行 `/sdcard/main.py`：常驻等命令 → 收到 `$E,START!` 才开相机跑识别。
 
-### 4) CanMV IDE 预览（调试视觉）
+### 4) 调试 / 工作模式切换 + CanMV IDE 预览
 
-板端**常驻代理会占着 REPL**，用 IDE 预览前先切到"IDE 模式"（代理不再自启、相机空闲）：
+板端**常驻代理会占着 REPL**，用 IDE 预览前先切到调试模式
+（`/sdcard/main.py` 不启动、相机空闲）：
 
 ```bash
-cd k230
-bash scripts/ide_mode.sh       # 板端建 /sdcard/offline_off 并复位 -> 停在 REPL
-# 打开 CanMV IDE / VSCode CanMV 插件，运行 board/yolo_preview_ide.py
-bash scripts/offline_mode.sh   # 调试完恢复：删 offline_off 并复位，代理重新自启
+# 在仓库根目录（推荐；根目录 scripts/ 会转发到 k230/scripts/）
+bash scripts/mode.sh debug     # 工作 -> 调试：等 REPL 回来
+bash scripts/mode.sh status    # 只读查看当前模式
+bash scripts/mode.sh work      # 调试 -> 工作：代理重新自启
+
+# 也可以 cd k230 后用同样的命令（真实脚本在 k230/scripts/）
+cd k230 && bash scripts/mode.sh debug
 ```
+
+然后打开 CanMV IDE / VSCode CanMV 插件，运行 `k230/board/yolo_preview_ide.py`。
+调试完执行 `bash scripts/mode.sh work` 恢复；**工作模式下 IDE 连不上是正常的**。
+
+> 工作 → 调试不需要拔插 USB、也不需要 Ctrl-C：PC 会让 ESP32 连发 3 条
+> `$E,STOP!`（`gnone`），新版代理写 `offline_off` 后立即 `machine.reset()`。
+> 首次升级代理（在 `k230/` 下）：
+> `python3 -m k230tool mode work --agent board/gimbal_agent.py`。
 
 预览脚本默认已配好（`/sdcard/models/target_pose.kmodel`、`VIEW="full"`、`VIEW_SCALE=0.55`、
 `CONF=0.25`），点运行即可看到检测框 + 四角轮廓 + 红色靶心，同时仍会向 ESP32 发 `$KT`。

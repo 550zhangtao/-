@@ -22,6 +22,7 @@ k230/
 │   ├── grab.py                批量抓帧（做数据集）
 │   ├── serve_mjpeg.py         浏览器 MJPEG 网络摄像头
 │   ├── probe.py               全链路体检
+│   ├── mode.py                ★ 调试/工作模式切换（免拔插）
 │   ├── push_file.py           PC -> 板端文件
 │   ├── pull_file.py           板端 -> PC 文件
 │   └── cli.py                 统一命令行
@@ -189,14 +190,34 @@ python3 -m k230tool status
 
 ## 5. 你自己在 CanMV IDE 里看画面
 
+### 5.1 调试模式 / 工作模式一键切换（不需要拔插 USB）
+
+```bash
+bash scripts/mode.sh debug    # 调试：/sdcard/main.py 跳过，REPL 空闲 -> IDE 可连
+bash scripts/mode.sh work     # 工作：自动跑 /sdcard/main.py，REPL 被占 -> IDE 不能连
+bash scripts/mode.sh status   # 只读查看当前模式（不会打断识别）
+bash scripts/mode.sh reset    # 保持当前模式真软复位（machine.reset + 等 USB 回来）
+```
+
+- `debug`：写 `/sdcard/offline_off`，真软复位，等 REPL 回来后才返回；
+- `work`：删 `offline_off`，真软复位，等 USB 启动完成；ESP32 按 R2/`gtrack`
+  后开始轮询识别；
+- **工作 → 调试** 不再用 Ctrl-C 杀脚本（会把 K230 打进 USB 不枚举/死锁）。
+  PC 让 ESP32 连发 3 条 `$E,STOP!`（`gnone`），新版代理识别为调试暗号：
+  写 `offline_off` → `machine.reset()`。全程不拔插、不需要改 ESP32 固件；
+- 首次升级 / 旧版 `main.py` 没有暗号时，需要一次性进入调试：
+  断电 → 取 TF 卡 → 根目录建空文件 `offline_off` → 上电，然后执行
+  `python3 -m k230tool mode work --agent board/gimbal_agent.py`；
+- 别名：`scripts/ide_mode.sh` = `mode debug`，`scripts/offline_mode.sh` = `mode work`。
+
 串口是 **独占** 的：`k230tool live`/`monitor` 在跑时，CanMV IDE 连不上；
 反之亦然。两条路径二选一：
 
-**A. Agent 看（USB 工具）**：`python3 -m k230tool live`
+**A. Agent 看（USB 工具）**：`python3 -m k230tool live`（先 `mode.sh debug`）
 
 **B. 人看（CanMV IDE）**：
 
-1. 先停掉 PC 端工具（Ctrl-C；板子会自动复位约 8 秒）
+1. `bash scripts/mode.sh debug`（等它打印“调试模式就绪”）
 2. 打开 CanMV IDE，连接板子
 3. 打开 `board/yolo_preview_ide.py`，按运行
 
@@ -354,11 +375,15 @@ python3 -m k230tool push board/gimbal_agent.py --dest /sdcard/main.py
   - 跟踪中 ESP32 2.5s 收不到 `$KT` → 每 3s 重发 `$E,START!`；
     K230 重启后会主动发 `$E,K230,READY!`，ESP32 收到就补一条 START；
 - 回执：`$E,K230,READY! / START_OK! / STOP_OK! / ERR,INIT!`（ESP32 串口会打印）；
-- 想回 CanMV IDE 调试：在 `/sdcard` 建空文件 `offline_off` 再上电，代理直接退出停在 REPL。
+- **想回 CanMV IDE 调试**：`bash scripts/mode.sh debug`。
+  PC 会让 ESP32 连发 3 条 STOP（`gnone`），代理写 `offline_off` 后立即
+  `machine.reset()`，等 REPL 回来即可；不需要拔插 USB、不需要按 Ctrl-C。
+  手工兜底：在 `/sdcard` 建空文件 `offline_off` 再上电。
 
 > 自动运行的脚本如果写坏/卡死，板子会连 REPL 都没反应，只能**断电重上电**；
 > `scripts/deploy_k230_agent.py` 会在重新上电的第一时间抢 REPL、删掉坏 `main.py`
-> 并写入新代理（实测可用）。
+> 并写入新代理（实测可用）。新版代理带“3×STOP = 切调试”暗号，
+> 部署一次后工作↔调试切换全程免拔插、免 Ctrl-C。
 
 ## 7. 实测性能（本机，CanMV v1.4.3 / GC2093 / USB2.0 HS）
 
@@ -410,7 +435,8 @@ MAGIC(AA 55 4B 32) | 类型(1B) | seq(hex8) | plen(hex8) | wlen(hex8) | crc(hex8
 ## 10. 已知限制
 
 - **串口独占**：同一时刻只能有一个程序用板子（详见第 5 节）。
-- **AI 脚本退出会复位板子**：约 8 秒重连；这是为了绕开 KPU 析构死锁。
+- **AI 脚本退出会复位板子**：约 2~4 秒 USB 重新枚举后重连；这是为了绕开
+  KPU 析构死锁。工作模式切调试用 `scripts/mode.sh debug`，不要 Ctrl-C。
 - **K230 的 kmodel 与 nncase 版本相关**：训练/编译工具按官方 K230 文档配置；
   换固件后若加载失败，用同版本 nncase 重新编译。
 - **Pose 模型待训练**：本包不附带 5 关键点数据集；当前 `pose5.kmodel`

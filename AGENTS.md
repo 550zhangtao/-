@@ -37,9 +37,32 @@
 1. `k230tool/link.py`：`K230Link.open()` 会先 `fuser` 检查端口占用，
    若占用者是 `canmv-backend` 直接报错并提示 `CanMV: Disconnect Board`，
    不再抢串口（强制绕过：`K230_ALLOW_CONFLICT=1`）；
-2. `k230tool reset`：软复位板子（Ctrl-C + Ctrl-D），用于板端脚本卡死；
+2. `k230tool reset`：**真软复位**（raw REPL 里 `machine.reset()` + 等 USB 重新枚举），
+   不再用 Ctrl-D（只重启 VM，工作模式下 `main.py` 会立刻重新占住 REPL）；
+   枚举层卡住时会尝试 `USBDEVFS_RESET` 软件拔插兜底；
 3. `k230tool/scripts/free_serial.sh [--kill]`：查看/清理残留 `k230tool` 进程；
 4. 别再 `kill -9` 后台 live：优先 `k230tool reset` 或让它自己到 `--duration`。
+
+### 2.2 调试/工作模式切换（2026-10-21）
+
+```bash
+bash k230/scripts/mode.sh debug    # 调试：/sdcard/main.py 跳过，REPL 空闲，IDE 可连
+bash k230/scripts/mode.sh work     # 工作：自动跑 /sdcard/main.py，REPL 被占，IDE 不能连
+bash k230/scripts/mode.sh status   # 只读；不会打断识别
+bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自动 debug->work）
+```
+
+- **工作 → 调试绝不再连发 Ctrl-C**：实测会触发 KPU/相机析构死锁，把 K230
+  打进 USB 不枚举（内核 `descriptor error -71`），只能断电。
+- 新 `board/gimbal_agent.py` 把 **1.5s 内 3 条 `$E,STOP!`** 识别为调试暗号：
+  写 `/sdcard/offline_off` → `machine.reset()`。PC 侧让 ESP32 连发 3 次
+  USB `gnone` 即可，不需要改 ESP32 固件；全程免拔插。
+- 调试 → 工作：`mode work` 删 `offline_off`，`machine.reset(wait_repl=False)`，
+  等 USB/tty 稳定；`/sdcard/main.py` 自动运行。
+- 旧版 `main.py` 没有暗号时，一次性断电取 TF 卡建 `offline_off`，上电后
+  `mode work --agent board/gimbal_agent.py` 升级代理。
+- `yolo_preview_ide.py` 退出仍会 `machine.reset()`；IDE 需等 2~3 秒 USB
+  重新枚举后再连。工作模式下 IDE 连不上是**正常现象**。
 
 ## 3. 板端固件限制（CanMV v1.4.3 / k230_canmv_yahboom）
 
@@ -229,9 +252,10 @@
     **`AUTO_START_MS = 0`（默认，不自己开跑）**：上电后没人按 R2 就一直空转等命令；
     回执 `$E,K230,READY/START_OK/STOP_OK/ERR,INIT!`；
   - **离线运行**：CanMV 上电自动执行 `/sdcard/main.py`，**不插 USB、5V 独立供电**
-    即可（实测 main.py 自动运行有效）；想用 CanMV IDE 调试就在 `/sdcard`
-    建空文件 `offline_off` 再上电，代理直接退出停在 REPL；
-  - 部署/救援：`python3 -m k230tool push board/gimbal_agent.py --dest /sdcard/main.py`；
+    即可（实测 main.py 自动运行有效）；想用 CanMV IDE 调试用
+    `bash k230/scripts/mode.sh debug`（不再手工建 `offline_off`），代理会退出停在 REPL；
+  - 部署/救援：`python3 -m k230tool mode work --agent board/gimbal_agent.py`
+    （内部走 push + 校验 + 真软复位）；旧式 `k230tool push` 仍可用；
     自动运行脚本写坏会把板子卡到 **REPL 都没反应**（本次踩过），只能断电重上电，
     `k230/scripts/deploy_k230_agent.py` 负责在重上电第一秒抢 REPL、
     删坏文件、写新代理（一行一条 REPL 命令 + 校验字节数 + 交互验证后才设自启动）；
