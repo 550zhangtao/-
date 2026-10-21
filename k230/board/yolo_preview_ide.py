@@ -49,10 +49,11 @@ AI_EVERY = 2                 # 每 N 帧跑一次 pose（其余帧复用上次�
 
 # ---- 激光光斑 ----
 LASER_ENABLE = 1              # 1=检测并绘制激光光斑
-# 固定标定下每 N 帧才复核一次，其余帧零搜索；激光每 N 帧更新一次即可。
-LASER_EVERY = 2
+# 固定标定下每 N 帧才复核一次，其余帧零搜索。
+# 每帧都调 locate()：非复核帧只返回缓存，开销≈0；这样复核/重捕节奏与代理一致。
+LASER_EVERY = 1
 LASER_VERIFY_EVERY = 5        # 每 5 帧复核一次（固定标定基本不变）
-LASER_GLOBAL = 1              # IDE 预览不是 R2 瞄准态：不做受限重捕
+LASER_GLOBAL = 1              # 与代理/live 一致：允许现有受限分格重捕（不是全图）
 LASER_BUDGET_MS = 35          # 单帧激光超过此值才跳；只跳 1 帧，避免人为卡顿
 LASER_COOLDOWN = 1
 LASER_CFG = {}                # 覆盖 board/laser_spot.py 的 CFG，如 {"min_contrast": 45}
@@ -85,12 +86,12 @@ import sys
 import gc
 import time
 
-# 激光检测模块：优先从 /sdcard 加载（PC 推流时会一起下发），
-# 其次从脚本同目录（IDE 直接运行 board/yolo_preview_ide.py 时）。
+# 激光检测模块：固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
 for _p in ("/sdcard", "/sdcard/board", "/"):
     try:
-        if _p not in sys.path:
-            sys.path.append(_p)
+        if _p in sys.path:
+            sys.path.remove(_p)
+        sys.path.insert(0, _p)
     except Exception:
         pass
 try:
@@ -104,6 +105,8 @@ _sensor = None
 _yolo = None
 _laser = None
 _laser_skip = 0
+_laser_calib_warned = False
+_laser_recalib_warned = False
 
 
 def _display_init():
@@ -220,7 +223,8 @@ def _send_uart_laser(seq, laser):
         return
     try:
         if laser is not None and float(laser.get("x", -1)) >= 0:
-            src = 2 if laser.get("src") == "fixed" else 1
+            # F：src=1 只给本帧实测；fixed/calib/confirm/reacquire 都是 2
+            src = 1 if laser.get("src") == "measured" else 2
             _uart.write("$LS,%d,1,%d,%d,%d,%d!\n" % (
                 seq, int(laser["x"] * 10), int(laser["y"] * 10),
                 int(float(laser.get("conf", 0)) * 1000), src))
@@ -392,6 +396,20 @@ def _init_laser():
     if laser_spot is None:
         print("激光检测不可用：laser_spot.py 未找到")
         return None
+    ver = getattr(laser_spot, "VERSION", "?")
+    api = int(getattr(laser_spot, "API_VERSION", 0))
+    ch = int(getattr(laser_spot, "CFG_HASH", 0))
+    md5 = ""
+    try:
+        md5 = laser_spot.file_md5("/sdcard/laser_spot.py")
+    except Exception:
+        pass
+    print("laser: laser_spot v%s api=%d cfg=0x%08x md5=%s" %
+          (ver, api, ch, md5 or "?"))
+    if api < 2:
+        print("laser: laser_spot 版本过旧（需要 API>=2），已关闭；"
+              "先推 /sdcard/laser_spot.py")
+        return None
     cfg = {
         "fixed_verify_every": LASER_VERIFY_EVERY,
         "fixed_allow_reacquire": LASER_GLOBAL,
@@ -404,7 +422,7 @@ def _init_laser():
     if fixed is None:
         fixed = _load_calib()
         src = "file"
-    if fixed is not None and fixed[0] > 0:
+    if (fixed is not None and 0 < fixed[0] < W and 0 < fixed[1] < H):
         _laser.set_fixed(fixed[0], fixed[1])
         print("laser: 固定标定 (%.1f, %.1f) 来自%s → 每 %d 帧复核一次，其余帧零搜索" %
               (fixed[0], fixed[1], src, LASER_VERIFY_EVERY))
@@ -415,7 +433,7 @@ def _init_laser():
 
 
 def main():
-    global _sensor, _yolo, _laser_skip
+    global _sensor, _yolo, _laser_skip, _laser_calib_warned, _laser_recalib_warned
     _sensor = Sensor(id=2)
     _sensor.reset()
     _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_1)
@@ -477,7 +495,11 @@ def main():
         if _laser is not None and (n % LASER_EVERY) == 0:
             if _laser_skip > 0:
                 _laser_skip -= 1
-                laser = None
+                # 看门狗跳帧：保留坐标，用 cached() 标成回退（src=2）
+                try:
+                    laser = _laser.cached()
+                except Exception:
+                    laser = None
             else:
                 t_l = time.ticks_ms()
                 try:
@@ -490,6 +512,19 @@ def main():
                     _laser_skip = LASER_COOLDOWN
                     print("laser %dms > %dms, skip %d"
                           % (laser_ms, LASER_BUDGET_MS, LASER_COOLDOWN))
+                if (getattr(_laser, "need_recalib", False)
+                        and not _laser_recalib_warned):
+                    _laser_recalib_warned = True
+                    print("laser: NEED_RECALIB (local verify failed; "
+                          "check laser/calib, no full-screen search)")
+                elif laser is not None and laser.get("src") == "measured":
+                    _laser_recalib_warned = False
+                # calib 偏差告警：只打印一次，不写文件
+                if (not _laser_calib_warned
+                        and getattr(_laser, "calib_stale", False)):
+                    _laser_calib_warned = True
+                    print("laser: CALIB_STALE dev=%.0fpx (file not modified)"
+                          % getattr(_laser, "_calib_dev", 0.0))
                 # 上电首次视觉标定成功后存盘，之后走窄窗跟踪
                 if laser is not None and _laser.just_calibrated:
                     _laser.just_calibrated = False

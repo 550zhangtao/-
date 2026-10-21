@@ -38,7 +38,76 @@ import time
 
 # ----------------------------------------------------------- 配置
 # 会被 PC 端按正则替换，务必保持**单行** dict 字面量
-CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 6, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 60, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'win_red_warm': 120, 'win_red_luma': 50, 'win_warm_hot': 70, 'win_luma_low': 150, 'win_hot_luma': 245, 'win_hot_min': 220, 'win_dark_warm': 80, 'win_dark_luma': 55, 'win_far_warm': 40, 'win_far_luma': 80, 'slow_every': 1,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120, 'budget_ms': 12, 'fixed_verify_every': 5, 'fixed_allow_reacquire': 0, 'fixed_reacquire_after': 4, 'fixed_reacquire_every': 1, 'fixed_reacquire_rad': 320, 'fixed_reacquire_stride': 2}
+CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 6, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 28, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'win_red_warm': 120, 'win_red_luma': 50, 'win_warm_hot': 70, 'win_luma_low': 150, 'win_hot_luma': 245, 'win_hot_min': 220, 'win_dark_warm': 80, 'win_dark_luma': 55, 'win_far_warm': 40, 'win_far_luma': 80, 'slow_every': 1,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120, 'budget_ms': 12, 'fixed_verify_every': 5, 'fixed_allow_reacquire': 0, 'fixed_reacquire_after': 4, 'fixed_reacquire_every': 1, 'fixed_reacquire_rad': 48, 'fixed_reacquire_stride': 2}
+
+# 2026-10-22 稳定性修复（B+F+D）：
+# * calib/上次确认位置是强先验：只在它附近验证/局部重捕，不做全画面搜索；
+# * 复核/重捕命中必须连续多次落在同一位置 ±5px 才更新 fixed；
+# * 预算截断不算失败；复核窗口最大 28px；
+# * fixed 失败时不再拉回 calib（calib 只读锚点）；
+# * 局部环背景相对特征打分（top-K），不再用多套绝对 luma 通道 OR。
+CFG.update({
+    'fixed_confirm_hits': 3, 'fixed_confirm_rad': 5,
+    'reacq_confirm_hits': 2, 'reacq_confirm_rad': 6,
+    'auto_confirm_hits': 3, 'recalib_after': 20,
+    'cached_conf_max': 0.55,
+    'calib_warn_px': 80,
+    # D：候选打分（局部环背景 + 相对色度/亮度 + 紧凑度）
+    'win_topk': 3, 'win_sep': 12, 'win_merge_dist': 12,
+    'win_pre_warm': 12,
+    'win_norm_dw': 25, 'win_norm_dl': 12,
+    'win_relax_dw': 30, 'win_relax_dl': 8,
+    'hot_luma': 240, 'hot_min': 220,
+    'win_w_dw': 1.0, 'win_w_dl': 1.5,
+    'win_w_hot': 60.0, 'win_w_comp': 30.0,
+})
+
+VERSION = "2026-10-22.6"
+API_VERSION = 2
+
+
+def _cfg_hash(c):
+    """稳定配置指纹（不依赖 dict 顺序）。"""
+    h = 2166136261
+    for k in sorted(c):
+        s = "%s=%s;" % (k, c[k])
+        for ch in s:
+            h = ((h ^ ord(ch)) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+CFG_HASH = _cfg_hash(CFG)
+
+
+def file_md5(path):
+    """板端/PC 通用的文件 md5；读 4KB 分块，避免大内存分配。"""
+    h = None
+    try:
+        import uhashlib
+        h = uhashlib.md5()
+    except Exception:
+        try:
+            import hashlib
+            h = hashlib.md5()
+        except Exception:
+            return ""
+    try:
+        f = open(path, "rb")
+        try:
+            while True:
+                b = f.read(4096)
+                if not b:
+                    break
+                h.update(b)
+        finally:
+            f.close()
+    except Exception:
+        return ""
+    try:
+        import binascii
+        return binascii.hexlify(h.digest()).decode()
+    except Exception:
+        return ""
 
 # 亮白阈值（板端 LAB：L 0~100）。光斑核心 L 接近 100。
 LAB_WHITE = [(82, 100, -30, 30, -30, 30)]
@@ -144,6 +213,20 @@ class LaserSpot:
         self.mode_hist = []     # 最近几次命中模式（诊断）
         self._grid_i = 0        # 无先验捕获的分格索引
         self._budget_hit = False
+        self._win_complete = True
+        # ---- B：固定复核/重捕的连续一致确认状态 ----
+        self._cand_xy = None    # 待确认候选
+        self._cand_n = 0        # 连续命中次数
+        self._last_conf = 0.35  # 上次确认的实测置信度
+        self._reacq_confirm = False
+        self._reacq_cand = None
+        self._reacq_n = 0
+        self._calib_dev = 0.0
+        self.calib_stale = False
+        self.need_recalib = False
+        self._calib_warned = False
+        self._auto_xy = None
+        self._auto_n = 0
 
     def set_fixed(self, x, y):
         """写入标定位置：之后 locate() 直接返回它，几乎零开销。
@@ -158,6 +241,18 @@ class LaserSpot:
         self._verify_ok = True
         self.just_calibrated = False
         self.last = (float(x), float(y))
+        self._cand_xy = None
+        self._cand_n = 0
+        self._last_conf = 0.35
+        self._reacq_confirm = False
+        self._reacq_cand = None
+        self._reacq_n = 0
+        self._calib_dev = 0.0
+        self.calib_stale = False
+        self.need_recalib = False
+        self._calib_warned = False
+        self._auto_xy = None
+        self._auto_n = 0
 
     def reset(self):
         # 注意：fixed 不清（标定是物理量），只清跟踪状态
@@ -170,6 +265,14 @@ class LaserSpot:
         self.mode_hist = []
         self._grid_i = 0
         self._budget_hit = False
+        self._win_complete = True
+        self._verify_fail = 0
+        self._verify_ok = True
+        self._cand_xy = None
+        self._cand_n = 0
+        self._reacq_confirm = False
+        self._reacq_cand = None
+        self._reacq_n = 0
 
     # ------------------------------------------------------ 单 ROI 检测
     def _scan(self, img, roi, base_luma=0, stride=1, allow_wide=False,
@@ -458,88 +561,277 @@ class LaserSpot:
         return (sx / sw, sy / sw)
 
     # ------------------------------------------------------ 对外
-    def _scan_window(self, img, cx, cy, rad, base_luma, stride=1, t0=0, budget=0):
-        """只在 (cx,cy)±rad 的小窗口里逐像素找光斑，不调用 find_blobs。
+    def _scan_window(self, img, cx, cy, rad, base_luma, stride=1, t0=0,
+                     budget=0, relax=False):
+        """窗口内 top-K 候选 + 局部环背景相对特征（D）。
 
-        为什么可行：相机与激光笔固连，云台小幅转动时光斑只移动几~几十 px
-        （遗留 aim_core 实测 pan 50µs ≈ 5~9px）。所以绝大多数帧只需在上一帧
-        附近几十 px 内确认一下即可。
-        开销：窗口 (2*rad)^2 / stride^2 个像素 × ~7µs。rad=14,stride=1 →
-        784 px ≈ 5ms；受限重捕 rad=180,stride=6 → 3600 px ≈ 25ms（每 30 帧一次）。
+        base_luma 参数保留仅为兼容旧调用，**不再使用全局背景**。
+        对每个候选在 r=18 的环上取中值 bgL/bgW：
+            dL = luma - bgL
+            dW = (R-G) - bgW
+        常规复核：dW>=25 且 dL>=12，或 hot(minRGB>=220 且 luma>=240)；
+        重捕放宽：dW>=30 且 dL>=8，或 hot。
+        score = 1.0*dW + 1.5*dL + 60*hot + 30*compact
+        不再“扫到第一个过门槛的点就返回”，而是 top-K 评分后取最优。
         """
         c = self.cfg
         w = img.width()
         h = img.height()
         ba = self._ba
+        if ba is None:
+            self._win_complete = False
+            return None
         stride = int(stride)
         if stride < 1:
             stride = 1
-        rad = int(rad)          # gate_radius() 是 float；range() 必须 int
+        rad = int(rad)
         x0 = int(cx) - rad
         y0 = int(cy) - rad
         if x0 < 0:
             x0 = 0
         if y0 < 0:
             y0 = 0
-        x1 = int(cx) + rad
-        y1 = int(cy) + rad
+        x1 = int(cx) + rad + 1
+        y1 = int(cy) + rad + 1
         if x1 > w:
             x1 = w
         if y1 > h:
             y1 = h
-        need_l = base_luma + c["win_contrast"]
-        if need_l < c["win_luma"]:
-            need_l = c["win_luma"]
-        best = -1
-        bx = -1
-        by = -1
-        bmk = -1
+        self._win_complete = True
+        topk = int(c.get("win_topk", 4))
+        sep = int(c.get("win_sep", 12))
+        pre_warm = int(c.get("win_pre_warm", 12))
+        hot_l = int(c.get("hot_luma", 240))
+        hot_m = int(c.get("hot_min", 220))
+        # 每个 sep×sep 块只保留 raw 最高的一个像素；块索引 O(1)，
+        # 避免“每像素都和 top-K 列表比一遍”的 Python 开销。
+        cols = (x1 - x0 + sep - 1) // sep
+        rows = (y1 - y0 + sep - 1) // sep
+        if cols < 1 or rows < 1:
+            return None
+        bests = [None] * (cols * rows)
         for yy in range(y0, y1, stride):
-            # 硬时间预算：小窗逐像素是 Python 级循环，必须能中途放弃。
             if budget and _diff_ms(_now_ms(), t0) > budget:
                 self._budget_hit = True
+                self._win_complete = False
                 break
+            by = (yy - y0) // sep
+            rowbase = by * cols
             for xx in range(x0, x1, stride):
-                r, g, bl = _rgb565(ba, w, xx, yy)
-                lu = _luma(r, g, bl)
-                warm = r - g
-                # 过曝白核：live 曝光可能把红点打成纯白，warm≈0 但 luma 很高
-                hot = (lu >= c.get("win_hot_luma", 245)
-                       and r >= c.get("win_hot_min", 220)
-                       and g >= c.get("win_hot_min", 220)
-                       and bl >= c.get("win_hot_min", 220))
-                if warm < c["win_warm"] and not hot:
+                i = (yy * w + xx) * 2
+                if i + 1 >= len(ba):
                     continue
-                if lu < need_l and not hot:
-                    # 墙很亮时，激光点 luma 只比墙高一点（实测 RGB≈255,174,197,
-                    # luma≈200 vs 墙≈190），但 r-g≈81 远高于墙；允许这种
-                    # “高暖色 + 中亮”的点。纯暗红点走 win_red_* 通道。
-                    if warm >= c.get("win_red_warm", 120) and lu >= c.get("win_red_luma", 50):
-                        pass
-                    elif (warm >= c.get("win_warm_hot", 70)
-                          and lu >= c.get("win_luma_low", 150)):
-                        pass
-                    elif (warm >= c.get("win_dark_warm", 80)
-                          and lu >= c.get("win_dark_luma", 55)):
-                        pass   # 暗红点：RGB≈166,71,75，luma≈100，warm≈95
-                    elif (warm >= c.get("win_far_warm", 40)
-                          and lu >= c.get("win_far_luma", 80)):
-                        pass   # 远距离暗点：luma 可能只有 80~110，但仍有暖色
-                    else:
-                        continue
-                # 亮的 + 偏红的优先（激光是"最亮又带红晕"的那一点）
-                mk = lu + warm
-                if mk > best:
-                    best = mk
-                    bx = xx
-                    by = yy
-                    bmk = warm
-        if best < 0:
+                v = ba[i] | (ba[i + 1] << 8)
+                r = ((v >> 11) & 0x1F) * 8
+                g = ((v >> 5) & 0x3F) * 4
+                bl = (v & 0x1F) * 8
+                lu = (r * 77 + g * 150 + bl * 29) >> 8
+                warm = r - g
+                mn = r if r < g else g
+                if bl < mn:
+                    mn = bl
+                hot = (lu >= hot_l and mn >= hot_m)
+                if warm < pre_warm and not hot:
+                    continue
+                raw = lu + warm + (120 if hot else 0)
+                j = rowbase + (xx - x0) // sep
+                cur = bests[j]
+                if cur is None or raw > cur[0]:
+                    bests[j] = [raw, xx, yy, warm, lu, hot]
+        raw_cands = [b for b in bests if b is not None]
+        if not raw_cands:
             return None
-        return {"x": float(bx), "y": float(by),
-                "conf": min(1.0, (best - need_l) / 120.0 + 0.4),
-                "contrast": 0, "warm": bmk, "sat": 0, "mode": "win",
-                "area": 1, "ms": 0}
+        raw_cands.sort(key=lambda b: b[0], reverse=True)
+        # 严格保证相邻候选 >=sep px，再取 top-K
+        cands = []
+        for b in raw_cands:
+            ok = True
+            for s in cands:
+                dx = s[1] - b[1]
+                dy = s[2] - b[2]
+                if dx * dx + dy * dy < sep * sep:
+                    ok = False
+                    break
+            if ok:
+                cands.append(b)
+                if len(cands) >= topk:
+                    break
+        feats = []
+        for raw, xx, yy, warm, lu, hot in cands:
+            f = self._cand_feature(ba, w, h, xx, yy, relax)
+            if f is not None:
+                feats.append(f)
+        if not feats:
+            return None
+        feats.sort(key=lambda f: f["score"], reverse=True)
+        # 近邻合并：中心距 <12px 且面积比 1:3~3:1
+        merged = []
+        md = int(c.get("win_merge_dist", 12))
+        for f in feats:
+            hit = False
+            for g in merged:
+                if _dist(f["x"], f["y"], g["x"], g["y"]) >= md:
+                    continue
+                a = f["area"]
+                b = g["area"]
+                if a <= 0 or b <= 0:
+                    continue
+                r = a / float(b)
+                if r < (1.0 / 3.0) or r > 3.0:
+                    continue
+                wt = f["score"] + g["score"]
+                if wt <= 0:
+                    wt = 1.0
+                g["x"] = (f["x"] * f["score"] + g["x"] * g["score"]) / wt
+                g["y"] = (f["y"] * f["score"] + g["y"] * g["score"]) / wt
+                g["area"] = a + b
+                if f["score"] > g["score"]:
+                    g["score"] = f["score"]
+                g["hot"] = 1 if (f["hot"] or g["hot"]) else 0
+                hit = True
+                break
+            if not hit:
+                merged.append(f)
+        merged.sort(key=lambda f: f["score"], reverse=True)
+        best = merged[0]
+        best["conf"] = min(1.0, best["score"] / 250.0)
+        best["mode"] = "win"
+        best["ms"] = 0
+        return best
+
+    def _cand_feature(self, ba, w, h, x, y, relax):
+        """候选的局部环背景特征 + 9x9 支撑/加权质心 + D 打分。"""
+        c = self.cfg
+        # r≈18 的 16 点环（不要 r=10：会把激光晕圈算进背景）
+        offs = ((18, 0), (17, 7), (13, 13), (7, 17), (0, 18), (-7, 17),
+                (-13, 13), (-17, 7), (-18, 0), (-17, -7), (-13, -13),
+                (-7, -17), (0, -18), (7, -17), (13, -13), (17, -7))
+        ls = []
+        ws = []
+        for dx, dy in offs:
+            xx = x + dx
+            yy = y + dy
+            if xx < 0:
+                xx = 0
+            elif xx >= w:
+                xx = w - 1
+            if yy < 0:
+                yy = 0
+            elif yy >= h:
+                yy = h - 1
+            i = (yy * w + xx) * 2
+            v = ba[i] | (ba[i + 1] << 8)
+            r = ((v >> 11) & 0x1F) * 8
+            g = ((v >> 5) & 0x3F) * 4
+            bl = (v & 0x1F) * 8
+            ls.append((r * 77 + g * 150 + bl * 29) >> 8)
+            ws.append(r - g)
+        ls.sort()
+        ws.sort()
+        bgL = ls[len(ls) // 2]
+        bgW = ws[len(ws) // 2]
+        i = (y * w + x) * 2
+        v = ba[i] | (ba[i + 1] << 8)
+        r = ((v >> 11) & 0x1F) * 8
+        g = ((v >> 5) & 0x3F) * 4
+        bl = (v & 0x1F) * 8
+        lu = (r * 77 + g * 150 + bl * 29) >> 8
+        warm = r - g
+        mn = r if r < g else g
+        if bl < mn:
+            mn = bl
+        hot = (lu >= int(c.get("hot_luma", 240))
+               and mn >= int(c.get("hot_min", 220)))
+        dL = lu - bgL
+        dW = warm - bgW
+        # 紧凑度：环上同色暖像素越少越像点光源（大面积手/红物会很高）
+        nwarm = 0
+        for wv in ws:
+            if wv >= bgW + 15:
+                nwarm += 1
+        compact = 1.0 - nwarm / float(len(ws))
+        if compact < 0.0:
+            compact = 0.0
+        # 9x9 支撑 + 加权质心
+        sx = 0.0
+        sy = 0.0
+        sw = 0.0
+        support = 0
+        ya = y - 4 if y >= 4 else 0
+        yb = y + 5 if y + 5 <= h else h
+        xa = x - 4 if x >= 4 else 0
+        xb = x + 5 if x + 5 <= w else w
+        for yy in range(ya, yb):
+            for xx in range(xa, xb):
+                i2 = (yy * w + xx) * 2
+                v2 = ba[i2] | (ba[i2 + 1] << 8)
+                r2 = ((v2 >> 11) & 0x1F) * 8
+                g2 = ((v2 >> 5) & 0x3F) * 4
+                b2 = (v2 & 0x1F) * 8
+                lu2 = (r2 * 77 + g2 * 150 + b2 * 29) >> 8
+                wv = r2 - g2
+                mn2 = r2 if r2 < g2 else g2
+                if b2 < mn2:
+                    mn2 = b2
+                if wv >= bgW + 15 or (lu2 >= 240 and mn2 >= 220):
+                    support += 1
+                    wt = 0.0
+                    if wv > bgW:
+                        wt += wv - bgW
+                    if lu2 > bgL:
+                        wt += 0.5 * (lu2 - bgL)
+                    sx += xx * wt
+                    sy += yy * wt
+                    sw += wt
+        if sw > 0:
+            cx = sx / sw
+            cy = sy / sw
+        else:
+            cx = float(x)
+            cy = float(y)
+        area = support if support > 0 else 1
+        # D 判据：hot 不要求 dW；常规/重捕只差 dL（重捕 dW 门槛反而更高）
+        if hot:
+            ok = True
+        elif relax:
+            ok = (dW >= int(c.get("win_relax_dw", 30))
+                  and dL >= int(c.get("win_relax_dl", 8)))
+        else:
+            ok = (dW >= int(c.get("win_norm_dw", 25))
+                  and dL >= int(c.get("win_norm_dl", 12)))
+        if not ok:
+            return None
+        score = (float(c.get("win_w_dw", 1.0)) * dW
+                 + float(c.get("win_w_dl", 1.5)) * dL
+                 + float(c.get("win_w_hot", 60.0)) * (1.0 if hot else 0.0)
+                 + float(c.get("win_w_comp", 30.0)) * compact)
+        return {"x": float(cx), "y": float(cy), "score": score,
+                "conf": 0.0, "dW": dW, "dL": dL, "dl": dL, "dw": dW,
+                "bgL": bgL, "bgW": bgW, "warm": warm, "luma": lu,
+                "hot": 1 if hot else 0, "area": area, "support": support,
+                "compact": compact, "contrast": dL, "sat": 0,
+                "mode": "win", "ms": 0}
+
+    def cached(self):
+        """返回上次确认的 fixed 位置（看门狗跳帧/无新结果时用，不清坐标）。"""
+        if self.fixed is None:
+            return None
+        conf = self._last_conf
+        cap = self.cfg.get("cached_conf_max", 0.55)
+        if conf > cap:
+            conf = cap
+        return {"x": self.fixed[0], "y": self.fixed[1], "conf": conf,
+                "contrast": 0, "warm": 0, "sat": 0, "mode": "cached",
+                "area": 0, "src": "fixed", "status": "calib",
+                "ms": 0}
+
+    def _update_calib_dev(self, x, y):
+        if self.calib is None:
+            return
+        self._calib_dev = _dist(x, y, self.calib[0], self.calib[1])
+        if self._calib_dev > self.cfg.get("calib_warn_px", 80):
+            self.calib_stale = True
+            self._calib_warned = True
 
     def locate(self, img, anchor=None):
         """返回 dict(x, y, conf, contrast, warm, sat, mode, ms) 或 None。
@@ -560,83 +852,169 @@ class LaserSpot:
         c = self.cfg
         budget = int(c.get("budget_ms", 12))
 
-        # ===== 固定标定模式：预测点门控 + 每 N 帧复核，绝不回退全图搜索 =====
-        # 设计要点（踩过两个坑后定的）：
-        #  1) 相机与激光笔固连，光斑在画面里的位置基本是常量：只在每
-        #     fixed_verify_every 帧复核一次（12~60px 小窗，~5ms），其余帧
-        #     直接返回标定位置，**零搜索开销**。
-        #  2) 复核连续失败 fixed_reacquire_after 次后，每 fixed_reacquire_every
-        #     帧做一次 ±fixed_reacquire_rad 的**受限**重捕（stride=6，~25ms），
-        #     绝不回退全图 find_blobs（复杂画面单帧 0.5~2.3s，会把流拖到 0.5fps）。
-        #  3) fixed_allow_reacquire 只由 R2/START 的离线代理置 1；IDE 预览 /
-        #     live 置 0，保证「只有 R2 才进入（受限）全局搜索」。
+        # ===== 固定标定模式：每 N 帧窄窗复核；失败后受限分格重捕 =====
+        # 2026-10-22 B 修复：
+        #  1) 命中不立刻 commit：同一位置 ±5px 连续 fixed_confirm_hits 次才更新 fixed；
+        #  2) 失败不再把 fixed 拉回 calib；calib 只读锚点；
+        #  3) 复核窗最大 28px、rad>16 用 stride=2，避免 120x120 吃满 12ms；
+        #  4) 预算截断不算失败；重捕用独立 t_r，否则复核吃满预算后重捕永远 0 行；
+        #  5) 重捕命中先进入确认，不直接清零失败计数。
         if self.fixed is not None:
             self._frame_n += 1
             fx, fy = self.fixed
             if self._base_luma is None:
                 self._base_luma = self._estimate_base(ba, w, h)
+            base = self._base_luma
             ve = int(c.get("fixed_verify_every", 5))
             src = "fixed"
             mode = "fixed"
+            cap = c.get("cached_conf_max", 0.55)
+            conf = self._last_conf
+            if conf > cap:
+                conf = cap
+
+            # --- 重捕候选确认：每帧都做（13x13 小窗，~0.2ms）---
+            if self._reacq_confirm and self._reacq_cand is not None:
+                t_r = _now_ms()
+                rr = self._scan_window(img, self._reacq_cand[0],
+                                       self._reacq_cand[1],
+                                       int(c.get("reacq_confirm_rad", 6)), base,
+                                       stride=1, t0=t_r,
+                                       budget=min(4, budget), relax=True)
+                if (rr is not None
+                        and _dist(rr["x"], rr["y"], self._reacq_cand[0],
+                                  self._reacq_cand[1]) <= 8):
+                    self._reacq_n += 1
+                    if self._reacq_n >= int(c.get("reacq_confirm_hits", 2)):
+                        fx, fy = rr["x"], rr["y"]
+                        self.fixed = (fx, fy)
+                        self._verify_fail = 0
+                        self._verify_ok = True
+                        self._reacq_confirm = False
+                        self._reacq_cand = None
+                        self._reacq_n = 0
+                        self._reacq_i = 0
+                        # 已确认位置作为下一次复核的种子：下一次命中即可直接更新
+                        self._cand_xy = (fx, fy)
+                        self._cand_n = int(c.get("fixed_confirm_hits", 3))
+                        self._last_conf = max(0.6, rr["conf"])
+                        self._update_calib_dev(fx, fy)
+                        self.need_recalib = False
+                        self.last = (fx, fy)
+                        self.last_ms = _diff_ms(_now_ms(), t0)
+                        self.last_cands = 1
+                        return {"x": fx, "y": fy, "conf": self._last_conf,
+                                "contrast": rr.get("dl", 0),
+                                "warm": rr["warm"], "sat": 0,
+                                "mode": "fixed+reacquire", "area": 0,
+                                "src": "measured", "status": "ok",
+                                "ms": self.last_ms}
+                    self.last = (fx, fy)
+                    self.last_ms = _diff_ms(_now_ms(), t0)
+                    return {"x": fx, "y": fy,
+                            "conf": min(0.5, self._last_conf),
+                            "contrast": 0, "warm": 0, "sat": 0,
+                            "mode": "reacquire-confirm", "area": 0,
+                            "src": "fixed", "status": "confirm",
+                            "ms": self.last_ms}
+                else:
+                    # 候选没通过确认：丢掉，继续重捕；不清失败计数
+                    self._reacq_confirm = False
+                    self._reacq_cand = None
+                    self._reacq_n = 0
+
             if ve <= 1 or (self._frame_n % ve) == 0:
-                # 窗口随连续未命中次数放大，够跟上云台小幅移动
+                # 窗口随连续未命中次数放大，但上限 28px（旧代码 60px 会吃满预算）
                 rad = c["win_rad"] + self._verify_fail * c["win_grow"]
                 if rad > c["win_rad_max"]:
                     rad = c["win_rad_max"]
-                vr = self._scan_window(img, fx, fy, rad, self._base_luma,
-                                       t0=t0, budget=budget)
-                # 只接受标定锚点附近的检测，避免手/红杂物把 fixed 带跑
-                if vr is not None and (self.calib is None
-                        or _dist(vr["x"], vr["y"], self.calib[0], self.calib[1])
-                        <= max(c["win_rad"] * 3, 45)):
-                    fx, fy = vr["x"], vr["y"]
-                    self.fixed = (fx, fy)
-                    self._verify_fail = 0
-                    conf = vr["conf"]
-                    src = "measured"
+                stride = 2 if rad <= 16 else 3
+                t_v = _now_ms()
+                vr = self._scan_window(img, fx, fy, rad, base, stride=stride,
+                                       t0=t_v, budget=min(5, budget), relax=False)
+                if not self._win_complete:
+                    # 预算截断：结论不确定，不算一次失败（旧代码会误判）
+                    mode = "verify-timeout"
+                    conf = 0.4
+                elif vr is not None:
+                    # 同一位置 ±fixed_confirm_rad 连续命中才更新 fixed
+                    if (self._cand_xy is not None
+                            and _dist(vr["x"], vr["y"], self._cand_xy[0],
+                                      self._cand_xy[1])
+                            <= int(c.get("fixed_confirm_rad", 5))):
+                        self._cand_n += 1
+                    else:
+                        self._cand_xy = (vr["x"], vr["y"])
+                        self._cand_n = 1
+                    if self._cand_n >= int(c.get("fixed_confirm_hits", 3)):
+                        fx, fy = vr["x"], vr["y"]
+                        self.fixed = (fx, fy)
+                        self._verify_fail = 0
+                        self._verify_ok = True
+                        # 已确认位置作为下一次复核的种子：下一次命中即可直接更新，
+                        # 避免每隔 3 次复核才报一次 measured（静态光斑也适用）。
+                        self._cand_xy = (fx, fy)
+                        self._cand_n = int(c.get("fixed_confirm_hits", 3))
+                        self._last_conf = max(0.5, vr["conf"])
+                        self._update_calib_dev(fx, fy)
+                        self.need_recalib = False
+                        src = "measured"
+                        mode = "fixed"
+                        conf = self._last_conf
+                        self.last = (fx, fy)
+                        self.last_ms = _diff_ms(_now_ms(), t0)
+                        self.last_cands = 1
+                        return {"x": fx, "y": fy, "conf": conf,
+                                "contrast": vr.get("dl", 0),
+                                "warm": vr["warm"], "sat": 0,
+                                "mode": mode, "area": 0,
+                                "src": "measured", "status": "ok",
+                                "ms": self.last_ms}
+                    else:
+                        # 命中但还没确认：不更新 fixed，也不清零失败计数
+                        mode = "confirm"
+                        conf = min(0.5, self._last_conf)
                 else:
+                    # 完整扫完仍没有候选：累计失败
                     self._verify_fail += 1
-                    conf = 0.35
-                    # 手遮挡时不要把 fixed 带跑：拉回只读锚点
-                    if self.calib is not None:
-                        fx, fy = self.calib
-                        self.fixed = self.calib
+                    self._cand_xy = None
+                    self._cand_n = 0
+                    self._verify_ok = False
+                    mode = "lost"
+                    conf = 0.2
+                    # calib/上次确认位置是强先验：只在它附近做“局部重捕”，
+                    # 不做全画面搜索。光斑真跑到 200px 外 = calib 过期，
+                    # 应告警/重新标定，而不是把远处的红色物体锁成激光。
+                    if self._verify_fail >= int(c.get("recalib_after", 20)):
+                        self.need_recalib = True
                     if (c.get("fixed_allow_reacquire", 0)
-                            and self._verify_fail >= int(c.get("fixed_reacquire_after", 10))):
-                        # 每帧只扫一个 60×60 格，围绕 calib ±R，中心优先；
-                        # 手移开后光斑回到标定附近，1~2s 内必被扫到。
-                        R = int(c.get("fixed_reacquire_rad", 180))
-                        cell = 60
-                        n = max(1, (2 * R) // cell)
-                        cx, cy = self.calib if self.calib else (fx, fy)
-                        order = sorted(range(n * n),
-                                       key=lambda k: ((k % n) - (n - 1) / 2.0) ** 2
-                                       + ((k // n) - (n - 1) / 2.0) ** 2)
-                        idx = order[self._reacq_i % len(order)]
-                        self._reacq_i += 1
-                        gx = int(cx - R + (idx % n) * cell + cell // 2)
-                        gy = int(cy - R + (idx // n) * cell + cell // 2)
-                        vr2 = self._scan_window(img, gx, gy, cell // 2,
-                                                self._base_luma, stride=2,
-                                                t0=t0, budget=budget)
+                            and self._verify_fail >= int(c.get("fixed_reacquire_after", 4))):
+                        R = int(c.get("fixed_reacquire_rad", 48))
+                        cx, cy = self.fixed if self.fixed else (fx, fy)
+                        t_r = _now_ms()
+                        vr2 = self._scan_window(img, cx, cy, R, base,
+                                                stride=3, t0=t_r,
+                                                budget=min(10, budget), relax=True)
+                        mode = "reacquire"
+                        conf = 0.15
                         if vr2 is not None:
-                            fx, fy = vr2["x"], vr2["y"]
-                            self.fixed = (fx, fy)
-                            self._verify_fail = 0
-                            self._verify_ok = True
-                            self._reacq_i = 0
-                            conf = vr2["conf"]
-                            src = "measured"
-                            mode = "fixed+reacquire"
+                            # 局部重捕命中先确认，不直接 commit
+                            self._reacq_confirm = True
+                            self._reacq_cand = (vr2["x"], vr2["y"])
+                            self._reacq_n = 1
             else:
-                # 非复核帧：位置就是标定值，没有任何搜索/分配
-                conf = 1.0
+                # 非复核帧：返回上次确认位置，conf 不超过缓存上限（不再报 1.0）
+                mode = "fixed"
+                conf = min(cap, self._last_conf)
             self.last = (fx, fy)
-            self.last_ms = time.ticks_diff(time.ticks_ms(), t0)
+            self.last_ms = _diff_ms(_now_ms(), t0)
             self.last_cands = 1
+            status = "ok" if src == "measured" else (
+                "confirm" if mode in ("confirm", "reacquire-confirm")
+                else "calib")
             return {"x": fx, "y": fy, "conf": conf, "contrast": 0,
                     "warm": 0, "sat": 0, "mode": mode, "area": 0,
-                    "src": src, "ms": self.last_ms}
+                    "src": src, "status": status, "ms": self.last_ms}
 
         # 背景基线低频更新：全图稀疏采样约 8ms，每 10 帧算一次即可
         self._frame_n += 1
@@ -794,13 +1172,24 @@ class LaserSpot:
         # 只对强特征（white）做，弱特征（dim）容易锁到红杂物上，不采信。
         if (self.fixed is None and c["auto_calib"] and cd["mode"] == "white"
                 and cd["contrast"] > 0):
-            self.fixed = (x, y)
-            self.calib = (x, y)
-            self._verify_fail = 0
-            self.just_calibrated = True
+            # 首次标定也要连续稳定：手/红杂物只出现一两帧，不会写进 calib
+            if (self._auto_xy is not None
+                    and _dist(x, y, self._auto_xy[0], self._auto_xy[1]) <= 5):
+                self._auto_n += 1
+            else:
+                self._auto_xy = (x, y)
+                self._auto_n = 1
+            if self._auto_n >= int(c.get("auto_confirm_hits", 3)):
+                self.fixed = (x, y)
+                self.calib = (x, y)
+                self._verify_fail = 0
+                self._auto_xy = None
+                self._auto_n = 0
+                self.just_calibrated = True
         self.mode_hist.append(cd["mode"])
         if len(self.mode_hist) > 10:
             self.mode_hist.pop(0)
         return {"x": x, "y": y, "conf": conf, "contrast": cd["contrast"],
                 "warm": cd["warm"], "sat": cd["sat"], "mode": cd["mode"],
-                "area": cd["area"], "ms": self.last_ms}
+                "area": cd["area"], "src": "measured", "status": "ok",
+                "ms": self.last_ms}

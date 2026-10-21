@@ -46,6 +46,14 @@ from libs.YOLO import YOLOv8
 import libs.YOLO as _YL
 from ulab import numpy as _np
 
+# 版本统一：固定从 /sdcard 加载，避免 /sdcard/board 或 / 下的旧副本抢先。
+for _p in ("/sdcard",):
+    try:
+        if _p in sys.path:
+            sys.path.remove(_p)
+        sys.path.insert(0, _p)
+    except Exception:
+        pass
 try:
     import laser_spot
 except Exception as _e:
@@ -100,6 +108,12 @@ _rxbuf = ""
 _fail = 0
 _laser = None
 _laser_skip = 0
+# 激光耗时统计（固定 40 个 1ms bin，不做每帧大分配）
+_lms_hist = [0] * 40
+_lms_n = 0
+_lms_src = [0, 0, 0]      # 0=无 1=实测 2=回退
+_lms_reacq = 0
+_recalib_warned = False
 
 # 工作模式下 REPL 被本脚本占用，不能再靠 Ctrl-C 切模式（实测会把板子
 # 打进 USB 不枚举状态）。ESP32 的 gnone 命令会发 `$E,STOP!`，连续 3 条
@@ -391,17 +405,56 @@ def _load_laser_calib():
         i = s.find('"x"')
         j = s.find('"y"')
         if i >= 0 and j >= 0:
-            return (float(s[s.find(":", i) + 1:s.find(",", i)]),
-                    float(s[s.find(":", j) + 1:s.find("}", j)]))
+            x = float(s[s.find(":", i) + 1:s.find(",", i)])
+            y = float(s[s.find(":", j) + 1:s.find("}", j)])
+            if 0 <= x < W and 0 <= y < H:
+                return (x, y)
+            print("agent: calib 超出画面 (%s,%s) -> 忽略" % (x, y))
     except Exception:
         pass
     return None
+
+
+def _log_versions():
+    """启动日志：版本号/API/配置哈希/md5。A 的验收入口。"""
+    if laser_spot is None:
+        print("agent: laser_spot MISSING -> $LS 关闭")
+        return False
+    ver = getattr(laser_spot, "VERSION", "?")
+    api = int(getattr(laser_spot, "API_VERSION", 0))
+    cfg = int(getattr(laser_spot, "CFG_HASH", 0))
+    md5 = ""
+    try:
+        md5 = laser_spot.file_md5("/sdcard/laser_spot.py")
+    except Exception:
+        pass
+    size = -1
+    try:
+        size = os.stat("/sdcard/laser_spot.py")[6]
+    except Exception:
+        pass
+    print("agent: laser_spot v%s api=%d cfg=0x%08x md5=%s size=%d"
+          % (ver, api, cfg, md5 or "?", size))
+    try:
+        mmd5 = laser_spot.file_md5("/sdcard/main.py")
+        msz = os.stat("/sdcard/main.py")[6]
+        print("agent: main.py md5=%s size=%d" % (mmd5 or "?", msz))
+    except Exception:
+        pass
+    if api < 2:
+        print("agent: laser_spot 版本过旧（需要 API>=2），$LS 关闭；"
+              "先跑 python3 -m k230tool mode work --agent board/gimbal_agent.py")
+        return False
+    return True
 
 
 def _open_laser():
     """初始化激光检测（固定标定 + 受限重捕）；失败不影响 $KT 推流。"""
     global _laser
     if not LASER_ENABLE or laser_spot is None:
+        _laser = None
+        return False
+    if int(getattr(laser_spot, "API_VERSION", 0)) < 2:
         _laser = None
         return False
     fx = _load_laser_calib()
@@ -426,39 +479,94 @@ def _open_laser():
 
 
 def _send_laser(seq, laser):
-    """`$LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!` —— 三态接口数据源。"""
+    """`$LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!` —— 三态接口数据源。
+
+    语义（F）：run=1 表示“有可用参考”，不表示本帧实测；
+    src=1 本帧实测，src=2 标定/缓存/重捕回退；conf 单独表示质量。
+    """
+    global _lms_src
     if _uart is None:
         return
     try:
         if laser is not None and float(laser.get("x", -1)) >= 0:
-            src = 2 if laser.get("src") == "fixed" else 1
+            src = 1 if laser.get("src") == "measured" else 2
+            _lms_src[src] = _lms_src[src] + 1
             _uart.write("$LS,%d,1,%d,%d,%d,%d!\n" % (
                 seq, int(laser["x"] * 10), int(laser["y"] * 10),
                 int(float(laser.get("conf", 0)) * 1000), src))
         else:
             fx = getattr(_laser, "fixed", None) if _laser is not None else None
             if fx is not None and fx[0] > 0:
+                _lms_src[2] = _lms_src[2] + 1
                 _uart.write("$LS,%d,1,%d,%d,0,2!\n" %
                             (seq, int(fx[0] * 10), int(fx[1] * 10)))
             else:
+                _lms_src[0] = _lms_src[0] + 1
                 _uart.write("$LS,%d,0,-1,-1,0,0!\n" % seq)
         _uart.flush()
     except Exception as e:
         print("agent: laser tx:", e)
 
 
+def _note_laser(ms):
+    global _lms_n
+    if ms < 0:
+        ms = 0
+    b = 39 if ms >= 39 else int(ms)
+    _lms_hist[b] += 1
+    _lms_n += 1
+
+
+def _laser_stats():
+    if _lms_n <= 0:
+        return "laser n=0"
+    def pct(q):
+        need = int(_lms_n * q)
+        acc = 0
+        for i in range(40):
+            acc += _lms_hist[i]
+            if acc >= need:
+                return i
+        return 39
+    mx = 0
+    for i in range(39, -1, -1):
+        if _lms_hist[i]:
+            mx = i
+            break
+    return ("laser p50=%d p95=%d max=%d n=%d src1=%d src2=%d reacq=%d"
+            % (pct(0.50), pct(0.95), mx, _lms_n,
+               _lms_src[1], _lms_src[2], _lms_reacq))
+
+
 def _stream_frame(seq):
-    global _laser_skip
+    global _laser_skip, _lms_reacq, _recalib_warned
     img1 = _sensor.snapshot(chn=CAM_CHN_ID_1)           # 显示通道：激光检测用
     laser = None
     if _laser is not None:
         if _laser_skip > 0:
             _laser_skip -= 1
+            # 看门狗跳帧：保留上次坐标，不清空（F/G）
+            try:
+                laser = _laser.cached()
+            except Exception:
+                laser = None
         else:
             try:
                 t_l = time.ticks_ms()
                 laser = _laser.locate(img1)
                 lms = time.ticks_diff(time.ticks_ms(), t_l)
+                _note_laser(lms)
+                if laser is not None:
+                    m = laser.get("mode", "")
+                    if m == "lost" or "reacquire" in m:
+                        _lms_reacq += 1
+                    if laser.get("src") == "measured":
+                        _recalib_warned = False
+                if (getattr(_laser, "need_recalib", False)
+                        and not _recalib_warned):
+                    _recalib_warned = True
+                    print("agent: laser NEED_RECALIB (local verify failed; "
+                          "check laser/calib, no full-screen search)")
                 if lms > LASER_BUDGET_MS:
                     _laser_skip = LASER_COOLDOWN
                     print("agent: laser %dms > %dms, skip %d"
@@ -466,6 +574,10 @@ def _stream_frame(seq):
             except Exception as e:
                 print("agent: laser:", e)
                 _laser_skip = LASER_COOLDOWN
+                try:
+                    laser = _laser.cached()
+                except Exception:
+                    laser = None
     arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
     res = _yolo.run(arr)
     if res and len(res) >= 4:
@@ -504,6 +616,7 @@ def main():
     except Exception:
         pass
 
+    _log_versions()
     _init_uart()
     _reply("READY")
     print("agent: 常驻就绪（相机按需打开），等 $E,START! / $E,STOP!")
@@ -554,8 +667,9 @@ def main():
                     inst = 1000.0 / dt
                     fps = inst if fps == 0 else (0.8 * fps + 0.2 * inst)
                 if PRINT_EVERY and (spent % PRINT_EVERY) == 0:
-                    print("agent: %d frames, %.1ffps" % (spent, fps))
-                if (spent & 0x07) == 0:
+                    print("agent: %d frames, %.1ffps, %s"
+                          % (spent, fps, _laser_stats()))
+                if (spent & 0x0F) == 0:
                     gc.collect()
             except Exception as e:
                 _fail += 1

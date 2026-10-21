@@ -47,6 +47,7 @@ PC 让 ESP32 连发 3 条 `$E,STOP!`（1.5s 内），K230 代理把它识别为�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 import time
@@ -143,31 +144,51 @@ def _remove_marker(link: K230Link) -> None:
         raise BoardError("删除 %s 失败：%s" % (MARKER, (err or out)[:300]))
 
 
-def _deploy_agent(link: K230Link, local_path: str) -> None:
-    """把本地代理推到 /sdcard/main.py（先写 .new，校验后再替换）。"""
+def _push_replace(link: K230Link, local: Path, remote: str, tmp: str,
+                  label: str) -> None:
+    """推 tmp -> md5 校验 -> 删旧 -> rename；任何一步失败都不动旧文件。"""
     from .push_file import push_one
 
-    src = Path(local_path).expanduser().resolve()
-    if not src.is_file():
-        raise BoardError("--agent 文件不存在：%s" % src)
-    _log("部署 %s -> %s …" % (src, MAIN))
-    if not push_one(link, str(src), MAIN_TMP, verbose=True):
-        raise BoardError("推送到 %s 失败" % MAIN_TMP)
-    want = src.stat().st_size
-    # 先删旧 main.py 再 rename：本机固件 os.rename 覆盖已存在文件会 EEXIST
+    want = hashlib.md5(local.read_bytes()).hexdigest()
+    _log("部署 %s（%d 字节, md5 %s）…" % (label, local.stat().st_size, want))
+    if not push_one(link, str(local), tmp, verbose=True):
+        raise BoardError("推送到 %s 失败" % tmp)
+    got = link._board_md5(tmp)
+    if got != want:
+        raise BoardError("%s md5 校验失败：期望 %s，实际 %s"
+                         % (tmp, want, got or "读取失败"))
+    # 本机固件 os.rename 覆盖已存在文件会 EEXIST，必须先删再改名
     out, err, ok = link.exec_and_collect(
         "import os\n"
         "try:\n    os.remove(%r)\nexcept Exception as e:\n    print('RMERR', e)\n"
         "try:\n    os.rename(%r, %r)\nexcept Exception as e:\n    print('MVERR', e)\n"
-        "try:\n    print('SZ', os.stat(%r)[6])\nexcept Exception as e:\n    print('SZ', -1)\n"
-        % (MAIN, MAIN_TMP, MAIN, MAIN),
+        "try:\n    print('SZ', os.stat(%r)[6])\n"
+        "except Exception as e:\n    print('SZ', -1)\n"
+        % (remote, tmp, remote, remote),
         timeout=15)
-    if not ok or ("SZ %d" % want) not in out:
+    if not ok or ("SZ %d" % local.stat().st_size) not in out:
         raise BoardError(
             "替换 %s 失败（期望 %d 字节）：%s\n"
             "  可先切 debug 后重试，或手工检查 %s"
-            % (MAIN, want, (err or out)[:500], MAIN_TMP))
-    _log("已部署 %s（%d 字节）" % (MAIN, want))
+            % (remote, local.stat().st_size, (err or out)[:500], tmp))
+    _log("已部署 %s（%d 字节, md5 %s）"
+         % (remote, local.stat().st_size, got))
+
+
+def _deploy_agent(link: K230Link, local_path: str) -> None:
+    """把本地代理 + 同目录 laser_spot.py 一起推到 /sdcard，md5 校验后替换。"""
+    src = Path(local_path).expanduser().resolve()
+    if not src.is_file():
+        raise BoardError("--agent 文件不存在：%s" % src)
+    dep = src.parent / "laser_spot.py"
+    if not dep.is_file():
+        raise BoardError(
+            "缺少依赖 %s；代理必须和 laser_spot.py 同目录部署（A：版本统一）"
+            % dep)
+    # 先推依赖：这样 reset 后 main.py 启动时 import 到的就是新版
+    _push_replace(link, dep, "/sdcard/laser_spot.py",
+                  "/sdcard/laser_spot.py.new", "laser_spot.py")
+    _push_replace(link, src, MAIN, MAIN_TMP, "main.py")
 
 
 def _read_boot_log(port: str, seconds: float = 2.5) -> str:

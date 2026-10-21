@@ -49,8 +49,9 @@ import math
 # 激光检测模块（PC 下发时会一并推到 /sdcard/laser_spot.py）
 for _p in ("/sdcard", "/sdcard/board", "/"):
     try:
-        if _p not in sys.path:
-            sys.path.append(_p)
+        if _p in sys.path:
+            sys.path.remove(_p)
+        sys.path.insert(0, _p)
     except Exception:
         pass
 try:
@@ -453,7 +454,8 @@ def _send_uart_laser(seq, laser):
         return
     try:
         if laser is not None and float(laser.get("x", -1)) >= 0:
-            src = 2 if laser.get("status") == "calib" else 1
+            # F：不要用 status（旧 locate 不返回）；src=1 只给本帧实测
+            src = 1 if laser.get("src") == "measured" else 2
             line = "$LS,%d,1,%d,%d,%d,%d!\n" % (
                 seq, int(laser["x"] * 10), int(laser["y"] * 10),
                 int(float(laser.get("conf", 0)) * 1000), src)
@@ -505,32 +507,48 @@ def main():
                    max_boxes_num=CFG["max_boxes"], debug_mode=0)
     _yolo.config_preprocess()
     _init_uart()
-    if CFG.get("laser_enable", 1) and laser_spot is not None:
+    _api = 0
+    _lver = "?"
+    if laser_spot is not None:
+        _lver = getattr(laser_spot, "VERSION", "?")
+        _api = int(getattr(laser_spot, "API_VERSION", 0))
+        _lch = int(getattr(laser_spot, "CFG_HASH", 0))
+        _lmd5 = ""
+        try:
+            _lmd5 = laser_spot.file_md5("/sdcard/laser_spot.py")
+        except Exception:
+            pass
+        log("laser_spot v%s api=%d cfg=0x%08x md5=%s"
+            % (_lver, _api, _lch, _lmd5 or "?"))
+    if CFG.get("laser_enable", 1) and laser_spot is not None and _api >= 2:
         _laser = laser_spot.LaserSpot({
             "fixed_verify_every": int(CFG.get("laser_verify_every", 5)),
-            # 受限重捕（±180px）只在 R2/START 的离线代理里打开；
-            # USB live / IDE 预览默认 0，避免非瞄准状态做任何全局搜索。
+            # 与代理/预览一致：允许现有受限分格重捕（不是全图）。
             "fixed_allow_reacquire": int(CFG.get("laser_global", 0)),
         })
         # 和 IDE 预览共用 /sdcard/laser_calib.json：有标定就直接锁死，
         # 避免每次上电都做 12 次全图搜索（复杂画面单次要 0.5~2.3s，
         # 会把整条流拖到 0.5fps）。
         _fx = _load_laser_calib()
-        if _fx is not None and _fx[0] > 0:
+        if (_fx is not None and 0 < _fx[0] < CFG["w"]
+                and 0 < _fx[1] < CFG["h"]):
             _laser.set_fixed(_fx[0], _fx[1])
             log("laser fixed (%.1f,%.1f) 来自 /sdcard/laser_calib.json" % _fx)
     else:
         _laser = None
         if CFG.get("laser_enable", 1):
-            log("laser_spot.py 未找到，激光检测关闭")
+            if laser_spot is None:
+                log("laser_spot.py 未找到，激光检测关闭")
+            elif _api < 2:
+                log("laser_spot 版本过旧（API=%d，需要>=2），激光检测关闭" % _api)
 
     try:
         stype = str(sen.get_type())
     except Exception:
         stype = "?"
-    emit(T_HELLO, 0, ("pose w=%d h=%d q=%d model=%s mem=%d sensor=%s version=%s"
+    emit(T_HELLO, 0, ("pose w=%d h=%d q=%d model=%s mem=%d sensor=%s version=%s laser=%s"
                       % (CFG["w"], CFG["h"], CFG["q"], CFG["model"],
-                         gc.mem_free(), stype, sys.version)).encode())
+                         gc.mem_free(), stype, sys.version, _lver)).encode())
     log("pose streaming %dx%d q=%d model=%s" %
         (CFG["w"], CFG["h"], CFG["q"], CFG["model"]))
     try:
@@ -720,10 +738,14 @@ def main():
 
         if laser is not None:
             src = laser.get("src", "measured")
+            status = laser.get("status",
+                               "ok" if src == "measured" else "calib")
             laser_out = {"x": round(laser["x"], 1), "y": round(laser["y"], 1),
                          "conf": round(laser["conf"], 3), "mode": laser["mode"],
-                         "status": "ok" if src == "measured" else "calib",
-                         "src": src}
+                         "status": status, "src": src,
+                         "calib_dev": round(getattr(_laser, "_calib_dev", 0.0), 1),
+                         "calib_stale": 1 if getattr(_laser, "calib_stale", False) else 0,
+                         "need_recalib": 1 if getattr(_laser, "need_recalib", False) else 0}
         else:
             # 没有实拍光斑，但有 /sdcard/laser_calib.json -> 直接用标定位置。
             # 这是三态 B 的**数据接口**：只上报坐标，不在本文件里驱动云台。

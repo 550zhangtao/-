@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import hashlib
 import os
 import glob
 import json
@@ -533,30 +534,50 @@ class K230Link:
                 return int(tok)
         return None
 
+    def _board_md5(self, remote: str) -> str:
+        """板端文件 md5（uhashlib；读 4KB 分块，不占大内存）。"""
+        code = ("import uhashlib, binascii\n"
+                "h=uhashlib.md5()\n"
+                "try:\n"
+                "    f=open(%r,'rb')\n"
+                "    while True:\n"
+                "        b=f.read(4096)\n"
+                "        if not b:\n"
+                "            break\n"
+                "        h.update(b)\n"
+                "    f.close()\n"
+                "    print('MD5', binascii.hexlify(h.digest()).decode())\n"
+                "except Exception as e:\n"
+                "    print('MD5ERR', e)\n") % remote
+        try:
+            out, _err, _ok = self.exec_and_collect(code, timeout=20)
+        except Exception:
+            return ""
+        for tok in out.replace("\r", " ").replace("\n", " ").split():
+            t = tok.lower()
+            if len(t) == 32 and all(c in "0123456789abcdef" for c in t):
+                return t
+        return ""
+
     def _ensure_board_deps(self) -> None:
-        """把板端脚本依赖的模块推到 /sdcard（字节数不同才推，避免每次重写）。"""
+        """把板端依赖推到 /sdcard；按 md5 比对，不再只看文件大小。"""
         deps = [BOARD_DIR / "laser_spot.py"]
         for local in deps:
             if not local.exists():
                 continue
             remote = "/sdcard/" + local.name
-            try:
-                self.enter_raw()
-                out, _err, ok = self.exec_and_collect(
-                    "import os\nprint(os.stat('%s')[6])" % remote, timeout=8)
-                cur = -1
-                for tok in out.replace("\r", " ").replace("\n", " ").split():
-                    if tok.isdigit():
-                        cur = int(tok)
-                        break
-            except Exception:
-                cur = -1
-            if cur == local.stat().st_size:
+            want = hashlib.md5(local.read_bytes()).hexdigest()
+            cur = self._board_md5(remote)
+            if cur == want:
                 continue
             from .push_file import push_one
-            self.exit_raw()
             if not push_one(self, str(local), remote, verbose=False):
                 raise BoardError("推送依赖失败：%s" % local)
+            got = self._board_md5(remote)
+            if got != want:
+                raise BoardError(
+                    "依赖 md5 校验失败：%s 期望 %s，实际 %s"
+                    % (remote, want, got or "读取失败"))
 
     def start_stream(self, cfg: Optional[Dict[str, object]] = None,
                      timeout: float = 15.0,
