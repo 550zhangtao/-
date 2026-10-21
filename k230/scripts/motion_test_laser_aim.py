@@ -99,7 +99,14 @@ def start_live(duration: int, log_path: Path) -> subprocess.Popen:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="运动靶/抗干扰采样（新激光模块）")
-    ap.add_argument("--duration", type=int, default=45, help="采样秒数")
+    ap.add_argument("--duration", type=int, default=None,
+                    help="采样秒数；给 --segments 时默认 len(segments)*segment_sec")
+    ap.add_argument("--segments", default="",
+                    help="逗号分隔的分段标签，如 front,left30,right30,up,near")
+    ap.add_argument("--segment-sec", type=float, default=15.0,
+                    help="每段秒数（默认 15）")
+    ap.add_argument("--segment-settle", type=float, default=6.0,
+                    help="每段前 N 秒不计入汇总（换角度过渡，默认 6）")
     ap.add_argument("--esp-port", default="/dev/ttyUSB0")
     ap.add_argument("--no-live", action="store_true", help="live 已在跑，不要重复起")
     ap.add_argument("--no-gtrack", action="store_true", help="不自动进 R2 跟踪")
@@ -116,6 +123,15 @@ def main() -> int:
     except ImportError:
         sys.exit("需要 pyserial")
 
+    labels = [x.strip() for x in args.segments.split(",") if x.strip()]
+    if args.duration is None:
+        dur = int(round(len(labels) * args.segment_sec)) if labels else 45
+    else:
+        dur = int(args.duration)
+    if labels:
+        _log("分段：%s（每段 %.0fs，前 %.0fs 不计）"
+             % (" → ".join(labels), args.segment_sec, args.segment_settle))
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     tag = ("_" + args.label) if args.label else ""
@@ -124,7 +140,7 @@ def main() -> int:
 
     live = None
     if not args.no_live:
-        live = start_live(args.duration + 15, live_log)
+        live = start_live(dur + 15, live_log)
         _log("等 live 的 latest.json 变新鲜（最多 40s）…")
         t0 = time.time()
         while time.time() - t0 < 40:
@@ -169,12 +185,20 @@ def main() -> int:
     rows = []
     t_start = time.time()
     last_print = t_start
+    seg_idx = 0
     frames_prev = None
     t_frames_prev = None
     try:
-        while time.time() - t_start < args.duration:
+        while time.time() - t_start < dur:
             now = time.time()
             row = {"t": round(now - t_start, 3)}
+            if labels:
+                si = min(len(labels) - 1, int((now - t_start) / args.segment_sec))
+                if si != seg_idx:
+                    seg_idx = si
+                    _log("=== SEG %s @ t=%.1fs ===" % (labels[si], now - t_start))
+                row["seg"] = labels[si]
+                row["seg_t"] = round((now - t_start) - si * args.segment_sec, 2)
 
             d = _read_latest()
             if d is not None:
@@ -291,7 +315,7 @@ def main() -> int:
     bull_ok = [1 for r in rows if (r.get("bull_status") == "ok")]
 
     print("\n=== 运动靶基线汇总 ===")
-    print("采样 %d 点 / %.1fs，CSV=%s" % (len(rows), args.duration, csv_path))
+    print("采样 %d 点 / %.1fs，CSV=%s" % (len(rows), dur, csv_path))
     print("$LS src=1 比例 : %s" % (
         "%.1f%% (%d/%d)" % (100.0 * src1.count(1) / len(src1), src1.count(1), len(src1))
         if src1 else "-"))
@@ -345,10 +369,33 @@ def main() -> int:
     seg("bull ok", [r for r in rows if r.get("bull_status") == "ok"])
     seg("bull lost/low", [r for r in rows if r.get("bull_status") != "ok"])
 
+    if labels:
+        print("\n--- 分段（每段跳过前 %.0fs 过渡） ---" % args.segment_settle)
+        for lab in labels:
+            sub = [r for r in rows if r.get("seg") == lab
+                   and (r.get("seg_t") or 0) >= args.segment_settle]
+            if not sub:
+                continue
+            ax2 = [abs(float(r["align_x"])) for r in sub if r.get("align_x") is not None]
+            ay2 = [abs(float(r["align_y"])) for r in sub if r.get("align_y") is not None]
+            sx2 = [r.get("ls_src") for r in sub if r.get("ls_src") is not None]
+            cx2 = [abs(float(r["ctrl_ex"])) for r in sub if r.get("ctrl_ex") is not None]
+            cy2 = [abs(float(r["ctrl_ey"])) for r in sub if r.get("ctrl_ey") is not None]
+            lm2 = [float(r["laser_ms"]) for r in sub if r.get("laser_ms") is not None]
+            modes2 = [r.get("laser_mode") for r in sub if r.get("laser_mode")]
+            print("  [%-7s] n=%-3d aim p50=(%5.1f,%5.1f) p95=(%5.1f,%5.1f)  "
+                  "ctrl p50=(%4.1f,%4.1f)  src1=%s  roi=%d coast=%d calib=%d  lms p50=%s"
+                  % (lab, len(sub), _pct(ax2, .5) or 0, _pct(ay2, .5) or 0,
+                     _pct(ax2, .95) or 0, _pct(ay2, .95) or 0,
+                     _pct(cx2, .5) or 0, _pct(cy2, .5) or 0,
+                     ("%.0f%%" % (100.0 * sx2.count(1) / len(sx2))) if sx2 else "-",
+                     modes2.count("roi"), modes2.count("coast"),
+                     modes2.count("calib"), _pct(lm2, .5)))
+
     if live is not None:
         _log("等 live 自己结束（或直接 Ctrl-C；不要 kill -9）…")
         try:
-            live.wait(timeout=args.duration + 25)
+            live.wait(timeout=dur + 25)
         except subprocess.TimeoutExpired:
             _log("live 超时，terminate（不是 kill -9）")
             live.terminate()
