@@ -490,6 +490,14 @@ fixed/verify/reacquire/confirm 状态机）已删除并有快照 `0c5ff1b`；
 - **`mode work` 假失败修复**：替换 `/sdcard/main.py` 后板子可能复位、REPL 不吐
   `SZ`；`mode._push_replace` 现在会重连并按 md5 复核一次，文件对就继续，
   不再误报（这次曾骗我去按 RESET）。
+- **运动滤波/预测（2026-10-22 加）**：`laser_aim.py` v2026-10-22.2 在**微窗测量值**
+  上接 α-β 常速滤波（不是旧 `laser_spot.py` 的 Kalman 搜索层）：`update`
+  用 α=0.45/β=0.10，输出 `pos + v·lead_ms`（默认 50ms）补偿相机→UART→ESP32
+  延迟；微窗中心用无前瞻预测；窗口随速度最多 +8px；丢失先 coast 8 帧再回标定；
+  `dt` 下限 20ms 防 `β/dt` 放大噪声。`latest.json` 的 `laser` 多了 `vx/vy` 和
+  `mode=roi/coast/calib`；`$LS` 的 coast 仍映射 `src=2`。单测见
+  `tools/test_laser_aim.py` 的 `tracker-cv`（50ms 前瞻误差 <2px）与 `coast`。
+  **待实测**：静止/运动靶复测（需先断开 CanMV IDE 占用串口）。
 
 **标定文件**：
 ```json

@@ -31,7 +31,7 @@ CFG 必须保持单行，PC 端会用正则整行替换后下发。
     AIM_* 注释与 `aim` 调试命令），K230 不做状态切换。
 """
 
-CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 2, 'full_every': 9999, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'laser_roi_rad': 12, 'laser_budget_ms': 10, 'fps': 0, 'stats': 15, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
+CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 2, 'full_every': 9999, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'laser_roi_rad': 12, 'laser_budget_ms': 10, 'laser_lead_ms': 50, 'laser_ab_alpha': 0.45, 'laser_ab_beta': 0.10, 'fps': 0, 'stats': 15, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
 
 from media.sensor import *
 from media.media import *
@@ -502,7 +502,10 @@ def main():
         try:
             _laser = laser_aim.LaserAim({
                 "rad": int(CFG.get("laser_roi_rad", 12)),
-                "budget_ms": int(CFG.get("laser_budget_ms", 6)),
+                "budget_ms": int(CFG.get("laser_budget_ms", 10)),
+                "lead_ms": int(CFG.get("laser_lead_ms", 50)),
+                "ab_alpha": float(CFG.get("laser_ab_alpha", 0.45)),
+                "ab_beta": float(CFG.get("laser_ab_beta", 0.10)),
             })
             if _laser.load("/sdcard/laser_calib.json"):
                 _lver = getattr(laser_aim, "VERSION", "?")
@@ -729,7 +732,9 @@ def main():
                          "calib_dev": round(getattr(_laser, "calib_dev", 0.0), 1),
                          "calib_stale": 1 if getattr(_laser, "need_recalib", False) else 0,
                          "need_recalib": 1 if getattr(_laser, "need_recalib", False) else 0,
-                         "budget": 1 if laser.get("budget") else 0}
+                         "budget": 1 if laser.get("budget") else 0,
+                         "vx": round(float(laser.get("vx", 0.0)), 1),
+                         "vy": round(float(laser.get("vy", 0.0)), 1)}
         else:
             # 没有实拍光斑，但有 /sdcard/laser_calib.json -> 直接用标定位置。
             # 这是三态 B 的**数据接口**：只上报坐标，不在本文件里驱动云台。

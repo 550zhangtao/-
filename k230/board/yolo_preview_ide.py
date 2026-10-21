@@ -54,6 +54,9 @@ LASER_ENABLE = 1
 LASER_EVERY = 1               # 每帧做一次微窗（25x25 实测 ~1ms）
 LASER_ROI_RAD = 12            # 微窗半径：12 -> 25x25；丢失后自动放大到 2 倍
 LASER_BUDGET_MS = 10          # 单帧硬预算；超过只打印，不跳帧
+LASER_LEAD_MS = 50            # α-β 前瞻（补偿链路延迟）
+LASER_AB_ALPHA = 0.45         # 位置增益
+LASER_AB_BETA = 0.10          # 速度增益
 LASER_CFG = {}                # 覆盖 board/laser_aim.py 的 CFG
 LASER_LABEL = 0               # 1=在光斑旁画坐标文字（会多一条 deprecation）
 LASER_FIXED = None            # 临时覆盖标定，例如 (408, 278)
@@ -399,7 +402,9 @@ def _init_laser():
     if laser_aim is None:
         print("激光不可用：laser_aim.py 未找到")
         return None
-    cfg = {"rad": LASER_ROI_RAD, "budget_ms": LASER_BUDGET_MS}
+    cfg = {"rad": LASER_ROI_RAD, "budget_ms": LASER_BUDGET_MS,
+           "lead_ms": LASER_LEAD_MS, "ab_alpha": LASER_AB_ALPHA,
+           "ab_beta": LASER_AB_BETA}
     if LASER_CFG:
         cfg.update(LASER_CFG)
     _laser = laser_aim.LaserAim(cfg)

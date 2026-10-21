@@ -61,7 +61,7 @@ laser_aim.py —— 激光光斑：标定先验 + 25×25 微窗亚像素质心�
 
 import time
 
-VERSION = "2026-10-22.1"
+VERSION = "2026-10-22.2"
 API_VERSION = 1
 CALIB_FILE = "/sdcard/laser_calib.json"
 
@@ -82,6 +82,14 @@ CFG = {
     "calib_warn": 40,       # 实测相对标定偏移超过此值 -> need_recalib
     "warm_k": 80.0,         # conf = (max_warm - warm_min)/warm_k + conf_floor
     "conf_floor": 0.2,
+    # ---- 运动滤波/预测（α-β 常速 + 前瞻 + 短时 coast）----
+    "ab_alpha": 0.45,       # 位置残差增益（越小越平滑、越滞后）
+    "ab_beta": 0.10,        # 速度残差增益（越小速度越稳）
+    "lead_ms": 50,          # 输出前瞻：补偿相机->USB/UART->ESP32 的链路延迟
+    "v_max": 2000.0,        # 速度上限 px/s，防离群把速度带飞
+    "coast_max": 8,         # 微窗连续失败时最多外推几帧
+    "rad_extra": 8,         # 微窗随速度最多放大多少 px（49x49 预算内）
+    "coast_conf": 0.35,     # coast 输出置信度（逐帧轻微衰减）
 }
 
 
@@ -99,6 +107,88 @@ def _diff_ms(a, b):
         return int(a) - int(b)
 
 
+class _Tracker:
+    """α-β 常速滤波器（位置 + 速度），几行浮点，适合 MicroPython。
+
+    predict(t)  : x + v*dt
+    update(z,t) : 对预测残差按 α 修位置、按 β/dt 修速度
+    比一阶低通多一个速度状态，能补匀速运动滞后；比 Kalman 轻，参数直观。
+    """
+
+    def __init__(self, alpha=0.45, beta=0.10, v_max=2000.0):
+        self.alpha = float(alpha)
+        self.beta = float(beta)
+        self.v_max = float(v_max)
+        self.x = None
+        self.y = None
+        self.vx = 0.0
+        self.vy = 0.0
+        self.t = None
+        self.dt_last = 0.0
+
+    def ready(self):
+        return self.x is not None
+
+    def reset(self):
+        self.x = None
+        self.y = None
+        self.vx = 0.0
+        self.vy = 0.0
+        self.t = None
+        self.dt_last = 0.0
+
+    def init(self, x, y, t):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = 0.0
+        self.vy = 0.0
+        self.t = t
+        self.dt_last = 0.0
+
+    def predict(self, t):
+        if self.x is None:
+            return None
+        dt = (t - self.t) / 1000.0
+        if dt < 0:
+            dt = 0.0
+        elif dt > 0.5:
+            dt = 0.5
+        return (self.x + self.vx * dt, self.y + self.vy * dt)
+
+    def update(self, zx, zy, t):
+        if self.x is None:
+            self.init(zx, zy, t)
+            return
+        dt = (t - self.t) / 1000.0
+        if dt < 0.02:
+            # 最小 20ms：快速循环调用时 beta/dt 不会把速度噪声放大
+            dt = 0.02
+        elif dt > 0.5:
+            dt = 0.5
+        px = self.x + self.vx * dt
+        py = self.y + self.vy * dt
+        rx = float(zx) - px
+        ry = float(zy) - py
+        self.x = px + self.alpha * rx
+        self.y = py + self.alpha * ry
+        self.vx += self.beta * rx / dt
+        self.vy += self.beta * ry / dt
+        sp = (self.vx * self.vx + self.vy * self.vy) ** 0.5
+        if sp > self.v_max:
+            k = self.v_max / sp
+            self.vx *= k
+            self.vy *= k
+        self.t = t
+        self.dt_last = dt
+
+    def speed(self):
+        return (self.vx * self.vx + self.vy * self.vy) ** 0.5
+
+    def decay(self, f=0.5):
+        self.vx *= f
+        self.vy *= f
+
+
 class LaserAim:
     """标定先验 + 微窗质心的有状态光斑定位器。"""
 
@@ -109,6 +199,9 @@ class LaserAim:
         self.calib = None       # (x, y, kx, ky, ref)
         self.off = [0.0, 0.0]   # 实测 - 预测的平滑偏移
         self._s = None          # 靶纸表观边长 EMA（抑制框/关键点抖动）
+        self.tr = _Tracker(float(self.cfg["ab_alpha"]),
+                           float(self.cfg["ab_beta"]),
+                           float(self.cfg["v_max"]))
         self._reject_n = 0      # max_step 连续拒绝次数
         self.reject_dev = 0.0   # 最近一次被拒绝的偏移（诊断）
         self.last = None
@@ -130,6 +223,7 @@ class LaserAim:
         self.calib = (float(x), float(y), float(kx), float(ky), float(ref))
         self.off = [0.0, 0.0]
         self._s = None
+        self.tr.reset()
         self._reject_n = 0
         self.reject_dev = 0.0
         self.last = (float(x), float(y))
@@ -195,8 +289,11 @@ class LaserAim:
     def predict(self, s=None):
         if self.calib is None:
             return None
-        b = self._base(s)
-        return (b[0] + self.off[0], b[1] + self.off[1])
+        if self.tr.ready():
+            p = self.tr.predict(_now_ms() + int(self.cfg["lead_ms"]))
+            if p is not None:
+                return p
+        return self._base(s)
 
     # ------------------------------------------------------------ 微窗
     def _scan(self, img, cx, cy, rad, t0):
@@ -266,20 +363,38 @@ class LaserAim:
         return (sx / sw, sy / sw, n, mw)
 
     # ------------------------------------------------------------ 对外
-    def _fallback(self, px, py):
-        self.mode = "calib"
-        self.src = "calib"
+    def _ret(self, px, py, conf, mode, src, status, n=0, vx=0.0, vy=0.0):
+        return {"x": px, "y": py, "conf": conf, "mode": mode, "src": src,
+                "status": status, "ms": self.last_ms, "n": n,
+                "budget": 1 if self.last_budget else 0,
+                "vx": vx, "vy": vy}
+
+    def _coast(self, t0, bx, by):
+        """短时外推：微窗暂时没命中，用 α-β 速度继续预测（不是全图搜索）。"""
+        c = self.cfg
+        self.tr.decay(0.9)
+        out = self.tr.predict(t0 + int(c["lead_ms"]))
+        if out is None:
+            out = (bx, by)
+        px, py = out
+        self.mode = "coast"
+        self.src = "coast"
+        self.status = "coast"
+        conf = float(c["coast_conf"]) * (1.0 - 0.05 * self.miss)
+        if conf < 0.1:
+            conf = 0.1
+        self.last_conf = conf
         self.last = (px, py)
         self.last_px = 0
-        return {"x": px, "y": py, "conf": self.last_conf,
-                "mode": "calib", "src": "calib", "status": self.status,
-                "ms": self.last_ms, "n": 0,
-                "budget": 1 if self.last_budget else 0}
+        return self._ret(px, py, conf, "coast", "coast", "coast",
+                         vx=self.tr.vx, vy=self.tr.vy)
 
     def sample(self, img, s=None):
         """每帧调用：返回 dict 或 None（无标定）。
 
         s: 靶纸表观边长（px），用于 `c + k·s` 距离补偿；没有就传 None。
+        输出位置是 **α-β 滤波 + lead_ms 前瞻** 的结果；微窗中心用无前瞻的
+        预测位置，保证测量窗口对得上本帧图像。
         """
         c = self.cfg
         t0 = _now_ms()
@@ -302,16 +417,37 @@ class LaserAim:
         else:
             s_use = None
         bx, by = self._base(s_use)
-        px = bx + self.off[0]
-        py = by + self.off[1]
+
+        # 微窗中心：有航迹用 α-β 预测，否则用标定
+        if self.tr.ready():
+            p = self.tr.predict(t0)
+            if p is None:
+                px, py = bx, by
+            else:
+                px, py = p
+        else:
+            px, py = bx, by
+
         rad = int(c["rad"])
         if self.miss >= int(c["lost_widen_after"]):
             rad = int(c["rad_max"])
+        else:
+            # 窗口随速度放大：快速运动时预测点附近仍能覆盖光斑
+            extra = int(self.tr.speed() * self.tr.dt_last / 1000.0)
+            if extra > int(c["rad_extra"]):
+                extra = int(c["rad_extra"])
+            if extra > 0:
+                rad += extra
+
         r = self._scan(img, px, py, rad, t0)
         self.last_ms = _diff_ms(_now_ms(), t0)
+        lead_ms = int(c["lead_ms"])
 
         if r is None:
             self.miss += 1
+            if self.tr.ready() and self.miss <= int(c["coast_max"]):
+                return self._coast(t0, bx, by)
+            self.tr.decay(0.5)
             if self.miss >= int(c["lost_after"]):
                 self.status = "lost"
                 self.last_conf = 0.0
@@ -321,7 +457,12 @@ class LaserAim:
             else:
                 self.status = "calib"
                 self.last_conf = 0.25
-            return self._fallback(px, py)
+            self.mode = "calib"
+            self.src = "calib"
+            self.last = (bx, by)
+            self.last_px = 0
+            return self._ret(bx, by, self.last_conf, "calib", "calib",
+                             self.status)
 
         mx, my, n, mw = r
         dx = mx - px
@@ -336,43 +477,52 @@ class LaserAim:
             self.reject_dev = (dx * dx + dy * dy) ** 0.5
             if self._reject_n >= int(c["lost_after"]):
                 self.need_recalib = True
+            if self.tr.ready() and self.miss <= int(c["coast_max"]):
+                return self._coast(t0, bx, by)
             if self.miss >= int(c["lost_after"]):
                 self.status = "lost"
                 self.last_conf = 0.0
             else:
                 self.status = "calib"
                 self.last_conf = 0.25
-            return self._fallback(px, py)
+            self.mode = "calib"
+            self.src = "calib"
+            self.last = (bx, by)
+            self.last_px = 0
+            return self._ret(bx, by, self.last_conf, "calib", "calib",
+                             self.status)
 
-        a = float(c["ema"])
-        self.off[0] += a * dx
-        self.off[1] += a * dy
-        px = bx + self.off[0]
-        py = by + self.off[1]
+        # 命中：α-β 更新，输出带 lead_ms 的前瞻位置
+        self.tr.update(mx, my, t0)
         self.miss = 0
         self._reject_n = 0
         self.reject_dev = 0.0
+        out = self.tr.predict(t0 + lead_ms)
+        if out is None:
+            out = (mx, my)
+        px, py = out
+        self.off = [self.tr.x - bx, self.tr.y - by]
+        self.calib_dev = (self.off[0] ** 2 + self.off[1] ** 2) ** 0.5
+        self.need_recalib = self.calib_dev > float(c["calib_warn"])
         conf = (mw - int(c["warm_min"])) / float(c["warm_k"]) + float(c["conf_floor"])
         if conf > 1.0:
             conf = 1.0
         if conf < 0.0:
             conf = 0.0
         self.last_conf = conf
-        self.calib_dev = (self.off[0] ** 2 + self.off[1] ** 2) ** 0.5
-        self.need_recalib = self.calib_dev > float(c["calib_warn"])
         self.last = (px, py)
         self.last_px = n
         self.mode = "roi"
         self.src = "measured"
         self.status = "ok"
-        return {"x": px, "y": py, "conf": conf,
-                "mode": "roi", "src": "measured", "status": "ok",
-                "ms": self.last_ms, "n": n, "budget": 0}
+        return self._ret(px, py, conf, "roi", "measured", "ok", n=n,
+                         vx=self.tr.vx, vy=self.tr.vy)
 
     def reset(self):
         """清跟踪状态，回到标定位置（标定本身不丢）。"""
         self.off = [0.0, 0.0]
         self._s = None
+        self.tr.reset()
         self._reject_n = 0
         self.reject_dev = 0.0
         self.last_budget = False

@@ -101,14 +101,43 @@ k·s 只是近似，必要时用 `--pair` 重标或缩小 `rad`。
 ## 6. 运行时逻辑（`board/laser_aim.py`）
 
 ```
-predict = calib + k·(s - ref) + off_smooth
-scan ±rad（默认 12）→ R-G>=warm_min 且 luma>=luma_min 的像素加权质心
-  命中：off_smooth += ema·(measured - predict)；src=measured / status=ok
-  命中但偏离 > max_step：当离群，不跟
-  连续失败 >= lost_widen_after(3)：rad 放大到 rad_max(24) 再试
-  连续失败 >= lost_after(10)：status=lost
-  任何失败：返回 predict，src=calib，绝不扩大搜索
+predict = calib + k·(s - ref)（无航迹）或 α-β 预测（有航迹）
+scan ±rad（默认 12，随速度最多 +8）→ R-G/luma 加权质心
+  命中：α-β update → 输出 pos + v·lead_ms（默认 50ms 前瞻）
+        src=measured / mode=roi / status=ok
+  命中但偏离预测 > max_step：当离群，不跟（连续多次 -> need_recalib）
+  微窗失败且航迹还在：coast 外推（最多 8 帧，速度逐帧衰减）
+        src=coast / mode=coast / status=coast
+  长时间失败 >= lost_after(10)：回标定位置，status=lost/calib，绝不扩大搜索
 ```
+
+### 6.1 运动滤波/预测（α-β，2026-10-22 加）
+
+之前 `off` 只是一阶低通（α=0.5），没有速度状态，靶纸运动/倾斜时会有
+10~17px 的滞后和抖动；`$LS` 也没有补偿相机→UART→ESP32 的链路延迟。
+现在在**微窗测量值**上接一个 α-β 常速滤波器（不是旧 Kalman 搜索层）：
+
+- `update`: `p = x + v·dt`，`x = p + α·(z-p)`，`v += β·(z-p)/dt`；
+- `predict`: `x + v·dt`；输出用 `t + lead_ms` 的前瞻位置；
+- 微窗中心用**无前瞻**的预测位置，保证窗口对得上本帧图像；
+- 窗口随速度放大（最多 `rad_extra=8`），快速运动时仍能覆盖光斑；
+- 微窗失败先 coast 外推（最多 8 帧），再回标定，不会突然跳回；
+- `dt` 下限 20ms，避免快速循环调用时 `β/dt` 放大速度噪声。
+
+参数：
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `ab_alpha` | 0.45 | 位置残差增益；越小越平滑、越滞后 |
+| `ab_beta` | 0.10 | 速度残差增益；越小速度越稳 |
+| `lead_ms` | 50 | 输出前瞻，补偿链路延迟 |
+| `coast_max` | 8 | 丢失时最多外推几帧 |
+| `rad_extra` | 8 | 微窗随速度最多放大 px |
+| `v_max` | 2000 | 速度上限 px/s |
+
+`latest.json` 的 `laser` 现在多 `vx`/`vy` 和 `mode`（`roi`/`coast`/`calib`）；
+`$LS` 的 `src`：`measured`→1，`coast`/`calib`→2（ESP32 仍按 B 态用标定参考）。
+
 
 输出字段与旧 `$LS` 完全兼容：
 `x, y, conf, mode, src("measured"/"calib"), status("ok"/"calib"/"lost"), ms`。

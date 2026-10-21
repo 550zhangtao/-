@@ -124,6 +124,42 @@ def test_distance_model():
     print("      predict(80)=(%.1f,%.1f) predict(40)=(%.1f,%.1f)" % (x, y, x, y))
 
 
+def test_tracker_cv():
+    """α-β 常速滤波：匀速 3px/帧（66ms）下，50ms 前瞻误差应 < 2px。"""
+    tr = LA._Tracker(0.45, 0.10, 2000.0)
+    for i in range(20):
+        tr.update(100.0 + 3.0 * i, 200.0 + 1.5 * i, i * 66)
+    t_pred = 19 * 66 + 116            # 最后一帧 + 50ms 前瞻（外加一帧）
+    px, py = tr.predict(t_pred)
+    tx = 100.0 + 3.0 * (t_pred / 66.0)
+    ty = 200.0 + 1.5 * (t_pred / 66.0)
+    assert abs(px - tx) < 2.0, "x 预测误差 %.2f" % (px - tx)
+    assert abs(py - ty) < 2.0, "y 预测误差 %.2f" % (py - ty)
+    print("      cv predict=(%.1f,%.1f) truth=(%.1f,%.1f) v=(%.1f,%.1f)"
+          % (px, py, tx, ty, tr.vx, tr.vy))
+
+
+def test_coast():
+    """命中 2 帧后光斑消失：应先 coast 外推，长时间丢失才回标定/lost。"""
+    on = load_big(SAMPLE)
+    off = on.copy()
+    mask = np.zeros(off.shape[:2], np.uint8)
+    cv2.circle(mask, (int(SPOT_640[0]), int(SPOT_640[1])), 34, 255, -1)
+    off = cv2.inpaint(off, mask, 7, cv2.INPAINT_TELEA)
+    la = LA.LaserAim({"rad": 12, "budget_ms": 20})
+    la.set_calib(SPOT_640[0], SPOT_640[1])
+    for _ in range(2):
+        r = la.sample(FakeImg(on))
+        assert r["mode"] == "roi", r
+    r = la.sample(FakeImg(off))
+    assert r["mode"] == "coast", "第一帧丢失应 coast：%s" % r
+    for _ in range(12):
+        r = la.sample(FakeImg(off))
+    assert r["mode"] != "roi", "长时间丢失不应还报 roi：%s" % r
+    assert r["status"] in ("calib", "lost"), r
+    print("      coast -> %s/%s (conf %.2f)" % (r["mode"], r["status"], r["conf"]))
+
+
 def test_calib_io():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "laser_calib.json"
@@ -148,6 +184,8 @@ def main() -> int:
         ("wrong-calib", test_wrong_calib_no_lock),
         ("off-frame", test_off_frame_no_false_lock),
         ("distance-model", test_distance_model),
+        ("tracker-cv", test_tracker_cv),
+        ("coast", test_coast),
         ("calib-io", test_calib_io),
     ):
         ok = run(name, fn) and ok

@@ -84,6 +84,9 @@ BULL_MIN_V = 0.30
 LASER_ENABLE = 1
 LASER_ROI_RAD = 12
 LASER_BUDGET_MS = 10
+LASER_LEAD_MS = 50          # α-β 前瞻：补偿相机->UART->ESP32 延迟
+LASER_AB_ALPHA = 0.45       # 位置增益
+LASER_AB_BETA = 0.10        # 速度增益
 LASER_CALIB_FILE = "/sdcard/laser_calib.json"
 
 UART_ENABLE = 1
@@ -117,6 +120,7 @@ _lms_sum = 0
 _lms_max = 0
 _lms_src = [0, 0, 0]      # 0=无 1=实测 2=标定
 _lms_budget = 0
+_lms_coast = 0
 _recalib_warned = False
 
 # 工作模式下 REPL 被本脚本占用，不能再靠 Ctrl-C 切模式（实测会把板子
@@ -439,7 +443,10 @@ def _open_laser():
         return False
     try:
         _laser = laser_aim.LaserAim({"rad": LASER_ROI_RAD,
-                                     "budget_ms": LASER_BUDGET_MS})
+                                     "budget_ms": LASER_BUDGET_MS,
+                                     "lead_ms": LASER_LEAD_MS,
+                                     "ab_alpha": LASER_AB_ALPHA,
+                                     "ab_beta": LASER_AB_BETA})
         if not _laser.load(LASER_CALIB_FILE):
             _laser = None
             print("agent: 无 %s -> $LS 关闭（先在 PC 跑 scripts/calib_laser.py）"
@@ -501,13 +508,13 @@ def _note_laser(ms, budget=0):
 def _laser_stats():
     if _lms_n <= 0:
         return "laser n=0"
-    return ("laser avg=%d max=%d n=%d src1=%d src2=%d budget=%d"
+    return ("laser avg=%d max=%d n=%d src1=%d src2=%d budget=%d coast=%d"
             % (_lms_sum // _lms_n, _lms_max, _lms_n,
-               _lms_src[1], _lms_src[2], _lms_budget))
+               _lms_src[1], _lms_src[2], _lms_budget, _lms_coast))
 
 
 def _stream_frame(seq):
-    global _last_scale, _recalib_warned
+    global _last_scale, _recalib_warned, _lms_coast
     img1 = _sensor.snapshot(chn=CAM_CHN_ID_1)           # 显示通道：激光微窗用
     laser = None
     if _laser is not None:
@@ -516,6 +523,8 @@ def _stream_frame(seq):
             laser = _laser.sample(img1, _last_scale)
             lms = time.ticks_diff(time.ticks_ms(), t_l)
             _note_laser(lms, 1 if (laser and laser.get("budget")) else 0)
+            if laser is not None and laser.get("mode") == "coast":
+                _lms_coast += 1
             if (getattr(_laser, "need_recalib", False)
                     and not _recalib_warned):
                 _recalib_warned = True

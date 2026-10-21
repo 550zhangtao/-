@@ -165,6 +165,8 @@ def main() -> int:
                     "laser_src": lz.get("src"), "laser_status": lz.get("status"),
                     "laser_conf": lz.get("conf"), "calib_dev": lz.get("calib_dev"),
                     "laser_ms": d.get("laser_ms"),
+                    "laser_mode": lz.get("mode"),
+                    "laser_vx": lz.get("vx"), "laser_vy": lz.get("vy"),
                     "bull_x": bull.get("x"), "bull_y": bull.get("y"),
                     "bull_status": bull.get("status"),
                     "box_w": box[2] if len(box) > 2 else None,
@@ -270,6 +272,11 @@ def main() -> int:
         print("laser y 抖动   : std=%.2f range=%.1f" % (st.pstdev(ly), max(ly) - min(ly)))
     print("$KT 帧率       : p50=%s" % _pct(kt, .5))
     print("bull 检出比例  : %.1f%%" % (100.0 * len(bull_ok) / max(1, len(rows))))
+    modes = [r.get("laser_mode") for r in rows if r.get("laser_mode")]
+    if modes:
+        print("laser mode     : roi=%d coast=%d calib=%d lost=%d"
+              % (modes.count("roi"), modes.count("coast"),
+                 modes.count("calib"), modes.count("lost")))
 
     def seg(name, sub):
         if not sub:
