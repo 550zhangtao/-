@@ -52,7 +52,7 @@ LASER_ENABLE = 1              # 1=检测并绘制激光光斑
 # 固定标定下每 N 帧才复核一次，其余帧零搜索；激光每 N 帧更新一次即可。
 LASER_EVERY = 2
 LASER_VERIFY_EVERY = 5        # 每 5 帧复核一次（固定标定基本不变）
-LASER_GLOBAL = 0              # IDE 预览不是 R2 瞄准态：不做受限重捕
+LASER_GLOBAL = 1              # IDE 预览不是 R2 瞄准态：不做受限重捕
 LASER_BUDGET_MS = 35          # 单帧激光超过此值才跳；只跳 1 帧，避免人为卡顿
 LASER_COOLDOWN = 1
 LASER_CFG = {}                # 覆盖 board/laser_spot.py 的 CFG，如 {"min_contrast": 45}

@@ -38,7 +38,7 @@ import time
 
 # ----------------------------------------------------------- 配置
 # 会被 PC 端按正则替换，务必保持**单行** dict 字面量
-CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 6, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 60, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'win_red_warm': 120, 'win_red_luma': 50, 'win_warm_hot': 70, 'win_luma_low': 150, 'win_hot_luma': 245, 'win_hot_min': 220, 'win_dark_warm': 80, 'win_dark_luma': 55, 'slow_every': 1,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120, 'budget_ms': 12, 'fixed_verify_every': 5, 'fixed_allow_reacquire': 0, 'fixed_reacquire_after': 10, 'fixed_reacquire_every': 30, 'fixed_reacquire_rad': 180, 'fixed_reacquire_stride': 6}
+CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 6, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 60, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'win_red_warm': 120, 'win_red_luma': 50, 'win_warm_hot': 70, 'win_luma_low': 150, 'win_hot_luma': 245, 'win_hot_min': 220, 'win_dark_warm': 80, 'win_dark_luma': 55, 'slow_every': 1,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120, 'budget_ms': 12, 'fixed_verify_every': 5, 'fixed_allow_reacquire': 0, 'fixed_reacquire_after': 10, 'fixed_reacquire_every': 1, 'fixed_reacquire_rad': 180, 'fixed_reacquire_stride': 2}
 
 # 亮白阈值（板端 LAB：L 0~100）。光斑核心 L 接近 100。
 LAB_WHITE = [(82, 100, -30, 30, -30, 30)]
@@ -134,6 +134,8 @@ class LaserSpot:
         self.last_ms = 0        # 上次耗时（无论成功与否）
         self._slow_n = 0        # 慢速(全流程)检测计数，用于降频
         self.fixed = None       # 标定位置 (x, y)：相机与激光笔固连，光斑位置近似常量
+        self.calib = None       # 只读锚点：手遮挡/丢帧后回到这里重捕
+        self._reacq_i = 0      # 重捕格索引
         self.just_calibrated = False   # 刚完成一次视觉标定（供上层保存到文件）
         self._verify_fail = 0   # 复核连续失败次数
         self._verify_ok = True
@@ -150,6 +152,8 @@ class LaserSpot:
         5~9px），所以光斑在画面里的位置是常量，没必要每帧去"找"它。
         """
         self.fixed = (float(x), float(y))
+        self.calib = (float(x), float(y))
+        self._reacq_i = 0
         self._verify_fail = 0
         self._verify_ok = True
         self.just_calibrated = False
@@ -578,7 +582,10 @@ class LaserSpot:
                     rad = c["win_rad_max"]
                 vr = self._scan_window(img, fx, fy, rad, self._base_luma,
                                        t0=t0, budget=budget)
-                if vr is not None:
+                # 只接受标定锚点附近的检测，避免手/红杂物把 fixed 带跑
+                if vr is not None and (self.calib is None
+                        or _dist(vr["x"], vr["y"], self.calib[0], self.calib[1])
+                        <= max(c["win_rad"] * 3, 45)):
                     fx, fy = vr["x"], vr["y"]
                     self.fixed = (fx, fy)
                     self._verify_fail = 0
@@ -586,19 +593,35 @@ class LaserSpot:
                     src = "measured"
                 else:
                     self._verify_fail += 1
-                    conf = 0.35          # 没看到光斑：位置沿用旧值，降置信度
+                    conf = 0.35
+                    # 手遮挡时不要把 fixed 带跑：拉回只读锚点
+                    if self.calib is not None:
+                        fx, fy = self.calib
+                        self.fixed = self.calib
                     if (c.get("fixed_allow_reacquire", 0)
-                            and self._verify_fail >= int(c.get("fixed_reacquire_after", 10))
-                            and (self._frame_n % int(c.get("fixed_reacquire_every", 30))) == 0):
-                        vr2 = self._scan_window(
-                            img, fx, fy, int(c.get("fixed_reacquire_rad", 180)),
-                            self._base_luma,
-                            stride=int(c.get("fixed_reacquire_stride", 6)),
-                            t0=t0, budget=budget)
+                            and self._verify_fail >= int(c.get("fixed_reacquire_after", 10))):
+                        # 每帧只扫一个 60×60 格，围绕 calib ±R，中心优先；
+                        # 手移开后光斑回到标定附近，1~2s 内必被扫到。
+                        R = int(c.get("fixed_reacquire_rad", 180))
+                        cell = 60
+                        n = max(1, (2 * R) // cell)
+                        cx, cy = self.calib if self.calib else (fx, fy)
+                        order = sorted(range(n * n),
+                                       key=lambda k: ((k % n) - (n - 1) / 2.0) ** 2
+                                       + ((k // n) - (n - 1) / 2.0) ** 2)
+                        idx = order[self._reacq_i % len(order)]
+                        self._reacq_i += 1
+                        gx = int(cx - R + (idx % n) * cell + cell // 2)
+                        gy = int(cy - R + (idx // n) * cell + cell // 2)
+                        vr2 = self._scan_window(img, gx, gy, cell // 2,
+                                                self._base_luma, stride=2,
+                                                t0=t0, budget=budget)
                         if vr2 is not None:
                             fx, fy = vr2["x"], vr2["y"]
                             self.fixed = (fx, fy)
                             self._verify_fail = 0
+                            self._verify_ok = True
+                            self._reacq_i = 0
                             conf = vr2["conf"]
                             src = "measured"
                             mode = "fixed+reacquire"
@@ -769,6 +792,7 @@ class LaserSpot:
         if (self.fixed is None and c["auto_calib"] and cd["mode"] == "white"
                 and cd["contrast"] > 0):
             self.fixed = (x, y)
+            self.calib = (x, y)
             self._verify_fail = 0
             self.just_calibrated = True
         self.mode_hist.append(cd["mode"])

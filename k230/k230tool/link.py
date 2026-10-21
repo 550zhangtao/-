@@ -103,7 +103,7 @@ POSE_DEFAULT_CFG: Dict[str, object] = {
     "roi_pad": 0.25, "roi_min": 160, "roi_max": 256,
     "laser_enable": 1, "laser_every": 1,   # 激光光斑：每帧检测（board/laser_spot.py）
     # 固定标定下每 5 帧才复核一次；受限重捕默认关（仅 R2 代理打开）
-    "laser_verify_every": 5, "laser_global": 0,
+    "laser_verify_every": 5, "laser_global": 1,
     "laser_budget_ms": 35, "laser_cooldown": 1,
     "fps": 0, "stats": 15, "limit": 0,
     "sensor_id": 2,

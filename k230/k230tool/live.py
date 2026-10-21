@@ -87,7 +87,7 @@ def build_cfg(args) -> Dict[str, object]:
             "laser_enable": 1, "laser_every": 1,
             "laser_verify_every": 5,
             # USB live 不是 R2 瞄准态：不做受限重捕（只有 R2 代理才打开）
-            "laser_global": 0,
+            "laser_global": 1,
             "laser_budget_ms": 35, "laser_cooldown": 1,
             "reset_on_exit": 1,
             "uart_enable": 1, "uart_id": 3, "uart_tx": 32, "uart_rx": 33,
