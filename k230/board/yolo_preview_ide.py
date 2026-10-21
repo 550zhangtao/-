@@ -53,8 +53,8 @@ LASER_ENABLE = 1              # 1=检测并绘制激光光斑
 LASER_EVERY = 2
 LASER_VERIFY_EVERY = 5        # 每 5 帧复核一次（固定标定基本不变）
 LASER_GLOBAL = 0              # IDE 预览不是 R2 瞄准态：不做受限重捕
-LASER_BUDGET_MS = 25          # 单帧激光超过此值就跳过几帧（看门狗）
-LASER_COOLDOWN = 8
+LASER_BUDGET_MS = 35          # 单帧激光超过此值才跳；只跳 1 帧，避免人为卡顿
+LASER_COOLDOWN = 1
 LASER_CFG = {}                # 覆盖 board/laser_spot.py 的 CFG，如 {"min_contrast": 45}
 LASER_LABEL = 0               # 1=在光斑旁画坐标文字（会让每帧多一条 deprecation 警告，略拖慢）
 # 固定标定：相机与激光笔固连 → 光斑在画面里是常量，标定一次就不用每帧找。
