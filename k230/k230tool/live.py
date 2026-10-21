@@ -73,6 +73,9 @@ def build_cfg(args) -> Dict[str, object]:
             "in_w": args.input_size, "in_h": args.input_size,
             "conf": args.conf, "cand_conf": 0.03,
             "far_refine": 0, "far_min": 100, "far_topk": 3, "far_max": 200,
+            "low_refine": 1, "low_refine_topk": 2, "low_refine_mult": 7.0,
+            "low_refine_max": 120, "low_refine_cooldown": 3,
+            "dbg_save": args.dbg_save,
             "nms": args.nms,
             "kp_num": 5, "kp_dim": 3,
             "max_boxes": 20,
@@ -425,6 +428,8 @@ def _add_live_args(p):
     p.add_argument("--roi-max", type=int, default=256)
     p.add_argument("--conf", type=float, default=0.25)
     p.add_argument("--nms", type=float, default=0.45)
+    p.add_argument("--dbg-save", type=int, default=0,
+                   help="每 N 帧把画好的整帧存 /sdcard/pose_dbg.jpg（0=关）")
     p.add_argument("--no-ai", action="store_true", help="只回传画面，不跑 YOLO")
     p.add_argument("--no-overlay", action="store_true", help="不做 PC 端画框")
     p.add_argument("--history", type=int, default=0, help="保留最近 N 张历史帧")

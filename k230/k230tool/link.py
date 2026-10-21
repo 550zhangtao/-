@@ -89,11 +89,13 @@ DEFAULT_CFG: Dict[str, object] = {
 # YOLOv8-Pose 板端默认参数（会被写进 yolo_pose.py 顶部 CFG 行）
 POSE_DEFAULT_CFG: Dict[str, object] = {
     "w": 640, "h": 480, "q": 70,
-    "model": "/sdcard/models/target_pose.kmodel",
+    "model": "/sdcard/models/pose_v3.kmodel",
     "labels": ["target"],
     "in_w": 320, "in_h": 320,
     "conf": 0.25, "cand_conf": 0.03,
     "far_refine": 0, "far_min": 100, "far_topk": 3, "far_max": 200,
+    "low_refine": 1, "low_refine_topk": 2, "low_refine_mult": 7.0,
+    "low_refine_max": 120, "low_refine_cooldown": 3, "dbg_save": 0,
     "nms": 0.45,
     "kp_num": 5, "kp_dim": 3,     # 4 角点 + 靶心
     "max_boxes": 20,

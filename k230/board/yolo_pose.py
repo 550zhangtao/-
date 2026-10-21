@@ -23,7 +23,7 @@ CFG 必须保持单行，PC 端会用正则整行替换后下发。
     $LS,<seq>,<run>,<x>,<y>,<conf>!      x,y 是 640x480 原图像素，无光斑时 -1
 """
 
-CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/target_pose.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 1, 'full_every': 15, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'fps': 0, 'stats': 10, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
+CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 1, 'full_every': 15, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'fps': 0, 'stats': 10, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
 
 from media.sensor import *
 from media.media import *
@@ -53,6 +53,7 @@ except Exception as _e:
 
 _laser = None
 laser_ms = 0
+_lref_skip = 0        # 低置信复筛冷却（剩下几帧内不再复筛）
 
 MAGIC = b"\xAA\x55K2"
 HDR_LEN = 38
@@ -130,10 +131,15 @@ def _pose_postprocess(new_result, active_size, model_size, out_size,
         if score < conf:
             break
         row = new_result[idx]
-        x = (float(row[0]) - px) / scale
-        y = (float(row[1]) - py) / scale
+        # YOLO 输出是 [cx, cy, w, h]（中心点+宽高），不是左上角！
+        # 旧代码把 cx,cy 当 x,y，框整体右下偏 w/2,h/2（实测 26x36 的靶纸
+        # 偏 11~18px），$KT 的框中心、ROI、复筛裁剪全都跟着偏。
         w = float(row[2]) / scale
         h = float(row[3]) / scale
+        cx = (float(row[0]) - px) / scale
+        cy = (float(row[1]) - py) / scale
+        x = cx - w * 0.5
+        y = cy - h * 0.5
         kp = []
         for k in range(kp_num):
             kp.append((float(row[5 + k * kp_dim]) - px) / scale)
@@ -324,10 +330,14 @@ def _roi_around(box):
     return [x, y, w, h]
 
 
-def _refine(img, box):
-    """对候选框裁剪放大到 640x480 再跑一次，返回 (score, box, kp, status)。"""
+def _refine(img, box, mult=3.5):
+    """对候选框裁剪放大到 640x480 再跑一次，返回 (score, box, kp, status)。
+
+    mult：裁剪边长 = 框长边 * mult。远处 30px 的小靶用 7 倍：
+    裁 260x195 -> 放大 2.4 倍喂 320 输入，等效分辨率翻倍。
+    """
     bx, by, bw, bh = [float(v) for v in box[:4]]
-    side = max(bw, bh) * 3.5
+    side = max(bw, bh) * float(mult)
     if side < 64:
         side = 64
     cw = int(side)
@@ -440,8 +450,35 @@ def _send_uart_laser(seq, laser):
         log("uart ls: %s" % e)
 
 
+def _load_laser_calib():
+    """读 /sdcard/laser_calib.json（与 IDE 预览共用同一份标定）。"""
+    try:
+        f = open("/sdcard/laser_calib.json")
+        s = f.read()
+        f.close()
+        i = s.find('"x"')
+        j = s.find('"y"')
+        if i >= 0 and j >= 0:
+            x = float(s[s.find(":", i) + 1:s.find(",", i)])
+            y = float(s[s.find(":", j) + 1:s.find("}", j)])
+            return (x, y)
+    except Exception:
+        pass
+    return None
+
+
+def _save_laser_calib(x, y):
+    try:
+        f = open("/sdcard/laser_calib.json", "w")
+        f.write('{"x":%.1f,"y":%.1f}' % (x, y))
+        f.close()
+        log("laser calib saved: (%.1f, %.1f)" % (x, y))
+    except Exception as e:
+        log("laser calib save: %s" % e)
+
+
 def main():
-    global _yolo, _laser, laser_ms
+    global _yolo, _laser, laser_ms, _lref_skip
     sen = _open_sensor()
     time.sleep_ms(300)
     _yolo = YOLOv8(task_type="pose", mode="image",
@@ -456,6 +493,13 @@ def main():
     _init_uart()
     if CFG.get("laser_enable", 1) and laser_spot is not None:
         _laser = laser_spot.LaserSpot()
+        # 和 IDE 预览共用 /sdcard/laser_calib.json：有标定就直接锁死，
+        # 避免每次上电都做 12 次全图搜索（复杂画面单次要 0.5~2.3s，
+        # 会把整条流拖到 0.5fps）。
+        _fx = _load_laser_calib()
+        if _fx is not None and _fx[0] > 0:
+            _laser.set_fixed(_fx[0], _fx[1])
+            log("laser fixed (%.1f,%.1f) 来自 /sdcard/laser_calib.json" % _fx)
     else:
         _laser = None
         if CFG.get("laser_enable", 1):
@@ -484,6 +528,8 @@ def main():
     while True:
         t0 = time.ticks_ms()
         seq += 1
+        if _lref_skip > 0:
+            _lref_skip -= 1
 
         # ---- 先拍显示帧，再拍 AI 帧（避免 ROI/检测框与画面错位）
         img = sen.snapshot(chn=CAM_CHN_ID_1)
@@ -495,6 +541,10 @@ def main():
             try:
                 laser = _laser.locate(img)
                 laser_ms = 0 if laser is None else laser["ms"]
+                # 首次视觉标定成功 -> 存盘，下次上电直接 fixed（省掉全图搜索）
+                if laser is not None and getattr(_laser, "just_calibrated", False):
+                    _laser.just_calibrated = False
+                    _save_laser_calib(laser["x"], laser["y"])
             except Exception as e:
                 log("laser: %s" % e)
                 laser = None
@@ -537,6 +587,33 @@ def main():
                 if rb is not None and (best is None or rb[0] > best[0] + 0.03):
                     best = rb
 
+            # ---- 低置信兜底复筛：小靶/逆光/轻微运动模糊时首轮分数会掉到
+            # 0.25 以下（实测 26x38 靶纸有 4/20 帧 <0.25）。此时对分数最高的
+            # 2 个候选各做一次 7 倍裁剪放大复筛，分数能回到 0.5~0.8；
+            # 负样本实测误检率不变（80 张：1/80 -> 1/80）。
+            if (CFG.get("low_refine", 1) and _lref_skip <= 0
+                    and (best is None or best[0] < CFG["conf"])):
+                t_l = time.ticks_ms()
+                rb2 = None
+                for i in range(min(len(boxes), int(CFG.get("low_refine_topk", 2)))):
+                    # 只复筛小目标（远处靶纸 ≤120px）；大框多半是人/纸箱，
+                    # 放大没意义，还会在小堆内存板上多分配两张 640x480 图。
+                    if max(float(boxes[i][2]), float(boxes[i][3])) > float(CFG.get("low_refine_max", 120)):
+                        continue
+                    r = _refine(img, boxes[i], float(CFG.get("low_refine_mult", 7.0)))
+                    if r is not None and r[3] == "ok":
+                        if rb2 is None or r[0] > rb2[0]:
+                            rb2 = r
+                refine_ms += time.ticks_diff(time.ticks_ms(), t_l)
+                if rb2 is not None and rb2[0] >= CFG["conf"]:
+                    _lref_skip = 0
+                    if best is None or rb2[0] > best[0]:
+                        best = rb2
+                else:
+                    # 没救回来（多半是负样本/空画面）：冷却几帧，避免每帧
+                    # 两次复筛把 13fps 拖到 6fps。
+                    _lref_skip = int(CFG.get("low_refine_cooldown", 3))
+
             if best is not None and best[0] >= CFG["conf"]:
                 kp = best[2]
                 box = best[1]
@@ -552,6 +629,24 @@ def main():
             else:
                 bull = {"status": "low_conf"}
                 has_det = False
+
+        # ---- 板端绘制自检（AGENTS 要求）：每 dbg_save 帧把画好的整帧存到
+        # /sdcard/pose_dbg.jpg，PC 端 `k230tool pull` 拉回检查框/关键点。
+        if CFG.get("dbg_save", 0) and (seq % int(CFG["dbg_save"]) == 0):
+            try:
+                if det and len(kp_flat) >= 15:
+                    d = det[0]
+                    img.draw_rectangle(d[0], d[1], d[2], d[3],
+                                       color=(0, 255, 0), thickness=2)
+                    for _k in range(5):
+                        _x = int(kp_flat[_k * 3])
+                        _y = int(kp_flat[_k * 3 + 1])
+                        img.draw_circle(_x, _y, 6 if _k == 4 else 4,
+                                        color=(255, 0, 0) if _k == 4 else (0, 255, 0),
+                                        thickness=2)
+                img.save("/sdcard/pose_dbg.jpg")
+            except Exception as e:
+                log("dbg save: %s" % e)
 
         # ---- 图像回传：ROI 原生分辨率；全图每 full_every 帧或丢失目标
         # 有激光检测时不再"没目标就发全图"（那是 Pose 时代的行为，

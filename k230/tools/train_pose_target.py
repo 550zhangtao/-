@@ -135,9 +135,14 @@ def main(argv=None) -> int:
         hsv_h=0.02, hsv_s=0.7, hsv_v=0.5,
         degrees=20.0, translate=0.15, scale=0.7, shear=5.0,
         perspective=0.001,
-        fliplr=0.5, flipud=0.5,
+        fliplr=0.5,
+        # ★ Pose 不要开 flipud：data.yaml 的 flip_idx 只描述左右镜像
+        #   （TL/TR/BR/BL），垂直翻转后 ultralytics 仍套用这个映射，
+        #   关键点语义会被打乱（2026-10-21 查明是精度退化原因之一）。
+        flipud=0.0,
         mosaic=1.0, close_mosaic=10,
-        erasing=0.25,
+        # ★ 不要开 erasing：随机擦除会盖掉靶心/角点，逼模型凭空回归。
+        erasing=0.0,
         plots=True,
     )
     best = Path(args.project).resolve() / args.name / "weights" / "best.pt"

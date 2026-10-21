@@ -103,23 +103,40 @@ python3 -m k230tool live --model /sdcard/models/yolov8n_320.kmodel \
     --labels-file models/coco_labels.txt --conf 0.25
 ```
 
-## 本仓库保留的权重（2026-10-20 清理后）
+## 本仓库保留的权重
+
+### 2026-10-21：当前部署 `pose_v3`
 
 | 文件 | 说明 |
 | --- | --- |
-| `target_pose.kmodel` | **当前部署模型**：`poseB_farhead_merged` Q1（farneg 检测头 + B_final 关键点分支），板端路径 `/sdcard/models/target_pose.kmodel` |
-| `poseB_farhead_merged.pt` | 上面模型的 PyTorch 权重（重新导出 ONNX / 再训练起点） |
-| `poseB_farhead_merged.onnx` | 导出的 ONNX（`nms=False`，输入 320×320），`tools/compile_kmodel.py` 的输入 |
-| `poseA_final_best.pt` | A 版最终权重（4 角点，held-out 靶心 6.04 px，留档对照） |
+| `pose_v3.kmodel` | **当前部署**：v3 小目标微调（320 输入，Q1），板端 `/sdcard/models/pose_v3.kmodel` |
+| `pose_v3.onnx` | 导出 ONNX，输出 `[1,20,2100]` |
+| `pose_v3.pt` | PyTorch 权重（训练起点/复导出用） |
+| `spot_v1.pt` / `.kmodel` | 上一版光斑增强模型（远靶召回 56.5%，留档对照） |
+| `target_pose.kmodel` | 旧的 `poseB_farhead_merged` Q1，板端仍保留作回退 |
+
+v3 的效果与训练方法见
+[`../docs/POSE_V3_TRAINING.md`](../docs/POSE_V3_TRAINING.md)：
+`farneg_B` test 远靶 100% 召回（旧模型 50~56.5%），靶心 1.48 px，
+负样本误检 1.2%@0.25 / 0%@0.4，板端 13.3 fps。
+
+### 历史权重
+
+| 文件 | 说明 |
+| --- | --- |
+| `poseB_farhead_merged.pt` | 旧部署模型的 PyTorch 权重（farneg 检测头 + B_final 关键点分支） |
+| `poseB_farhead_merged.onnx` | 上面的 ONNX（`nms=False`，320×320） |
+| `poseA_final_best.pt` | A 版最终权重（4 角点，held-out 靶心 6.04 px） |
 | `target_v2.kmodel` / `target_v2.pt` | v2 数据集训练的历史版本（100% 检出，置信度 0.668） |
 | `v2_std1.kmodel` | v2 的另一组预处理标定（std=1）版本 |
 
-推模型到板子：
+推模型到板子（覆盖当前部署）：
 
 ```bash
-python3 -m k230tool push models/target_pose.kmodel --dest /sdcard/models/target_pose.kmodel
+python3 -m k230tool push models/pose_v3.kmodel --dest /sdcard/models/pose_v3.kmodel
 python3 -m k230tool models        # 确认板端能看到
 ```
 
-> 训练工程（数据集 / captures / runs）已随 2026-10-20 清理删除，归档在
-> 需要重训时用你自己的数据集与标注。
+> 训练数据：`recovered/dataset_pose_v3/`（由 `tools/build_pose_dataset_v3.py`
+> 从 `dataset_pose_v2_B ∪ dataset_pose_farneg_B` + 现场帧确定性生成），
+> 现场帧在 `tools/scene_20261021/`。历史训练工程见 `recovered/runs_v3/`。

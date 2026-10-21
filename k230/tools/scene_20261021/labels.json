@@ -1,0 +1,147 @@
+{
+  "frames": "/tmp/scene_frames",
+  "weights": "models/spot_v1.pt",
+  "imgsz": 416,
+  "n_used": 57,
+  "n_total": 60,
+  "size": [
+    640,
+    480
+  ],
+  "box_px": [
+    325.41,
+    200.22,
+    357.76,
+    249.28
+  ],
+  "kpts_px": [
+    [
+      333.17,
+      202.39
+    ],
+    [
+      358.78,
+      205.85
+    ],
+    [
+      352.72,
+      245.29
+    ],
+    [
+      325.97,
+      244.54
+    ],
+    [
+      341.64,
+      228.53
+    ]
+  ],
+  "conf_median": 0.7022,
+  "conf_min": 0.2873,
+  "per_frame_std_px": [
+    [
+      0.7120000123977661,
+      0.8519999980926514
+    ],
+    [
+      0.3930000066757202,
+      0.4320000112056732
+    ],
+    [
+      0.8510000109672546,
+      0.7699999809265137
+    ],
+    [
+      0.7110000252723694,
+      1.0420000553131104
+    ],
+    [
+      0.2849999964237213,
+      0.7229999899864197
+    ]
+  ],
+  "label": [
+    0,
+    0.53373,
+    0.468236,
+    0.050552,
+    0.102216,
+    0.520573,
+    0.421655,
+    2.0,
+    0.560594,
+    0.428863,
+    2.0,
+    0.55113,
+    0.511013,
+    2.0,
+    0.509327,
+    0.509451,
+    2.0,
+    0.533807,
+    0.476097,
+    2.0
+  ],
+  "frames_labeled": [
+    "frame_000000.jpg",
+    "frame_000001.jpg",
+    "frame_000002.jpg",
+    "frame_000003.jpg",
+    "frame_000004.jpg",
+    "frame_000005.jpg",
+    "frame_000006.jpg",
+    "frame_000007.jpg",
+    "frame_000008.jpg",
+    "frame_000009.jpg",
+    "frame_000010.jpg",
+    "frame_000011.jpg",
+    "frame_000012.jpg",
+    "frame_000013.jpg",
+    "frame_000014.jpg",
+    "frame_000015.jpg",
+    "frame_000016.jpg",
+    "frame_000017.jpg",
+    "frame_000018.jpg",
+    "frame_000019.jpg",
+    "frame_000020.jpg",
+    "frame_000021.jpg",
+    "frame_000022.jpg",
+    "frame_000023.jpg",
+    "frame_000024.jpg",
+    "frame_000025.jpg",
+    "frame_000026.jpg",
+    "frame_000027.jpg",
+    "frame_000028.jpg",
+    "frame_000029.jpg",
+    "frame_000030.jpg",
+    "frame_000031.jpg",
+    "frame_000032.jpg",
+    "frame_000033.jpg",
+    "frame_000034.jpg",
+    "frame_000035.jpg",
+    "frame_000036.jpg",
+    "frame_000037.jpg",
+    "frame_000038.jpg",
+    "frame_000039.jpg",
+    "frame_000040.jpg",
+    "frame_000041.jpg",
+    "frame_000042.jpg",
+    "frame_000043.jpg",
+    "frame_000044.jpg",
+    "frame_000045.jpg",
+    "frame_000046.jpg",
+    "frame_000047.jpg",
+    "frame_000048.jpg",
+    "frame_000049.jpg",
+    "frame_000050.jpg",
+    "frame_000051.jpg",
+    "frame_000052.jpg",
+    "frame_000053.jpg",
+    "frame_000054.jpg",
+    "frame_000055.jpg",
+    "frame_000056.jpg",
+    "frame_000057.jpg",
+    "frame_000058.jpg",
+    "frame_000059.jpg"
+  ]
+}

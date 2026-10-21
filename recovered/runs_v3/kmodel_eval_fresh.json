@@ -1,0 +1,38 @@
+{
+  "kmodel": "models/pose_v3.kmodel",
+  "split": "test",
+  "images": 20,
+  "ok": 14,
+  "bull_err": {
+    "n": 14,
+    "mean": 2.693,
+    "p95": 4.393,
+    "max": 6.067
+  },
+  "corner_err": {
+    "n": 56,
+    "mean": 3.111,
+    "p95": 6.24,
+    "max": 9.224
+  },
+  "fails": {
+    "low_conf": 6,
+    "ok": 14
+  },
+  "per_stage": {
+    "unknown": {
+      "n": 20,
+      "ok": 14,
+      "fails": {
+        "low_conf": 6
+      },
+      "bull_err": {
+        "n": 14,
+        "mean": 2.693,
+        "p95": 4.393,
+        "max": 6.067
+      },
+      "ok_rate": 0.7
+    }
+  }
+}

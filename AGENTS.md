@@ -108,10 +108,11 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
   `sup_occl` 因自动预标落在手上已剔除，`sup_far` 唯一帧标错已剔除；
 - 数据集生成：`tools/pose_json_to_yolo.py` 从同一 JSON 生成 A/B 两版；
 - CanMV 预览：`board/yolo_preview_ide.py` 已接 5 关键点绘制 + top-1 解码，
-  默认 `MODEL=/sdcard/models/target_pose.kmodel`、`VIEW="full"`、`VIEW_SCALE=0.55`（352×264）；
+  默认 `MODEL=/sdcard/models/pose_v3.kmodel`、`VIEW="full"`、`VIEW_SCALE=0.55`（352×264）；
 - PC：`k230tool live` 默认走 Pose，`latest.json` 输出 `kpts/bull`；
-- **当前部署模型**：`poseB_farhead_merged` Q1（farneg 检测头 + B_final 关键点分支），
-  已重命名为 `/sdcard/models/target_pose.kmodel`；
+- **当前部署模型（2026-10-21 起）**：`pose_v3`（小目标微调），板端
+  `/sdcard/models/pose_v3.kmodel`；旧 `poseB_farhead_merged` 保留为
+  `/sdcard/models/target_pose.kmodel` 回退；
 - 远距离 10 张：3.05 px / P95 4.92；原 13 张：6.47 px / P95 9.57；
   80 张负样本 @0.4 误检 0；@0.25 误检 1/80（为 20px 极小靶保留召回）；
 - IDE 预览：性能模式 352×264、`IDE_QUALITY=80`、每 3 帧跑一次 pose；
@@ -277,3 +278,47 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
 - 下一步：若还要提升 20px 以下的极小靶，需要更多该尺度人工标注；
   40~60px 远距离当前已可用；检测抖动已接近模型上限，再提升应做
   K230 侧"多候选 + 时序关联"（当前只取 top-1，相似物之间会跳）。
+
+### 2026-10-21 Pose 退化修复（`pose_v3`）
+
+用户反馈「接入激光后靶纸/靶心识别率下降、误检上升」。现场用
+`k230tool grab` 抓 60 帧实测：部署的 poseB 对 33×49 px 靶纸 **0/60**、
+把笔电 **60/60** 误检；spot_v1 56/60 但笔电仍误检 22/60。根因与修法：
+
+1. **训练集尺度错位**：v2_B 正样本 min-side 中位数 100 px，<60 px 只占 7%。
+   → `tools/build_pose_dataset_v3.py` 增加整图缩小 0.30~0.65 倍的 zoom-out
+   增强（可再叠靶心光斑），<60 px 样本占比升到 43%。
+2. **spot_v1 丢了硬负样本**：只继承 v2_B 的 20 张空标注，丢了 farneg 的 80 张。
+   → v3 用 `v2_B ∪ farneg_B`（哈希去重，248 正 / 80 负）+ 每张负样本随机裁 2 块
+   + 现场帧避开靶纸的硬负裁剪，共 257 张负样本。
+3. **`flipud=0.5` 对 Pose 是错的**：ultralytics 垂直翻转后仍套 `flip_idx`
+   （只描述左右镜像），关键点语义被打乱；`erasing=0.25` 会擦掉靶心。
+   → 训练配方固定 `flipud=0.0, erasing=0.0`（`tools/train_pose_v3.py`，
+   `tools/train_pose_target.py` 也已修正默认值）。
+4. **板端把 YOLO 的框中心当左上角**：`_pose_postprocess` 里 `x=row[0]/scale`，
+   但输出是 `[cx,cy,w,h]` → 框/ROI/`$KT` 框中心整体右下偏 `w/2,h/2`
+   （26×36 靶纸偏 11~18 px）。→ 改为 `x=cx-w/2, y=cy-h/2`
+   （`yolo_pose.py`、`yolo_preview_ide.py`、离线代理 `gimbal_agent.py` 三处都改）。
+
+结果（`bench_pose.py`，farneg_B test + 合成光斑/缩小变体 + 80 负样本）：
+
+| 模型 | 干净 top1 | 光斑 top1 | 缩小远靶 top1 | 靶心（干净/远靶） | 负样本误检 |
+| --- | --- | --- | --- | --- | --- |
+| poseB | 100% | 82.6% | 50.0% | 4.18 / 4.73 px | 1.2% |
+| spot_v1 | 100% | 100% | 56.5% | 4.03 / 2.48 px | 1.2% |
+| **pose_v3** | **100%** | **100%** | **100%** | **1.99 / 1.48 px** | **1.2%** |
+
+- 全新视角（26×38 px，未参与训练）：旧模型 0%，v3 80%（conf 0.25），
+  开 `low_refine` 后 95%；板端当前场景 `verify_live.py` **48/48 命中、
+  0 误检、靶心 1.5 px、13.3 fps / 推理 31 ms**；
+- 新增 `tools/label_scene_frames.py`（多帧中值预标 + 核对图）、
+  `tools/bench_pose.py`（多模型/多组指标/负样本）、
+  `scripts/verify_live.py`（板端真实 kmodel 统计）；
+- **板端模型路径改为 `/sdcard/models/pose_v3.kmodel`**（旧 `target_pose.kmodel`
+  被 KPU 占用时写入会 EBUSY，故用新文件名，旧文件保留回退）；
+  `link.py` / `yolo_pose.py` / `yolo_preview_ide.py` / `gimbal_agent.py` 默认值已同步；
+- **激光标定必须共用**：`board/yolo_pose.py` 现在也读 `/sdcard/laser_calib.json`
+  （首次自动标定后写回）。没有标定文件时，复杂画面下每次上电要做 12 次
+  全图搜索（单次 0.5~2.3 s），整条流会掉到 0.5~3 fps；
+- 板端低置信复筛：`low_refine=1`，仅对 ≤120 px 的候选、最多 2 个、
+  7 倍裁剪放大，失败后冷却 3 帧；PC 实测 80 张负样本误检不变（1/80）。

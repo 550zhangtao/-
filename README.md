@@ -91,8 +91,23 @@ cd k230 && bash scripts/mode.sh debug
 > 首次升级代理（在 `k230/` 下）：
 > `python3 -m k230tool mode work --agent board/gimbal_agent.py`。
 
-预览脚本默认已配好（`/sdcard/models/target_pose.kmodel`、`VIEW="full"`、`VIEW_SCALE=0.55`、
+预览脚本默认已配好（`/sdcard/models/pose_v3.kmodel`、`VIEW="full"`、`VIEW_SCALE=0.55`、
 `CONF=0.25`），点运行即可看到检测框 + 四角轮廓 + 红色靶心，同时仍会向 ESP32 发 `$KT`。
+
+### 4) 重训 / 评测 Pose 模型（小目标版）
+
+```bash
+cd k230
+python3 tools/build_pose_dataset_v3.py ...          # 小目标 + 激光 + 硬负样本
+python3 tools/train_pose_v3.py --data ../recovered/dataset_pose_v3/data.yaml \
+    --weights models/spot_v1.pt --epochs 40 --imgsz 320 --device cpu
+python3 tools/bench_pose.py --weights models/pose_v3.pt \
+    --data ../recovered/k230_target_project/dataset_pose_farneg_B \
+    --splits test --far-copies 2 --neg-data ../recovered/k230_target_project/dataset_pose_farneg_B
+```
+
+排查「远靶/靶心识别率下降、误检上升」的完整过程和数据见
+[k230/docs/POSE_V3_TRAINING.md](k230/docs/POSE_V3_TRAINING.md)。
 
 ### 3) ESP32 侧
 
@@ -112,13 +127,20 @@ USB 命令：`status` / `mode` / `kt` / `pad` / `s1 <us>` / `s2 <us>` / `sh` /
 
 ## 模型
 
-当前部署：`k230/models/target_pose.kmodel`（poseB_farhead_merged Q1，farneg 检测头 +
-B_final 关键点分支），板端路径 `/sdcard/models/target_pose.kmodel`。
-配套的 `.pt` / `.onnx`、A 版最终权重和 v2 历史模型都在 `k230/models/`，
+当前部署：`k230/models/pose_v3.kmodel`（2026-10-21 小目标微调，5 关键点，
+板端路径 `/sdcard/models/pose_v3.kmodel`）。相比旧 `poseB` / `spot_v1`：
+
+- `farneg_B` test 远靶召回 **50~56.5% → 100%**，靶心 **4.2~4.7 px → 1.48 px**；
+- 全新视角 26×38 px 小靶：旧模型 0%，v3 80%（开低置信复筛后 95%）；
+- 负样本误检 1.2%@0.25、0%@0.4；板端 13.3 fps / 推理 31 ms。
+
+配套的 `.pt` / `.onnx`、旧 poseB 与 v2 历史模型都在 `k230/models/`，
 说明见 [k230/models/README.md](k230/models/README.md)。
+旧的 `/sdcard/models/target_pose.kmodel`（poseB）保留在板端作回退。
 
 ## 文档
 
+- [k230/docs/POSE_V3_TRAINING.md](k230/docs/POSE_V3_TRAINING.md) —— **小目标/误检问题的诊断、数据集、训练与评测**
 - [k230/docs/K230_ESP32_UART.md](k230/docs/K230_ESP32_UART.md) —— `$KT` / `$E` 协议与调参记录
 - [k230/docs/YOLOV8_DEPLOY.md](k230/docs/YOLOV8_DEPLOY.md) —— 训练 → ONNX → kmodel → 板端
 - [k230/docs/POSE_ANNOTATION.md](k230/docs/POSE_ANNOTATION.md) —— 5 关键点标注规范

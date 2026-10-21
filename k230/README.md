@@ -221,11 +221,11 @@ bash scripts/mode.sh reset    # 保持当前模式真软复位（machine.reset +
 2. 打开 CanMV IDE，连接板子
 3. 打开 `board/yolo_preview_ide.py`，按运行
 
-**默认已经是 Pose 模式**（模型 `/sdcard/models/target_pose.kmodel`，
+**默认已经是 Pose 模式**（模型 `/sdcard/models/pose_v3.kmodel`，
 阈值 0.25），画面里画的是 **检测框 + 四个角点轮廓 + 靶心红十字**：
 
 ```python
-MODEL = "/sdcard/models/target_pose.kmodel"   # 5 关键点 Pose
+MODEL = "/sdcard/models/pose_v3.kmodel"       # 5 关键点 Pose（小目标版）
 VIEW = "full"                                 # 固定视窗；VIEW_SCALE=0.55 -> 352×264
 CONF = 0.25
 KP_NUM = 5                                    # TL,TR,BR,BL,靶心
@@ -282,7 +282,8 @@ DISPLAY_MODE = "ide"
 | 模型 | 说明 |
 | --- | --- |
 | `target_v2.kmodel` | 旧检测模型，仅作对照 |
-| `target_pose.kmodel` | **B_farhead_merged 5 关键点 Pose（当前部署，Q1/NoClip）** |
+| `pose_v3.kmodel` | **当前部署：v3 小目标 5 关键点 Pose（320，Q1）** |
+| `target_pose.kmodel` | 旧 poseB_farhead_merged（板端保留回退） |
 
 Pose kmodel 输出 `[1, 20, 2100]`，即 4+nc+3×5；A 版 `[1,17,2100]`。
 
@@ -290,7 +291,7 @@ Pose kmodel 输出 `[1, 20, 2100]`，即 4+nc+3×5；A 版 `[1,17,2100]`。
 
 ```bash
 # PC 端看结果（框 + 四角轮廓 + 靶心）
-python3 -m k230tool live --model /sdcard/models/target_pose.kmodel --conf 0.66
+python3 -m k230tool live --model /sdcard/models/pose_v3.kmodel --conf 0.25
 
 # 无模型时先验证链路：用冒烟模型
 python3 -m k230tool live --model /sdcard/models/pose5.kmodel --conf 0.05
@@ -352,7 +353,7 @@ python3 tools/pose_eval.py --weights runs_target/poseA/weights/best.pt \
 `board/yolo_preview_ide.py` 默认：
 
 ```python
-MODEL = "/sdcard/models/target_pose.kmodel"
+MODEL = "/sdcard/models/pose_v3.kmodel"
 VIEW = "full"       # 固定视窗；VIEW_SCALE=0.55 -> 352×264
 CONF = 0.25
 ```

@@ -47,7 +47,7 @@ import libs.YOLO as _YL
 from ulab import numpy as _np
 
 # ============================ 配置 ============================
-MODEL = "/sdcard/models/target_pose.kmodel"
+MODEL = "/sdcard/models/pose_v3.kmodel"
 LABELS = ["target"]
 MODEL_IN = [320, 320]
 W, H = 640, 480
@@ -115,10 +115,15 @@ def _pose_postprocess(new_result, active_size, model_size, out_size,
     ah, aw = out_size
     mh, mw = model_size
     scale = min(mw / float(aw), mh / float(ah))
-    x = float(row[0]) / scale          # AI2D 左上角对齐, pad 恒为 0
-    y = float(row[1]) / scale
+    # AI2D 左上角对齐, pad 恒为 0
+    # YOLO 输出 [cx,cy,w,h] 是中心点：旧代码当左上角，$KT 的框中心会偏
+    # w/2,h/2（26x36 靶纸偏 11~18px），云台瞄准也跟着偏。
     w = float(row[2]) / scale
     h = float(row[3]) / scale
+    cx = float(row[0]) / scale
+    cy = float(row[1]) / scale
+    x = cx - w * 0.5
+    y = cy - h * 0.5
     kp = []
     for k in range(kp_num):
         kp.append(float(row[5 + k * kp_dim]) / scale)

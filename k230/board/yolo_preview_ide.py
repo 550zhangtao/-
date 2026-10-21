@@ -24,7 +24,7 @@ yolo_preview_ide.py —— 在 CanMV IDE 里看 YOLOv8n-Pose 标靶 + 激光光�
 """
 
 # ============================ 用户配置 ============================
-MODEL = "/sdcard/models/target_pose.kmodel"   # 若 IDE 找不到，改成 /models/target_pose.kmodel
+MODEL = "/sdcard/models/pose_v3.kmodel"   # 若 IDE 找不到，改成 /models/pose_v3.kmodel
 LABELS = ["target"]
 MODEL_IN = [320, 320]
 CAPTURE_SIZE = [640, 480]
@@ -34,6 +34,12 @@ VIEW_SCALE = 0.55            # full 缩放：0.55 -> 352x264（追求 15~20fps�
 IDE_QUALITY = 80              # IDE 预览 JPEG 质量（85 平衡清晰度/帧率；95 更清晰但更慢）
 CENTER_SIZE = 320             # center 模式的固定裁剪边长
 CONF = 0.25
+# 低置信兜底复筛：远处 30px 小靶/逆光时首轮分数会掉到 0.25 以下。
+# 对分数最高的 2 个候选各做一次 7 倍裁剪放大复筛（实测 0.02~0.20 -> 0.5~0.8，
+# 负样本误检率不变），只对候选各多跑一次 320 推理。
+LOW_REFINE = 1
+LOW_REFINE_TOPK = 2
+LOW_REFINE_MULT = 7.0
 NMS = 0.45
 MAX_BOXES = 20
 KP_NUM = 5                    # 4 角点 + 靶心
@@ -122,10 +128,14 @@ def _pose_postprocess(new_result, active_size, model_size, out_size,
     mh, mw = model_size
     scale = min(mw / float(aw), mh / float(ah))
     # AI2D 左上角对齐：pad 恒为 0
-    x = float(row[0]) / scale
-    y = float(row[1]) / scale
+    # YOLO 输出 [cx,cy,w,h] 是**中心点**，旧代码当左上角用，框整体右下偏
+    # w/2,h/2（26x36 的靶纸偏 11~18px），ROI/绘制/复筛全跟着偏。
     w = float(row[2]) / scale
     h = float(row[3]) / scale
+    cx = float(row[0]) / scale
+    cy = float(row[1]) / scale
+    x = cx - w * 0.5
+    y = cy - h * 0.5
     kp = []
     for k in range(kp_num):
         kp.append(float(row[5 + k * kp_dim]) / scale)
@@ -209,6 +219,49 @@ def _bull_of(res):
     if len(kp) >= 15 and float(kp[14]) >= 0.3:
         return (float(kp[12]), float(kp[13]))
     return None
+
+
+def _refine_pose(img, box, mult=7.0):
+    """裁剪候选框并放大到 640x480 再跑一次，返回 (box, kp, score) 或 None。
+
+    `box` 是 [x,y,w,h]（原图坐标）。放大倍数 mult 越大，远处小靶在 320
+    输入里占的像素越多；7 倍对 26x38 的靶纸效果最好（等效分辨率翻倍）。
+    """
+    bx, by, bw, bh = [float(v) for v in box[:4]]
+    side = max(max(bw, bh) * float(mult), 64.0)
+    cw = int(side)
+    ch = int(side * 0.75)
+    cx = bx + bw * 0.5
+    cy = by + bh * 0.5
+    x = int(max(0.0, min(W - cw, cx - cw * 0.5)))
+    y = int(max(0.0, min(H - ch, cy - ch * 0.5)))
+    cw = int(min(cw, W - x))
+    ch = int(min(ch, H - y))
+    if cw < 16 or ch < 16:
+        return None
+    try:
+        crop = img.crop(roi=(x, y, cw, ch))
+        zoom = crop.copy(x_scale=W / float(cw), y_scale=H / float(ch))
+        arr = zoom.to_rgb888().to_numpy_ref()
+        res = _yolo.run(arr)
+        if not res or not res[0]:
+            return None
+        b = res[0][0]
+        kp = res[3][0]
+        score = float(res[2][0])
+        sx = cw / float(W)
+        sy = ch / float(H)
+        nb = [x + float(b[0]) * sx, y + float(b[1]) * sy,
+              float(b[2]) * sx, float(b[3]) * sy]
+        nkp = []
+        for i in range(0, len(kp), KP_DIM):
+            nkp.append(x + float(kp[i]) * sx)
+            nkp.append(y + float(kp[i + 1]) * sy)
+            nkp.append(float(kp[i + 2]))
+        return (nb, nkp, score)
+    except Exception as e:
+        print("refine:", e)
+        return None
 
 
 def _draw(img, res, s=1.0):
@@ -382,6 +435,18 @@ def main():
         if last_res is None or (n % AI_EVERY) == 0:
             arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
             last_res = _yolo.run(arr)
+            # ---- 低置信兜底复筛（与 board/yolo_pose.py 的策略一致）
+            if LOW_REFINE and last_res and last_res[0]:
+                top = max(float(v) for v in last_res[2])
+                if top < CONF:
+                    rb = None
+                    _boxes = last_res[0]
+                    for _i in range(min(len(_boxes), LOW_REFINE_TOPK)):
+                        r = _refine_pose(img, _boxes[_i], LOW_REFINE_MULT)
+                        if r is not None and (rb is None or r[2] > rb[2]):
+                            rb = r
+                    if rb is not None and rb[2] >= CONF:
+                        last_res = ([rb[0]], [0], [rb[2]], [rb[1]])
         res = last_res
         _send_uart(n, res)
 
@@ -437,7 +502,12 @@ def main():
         # 板端绘制路径自检：把"画好"的帧存到 /sdcard 供 k230tool pull 检查
         if LASER_DBG_SAVE and n and (n % LASER_DBG_SAVE) == 0:
             try:
-                img.save("/sdcard/laser_dbg.jpg")
+                # VIEW=full 时叠加画在 disp 上；保存 img 会得到一张没有框的
+                # 原图，起不到核对绘制路径的作用。
+                if VIEW == "full" and DISPLAY_MODE == "ide":
+                    disp.save("/sdcard/laser_dbg.jpg")
+                else:
+                    img.save("/sdcard/laser_dbg.jpg")
             except Exception as e:
                 print("save dbg:", e)
 
