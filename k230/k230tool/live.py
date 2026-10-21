@@ -152,10 +152,13 @@ class Live:
         dets = []
         bull = None
         kpts = None
+        laser = None
         if target:
             names = target.get("labels") or self.labels
             if target.get("bull"):
                 bull = target["bull"]
+            if target.get("laser"):
+                laser = target["laser"]
             kpts = target.get("kp")
             for item in target.get("det") or []:
                 try:
@@ -184,10 +187,12 @@ class Live:
             "labels": self.labels,
             "detections": dets,
             "bull": bull,
+            "laser": laser,
             "kpts": kpts,
             "roi": target.get("roi") if target else None,
             "jpeg": target.get("jpeg") if target else None,
             "infer_ms": target.get("ms") if target else None,
+            "laser_ms": target.get("lms") if target else None,
             "board": dict(st.stats) if st else {},
             "hello": dict(st.hello) if st else {},
         }

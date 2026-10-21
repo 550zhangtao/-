@@ -99,9 +99,11 @@ POSE_DEFAULT_CFG: Dict[str, object] = {
     "max_boxes": 20,
     "jpeg_every": 1, "full_every": 15,
     "roi_pad": 0.25, "roi_min": 160, "roi_max": 256,
+    "laser_enable": 1, "laser_every": 1,   # 激光光斑：每帧检测（board/laser_spot.py）
     "fps": 0, "stats": 10, "limit": 0,
     "sensor_id": 2,
     "uart_enable": 1, "uart_id": 3, "uart_tx": 32, "uart_rx": 33, "uart_baud": 115200,
+    "uart_laser": 1,
     "reset_on_exit": 1,
 }
 
@@ -526,6 +528,31 @@ class K230Link:
                 return int(tok)
         return None
 
+    def _ensure_board_deps(self) -> None:
+        """把板端脚本依赖的模块推到 /sdcard（字节数不同才推，避免每次重写）。"""
+        deps = [BOARD_DIR / "laser_spot.py"]
+        for local in deps:
+            if not local.exists():
+                continue
+            remote = "/sdcard/" + local.name
+            try:
+                self.enter_raw()
+                out, _err, ok = self.exec_and_collect(
+                    "import os\nprint(os.stat('%s')[6])" % remote, timeout=8)
+                cur = -1
+                for tok in out.replace("\r", " ").replace("\n", " ").split():
+                    if tok.isdigit():
+                        cur = int(tok)
+                        break
+            except Exception:
+                cur = -1
+            if cur == local.stat().st_size:
+                continue
+            from .push_file import push_one
+            self.exit_raw()
+            if not push_one(self, str(local), remote, verbose=False):
+                raise BoardError("推送依赖失败：%s" % local)
+
     def start_stream(self, cfg: Optional[Dict[str, object]] = None,
                      timeout: float = 15.0,
                      template: Optional[Path] = None,
@@ -533,6 +560,7 @@ class K230Link:
         """下发板端脚本并确认已经开始工作（不阻塞后续读取）。"""
         assert self.ser is not None
         src = render_board_script(cfg, template, defaults)
+        self._ensure_board_deps()
         self.enter_raw()
         self._upload(src)
         self._buf = bytearray()

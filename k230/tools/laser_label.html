@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>激光光斑标注</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #222; color: #eee; margin: 0; }
+  header { padding: 8px 12px; background: #333; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  header b { color: #6cf; }
+  #stage { position: relative; display: inline-block; margin: 10px; }
+  #frame { display: block; image-rendering: pixelated; cursor: crosshair; }
+  #marker { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+            border: 2px solid #0ff; border-radius: 50%; pointer-events: none; display: none; }
+  #marker::before, #marker::after { content: ''; position: absolute; background: #0ff; }
+  #marker::before { left: 9px; top: -7px; width: 2px; height: 32px; }
+  #marker::after { top: 9px; left: -7px; height: 2px; width: 32px; }
+  .info { padding: 6px 12px; font-size: 14px; }
+  .kbd { background: #444; border-radius: 3px; padding: 1px 5px; }
+  button { background: #4a7; color: #fff; border: 0; padding: 6px 14px; border-radius: 4px; cursor: pointer; }
+  button.off { background: #a55; }
+  #list { max-height: 260px; overflow: auto; font-size: 12px; padding: 0 12px; }
+  #list div { padding: 2px 0; border-bottom: 1px solid #333; }
+</style>
+</head>
+<body>
+<header>
+  <b>激光光斑标注</b>
+  <span>左键点光斑中心；<span class="kbd">N</span> 标记无光斑；<span class="kbd">←</span>/<span class="kbd">→</span> 翻页</span>
+  <span id="counter"></span>
+  <button id="save" class="off">导出标注(git到控制台)</button>
+  <button id="autoplay">自动播放检测到的帧</button>
+</header>
+<div class="info" id="path"></div>
+<div id="stage">
+  <img id="frame" width="960" height="720" alt="">
+  <div id="marker"></div>
+</div>
+<div id="list"></div>
+<script>
+const FILES = window.FILES || [];   // 由 make_label_page.py 注入
+const ann = {};                     // file -> {x,y,has}
+let idx = 0;
+
+const img = document.getElementById('frame');
+const marker = document.getElementById('marker');
+const counter = document.getElementById('counter');
+const listEl = document.getElementById('list');
+
+function show(i) {
+  idx = Math.max(0, Math.min(FILES.length - 1, i));
+  const f = FILES[idx];
+  img.src = f.url;
+  counter.textContent = `第 ${idx + 1} / ${FILES.length} 张`;
+  document.getElementById('path').textContent = f.file;
+  const a = ann[f.file];
+  if (a) placeMarker(a.x, a.y, a.has);
+  else marker.style.display = 'none';
+  renderList();
+}
+function placeMarker(x, y, has) {
+  const r = img.getBoundingClientRect();
+  marker.style.left = (x / 640 * r.width) + 'px';
+  marker.style.top = (y / 480 * r.height) + 'px';
+  marker.style.display = has ? 'block' : 'none';
+  marker.style.borderColor = has ? '#0ff' : '#f00';
+}
+img.addEventListener('click', (e) => {
+  const r = img.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width * 640;
+  const y = (e.clientY - r.top) / r.height * 480;
+  ann[FILES[idx].file] = { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, has: true };
+  placeMarker(x, y, true);
+  renderList();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') show(idx + 1);
+  else if (e.key === 'ArrowLeft') show(idx - 1);
+  else if (e.key === 'n' || e.key === 'N') {
+    ann[FILES[idx].file] = { x: 0, y: 0, has: false };
+    marker.style.display = 'none';
+    renderList();
+  }
+});
+function renderList() {
+  listEl.innerHTML = Object.keys(ann).sort().map(k => {
+    const a = ann[k];
+    return `<div>${k} → ${a.has ? `(${a.x}, ${a.y})` : '无光斑'}</div>`;
+  }).join('');
+}
+document.getElementById('save').onclick = () => {
+  const out = {};
+  for (const k of Object.keys(ann)) out[k] = ann[k];
+  console.log(JSON.stringify(out, null, 2));
+  document.getElementById('save').textContent = '已导出到控制台(复制粘贴)';
+  navigator.clipboard?.writeText(JSON.stringify(out, null, 2));
+};
+show(0);
+</script>
+</body>
+</html>

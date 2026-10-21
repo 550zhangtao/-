@@ -5,7 +5,7 @@ K230 板端 Pose 标靶识别脚本（关键点 + 20 FPS）
 
 流程（每帧）：
     1. chn2 快照 -> YOLOv8 检测（320 输入，约 28 ms）
-    2. chn1 快照 -> 在检测框 ROI 内定位白色 10 号靶心（find_circles + 径向对称兜底）
+    2. chn1 快照 -> 激光光斑检测（board/laser_spot.py，RGB565 原图坐标）
     3. 隔帧编码 ROI JPEG（原生分辨率，不降采样）并回传
     4. 每 N 帧回传一张全图（缩小到 320x240）用于上下文
 
@@ -13,12 +13,17 @@ K230 板端 Pose 标靶识别脚本（关键点 + 20 FPS）
     roi    本次 JPEG 对应的原图区域 [x,y,w,h]
     jpeg   本次 JPEG 的实际尺寸 [w,h]
     bull   靶心 {x,y,r,conf,status}（坐标为原图 640x480 坐标系）
-    ms     推理耗时；bs 靶心耗时
+    laser  激光光斑 {x,y,conf,mode,status}（同坐标系；status="ok"/"none"）
+    ms     推理耗时；bs 靶心耗时；lms 光斑耗时
 
 CFG 必须保持单行，PC 端会用正则整行替换后下发。
+
+激光坐标另外走 UART（与 `$KT` 并列）：
+
+    $LS,<seq>,<run>,<x>,<y>,<conf>!      x,y 是 640x480 原图像素，无光斑时 -1
 """
 
-CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/target_pose.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 1, 'full_every': 15, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'fps': 0, 'stats': 10, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200}
+CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/target_pose.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 1, 'full_every': 15, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'fps': 0, 'stats': 10, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
 
 from media.sensor import *
 from media.media import *
@@ -33,6 +38,21 @@ import gc
 import binascii
 import ujson
 import math
+
+# 激光检测模块（PC 下发时会一并推到 /sdcard/laser_spot.py）
+for _p in ("/sdcard", "/sdcard/board", "/"):
+    try:
+        if _p not in sys.path:
+            sys.path.append(_p)
+    except Exception:
+        pass
+try:
+    import laser_spot
+except Exception as _e:
+    laser_spot = None
+
+_laser = None
+laser_ms = 0
 
 MAGIC = b"\xAA\x55K2"
 HDR_LEN = 38
@@ -404,8 +424,24 @@ def _send_uart(seq, det, bull, has_det):
 
 
 # ---------------------------------------------------------------- 主流程
+def _send_uart_laser(seq, laser):
+    """`$LS,<seq>,<run>,<x>,<y>,<conf>!` —— 激光光斑绝对坐标（原图 640x480）。"""
+    if _uart is None or not CFG.get("uart_laser", 1):
+        return
+    try:
+        if laser is not None:
+            line = "$LS,%d,1,%d,%d,%d!\n" % (seq, int(laser["x"] * 10),
+                                             int(laser["y"] * 10),
+                                             int(laser["conf"] * 1000))
+        else:
+            line = "$LS,%d,0,-1,-1,0!\n" % seq
+        _uart.write(line)
+    except Exception as e:
+        log("uart ls: %s" % e)
+
+
 def main():
-    global _yolo
+    global _yolo, _laser, laser_ms
     sen = _open_sensor()
     time.sleep_ms(300)
     _yolo = YOLOv8(task_type="pose", mode="image",
@@ -418,6 +454,12 @@ def main():
                    max_boxes_num=CFG["max_boxes"], debug_mode=0)
     _yolo.config_preprocess()
     _init_uart()
+    if CFG.get("laser_enable", 1) and laser_spot is not None:
+        _laser = laser_spot.LaserSpot()
+    else:
+        _laser = None
+        if CFG.get("laser_enable", 1):
+            log("laser_spot.py 未找到，激光检测关闭")
 
     try:
         stype = str(sen.get_type())
@@ -445,6 +487,18 @@ def main():
 
         # ---- 先拍显示帧，再拍 AI 帧（避免 ROI/检测框与画面错位）
         img = sen.snapshot(chn=CAM_CHN_ID_1)
+
+        # ---- 激光光斑：chn1 RGB565 原图，坐标即原图坐标
+        laser = None
+        laser_ms = 0
+        if _laser is not None and CFG.get("laser_every", 1) and (seq % CFG["laser_every"]) == 0:
+            try:
+                laser = _laser.locate(img)
+                laser_ms = 0 if laser is None else laser["ms"]
+            except Exception as e:
+                log("laser: %s" % e)
+                laser = None
+
         arr = sen.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
         t_ai = time.ticks_ms()
         res = _yolo.run(arr)
@@ -500,7 +554,11 @@ def main():
                 has_det = False
 
         # ---- 图像回传：ROI 原生分辨率；全图每 full_every 帧或丢失目标
-        want_full = (seq % CFG["full_every"] == 0) or (not has_det)
+        # 有激光检测时不再"没目标就发全图"（那是 Pose 时代的行为，
+        # 会让 13fps 全在发全图、激光 ROI 永远发不出去）；
+        # 全图只按 full_every 周期性发。无激光时保持旧行为。
+        want_full = (seq % CFG["full_every"] == 0) or \
+            (not has_det and laser is None and not CFG.get("laser_enable", 1))
         want_jpeg = (seq % CFG["jpeg_every"] == 0) or want_full
         jpg = None
         roi = None
@@ -509,18 +567,38 @@ def main():
         if want_jpeg:
             t_j = time.ticks_ms()
             if want_full:
+                # 全图优先（full_every 到点 / 没目标）：保证 PC 能看到完整上下文
                 jpg, jsz, roi = _encode_full(img, CFG["q"])
-            else:
+            elif CFG.get("laser_enable", 1) and laser is not None:
+                # 有光斑：固定回传光斑周围 160x120（原生分辨率）
+                lx = int(laser["x"]) - 80
+                ly = int(laser["y"]) - 60
+                lx = _clamp(lx, 0, CFG["w"] - 160)
+                ly = _clamp(ly, 0, CFG["h"] - 120)
+                roi = [lx, ly, 160, 120]
+                jpg, jsz = _encode_roi(img, roi, CFG["q"])
+            elif has_det:
                 roi = _roi_around(boxes[0])
                 jpg, jsz = _encode_roi(img, roi, CFG["q"])
+            else:
+                jpg, jsz, roi = _encode_full(img, CFG["q"])
             jpg_ms = time.ticks_diff(time.ticks_ms(), t_j)
 
+        if laser is not None:
+            laser_out = {"x": round(laser["x"], 1), "y": round(laser["y"], 1),
+                         "conf": round(laser["conf"], 3), "mode": laser["mode"],
+                         "status": "ok"}
+        else:
+            laser_out = {"x": -1, "y": -1, "conf": 0, "status": "none"}
+
         out = {"seq": seq, "w": CFG["w"], "h": CFG["h"],
-               "ms": infer_ms, "ref_ms": refine_ms, "det": det, "kp": kp_flat,
+               "ms": infer_ms, "ref_ms": refine_ms, "lms": laser_ms,
+               "det": det, "kp": kp_flat,
                "labels": CFG["labels"], "task": "pose",
-               "roi": roi, "jpeg": jsz, "bull": bull}
+               "roi": roi, "jpeg": jsz, "bull": bull, "laser": laser_out}
         emit(T_TARGET, seq, ujson.dumps(out).encode())
         _send_uart(seq, det, bull, has_det)
+        _send_uart_laser(seq, laser)
         if jpg is not None:
             emit(T_FRAME, seq, jpg)
 
@@ -529,10 +607,10 @@ def main():
             now = time.ticks_ms()
             dt = time.ticks_diff(now, win_t)
             fps = 0.0 if dt <= 0 else (win_n * 1000.0 / dt)
-            emit(T_STATS, seq, ("seq=%d fps=%.1f infer_ms=%d jpg_ms=%d bytes=%d mem=%d bull=%s"
+            emit(T_STATS, seq, ("seq=%d fps=%.1f infer_ms=%d jpg_ms=%d bytes=%d mem=%d bull=%s laser=%s"
                                 % (seq, fps, infer_ms, jpg_ms,
                                    len(jpg) if jpg else 0, gc.mem_free(),
-                                   bull.get("status"))).encode())
+                                   bull.get("status"), laser_out["status"])).encode())
             win_t = now
             win_n = 0
 

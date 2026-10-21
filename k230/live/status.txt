@@ -1,0 +1,1 @@
+seq=174 fps=12.2 targets=0 age=1319ms connected=False

@@ -1,0 +1,63 @@
+{
+  "source": "k230-usb",
+  "ts": 1792582190.983,
+  "iso_time": "2026-10-21 19:29:50",
+  "seq": 174,
+  "age_ms": 1318.6,
+  "fps": 12.17,
+  "size": [
+    640,
+    480
+  ],
+  "jpeg_bytes": 7306,
+  "connected": false,
+  "total_frames": 174,
+  "ai": true,
+  "model": "/sdcard/models/target_pose.kmodel",
+  "labels": [
+    "target"
+  ],
+  "detections": [],
+  "bull": {
+    "status": "low_conf"
+  },
+  "laser": {
+    "conf": 0.616,
+    "y": 279.4,
+    "x": 335.3,
+    "mode": "white",
+    "status": "ok"
+  },
+  "kpts": [],
+  "roi": [
+    255,
+    219,
+    160,
+    120
+  ],
+  "jpeg": [
+    160,
+    120
+  ],
+  "infer_ms": 30,
+  "laser_ms": 18,
+  "board": {
+    "seq": "170",
+    "fps": "10.9",
+    "infer_ms": "34",
+    "jpg_ms": "18",
+    "bytes": "1660",
+    "mem": "3763936",
+    "bull": "low_conf",
+    "laser": "ok"
+  },
+  "hello": {
+    "w": "640",
+    "h": "480",
+    "q": "70",
+    "model": "/sdcard/models/target_pose.kmodel",
+    "mem": "2774848",
+    "sensor": "9",
+    "version": "3.4.0;"
+  }
+}
