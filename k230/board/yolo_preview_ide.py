@@ -45,14 +45,14 @@ MAX_BOXES = 20
 KP_NUM = 5                    # 4 角点 + 靶心
 KP_DIM = 3                    # x,y,v
 VIEW_PAD = 0.25               # ROI 外扩比例
-AI_EVERY = 3                 # 每 N 帧跑一次 pose（其余帧复用上次结果）
+AI_EVERY = 2                 # 每 N 帧跑一次 pose（其余帧复用上次结果）
 
 # ---- 激光光斑 ----
 LASER_ENABLE = 1              # 1=检测并绘制激光光斑
-# 每 N 帧检测一次：find_blobs 有 ~25ms 固定开销（两次调用），全图更高，
-# 实测 LASER_EVERY=2 时激光开销摊到 ~15ms/帧，帧率接近原来的 20fps。
-# 要更快可设 3（6.7Hz 激光更新，IDE 里看仍连续）；要更跟手设 1（掉到 ~12fps）。
-LASER_EVERY = 3
+# 固定标定下每 N 帧才复核一次，其余帧零搜索；激光每 N 帧更新一次即可。
+LASER_EVERY = 2
+LASER_VERIFY_EVERY = 5        # 每 5 帧复核一次（固定标定基本不变）
+LASER_GLOBAL = 0              # IDE 预览不是 R2 瞄准态：不做受限重捕
 LASER_CFG = {}                # 覆盖 board/laser_spot.py 的 CFG，如 {"min_contrast": 45}
 LASER_LABEL = 0               # 1=在光斑旁画坐标文字（会让每帧多一条 deprecation 警告，略拖慢）
 # 固定标定：相机与激光笔固连 → 光斑在画面里是常量，标定一次就不用每帧找。
@@ -209,6 +209,23 @@ def _send_uart(seq, res):
         _uart.flush()
     except Exception as e:
         print("uart tx:", e)
+
+
+def _send_uart_laser(seq, laser):
+    """`$LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!`（三态接口，TODO 控制）"""
+    if _uart is None:
+        return
+    try:
+        if laser is not None and float(laser.get("x", -1)) >= 0:
+            src = 2 if laser.get("src") == "fixed" else 1
+            _uart.write("$LS,%d,1,%d,%d,%d,%d!\n" % (
+                seq, int(laser["x"] * 10), int(laser["y"] * 10),
+                int(float(laser.get("conf", 0)) * 1000), src))
+        else:
+            _uart.write("$LS,%d,0,-1,-1,0,0!\n" % seq)
+        _uart.flush()
+    except Exception as e:
+        print("uart ls:", e)
 
 
 def _bull_of(res):
@@ -372,7 +389,10 @@ def _init_laser():
     if laser_spot is None:
         print("激光检测不可用：laser_spot.py 未找到")
         return None
-    cfg = {}
+    cfg = {
+        "fixed_verify_every": LASER_VERIFY_EVERY,
+        "fixed_allow_reacquire": LASER_GLOBAL,
+    }
     if LASER_CFG:
         cfg.update(LASER_CFG)
     _laser = laser_spot.LaserSpot(cfg)
@@ -383,8 +403,8 @@ def _init_laser():
         src = "file"
     if fixed is not None and fixed[0] > 0:
         _laser.set_fixed(fixed[0], fixed[1])
-        print("laser: 固定标定 (%.1f, %.1f) 来自%s → 每帧零搜索" %
-              (fixed[0], fixed[1], src))
+        print("laser: 固定标定 (%.1f, %.1f) 来自%s → 每 %d 帧复核一次，其余帧零搜索" %
+              (fixed[0], fixed[1], src, LASER_VERIFY_EVERY))
     else:
         print("laser: 未标定 → 上电后自动做一次视觉标定（成功即锁定并写回 %s），"
               "之后每帧只在小窗口跟踪" % LASER_CALIB_FILE)
@@ -465,6 +485,14 @@ def main():
                 _save_calib(laser["x"], laser["y"])
                 print("laser: 首次视觉标定完成 (%.1f, %.1f)，之后窄窗跟踪"
                       % (laser["x"], laser["y"]))
+        # 三态接口：没有实拍光斑时用固定标定位置上报 $LS（src=2）。
+        # 这里只上报/绘制，不做云台控制（控制算法后续再接）。
+        if laser is None and _laser is not None:
+            _fx = getattr(_laser, "fixed", None)
+            if _fx is not None and _fx[0] > 0:
+                laser = {"x": _fx[0], "y": _fx[1], "conf": 0,
+                         "mode": "calib", "src": "fixed"}
+        _send_uart_laser(n, laser)
         bull = _bull_of(res)
 
         if DISPLAY_MODE == "ide":

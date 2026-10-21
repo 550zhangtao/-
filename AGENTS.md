@@ -322,3 +322,34 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
   全图搜索（单次 0.5~2.3 s），整条流会掉到 0.5~3 fps；
 - 板端低置信复筛：`low_refine=1`，仅对 ≤120 px 的候选、最多 2 个、
   7 倍裁剪放大，失败后冷却 3 帧；PC 实测 80 张负样本误检不变（1/80）。
+
+### 2026-10-21 激光 IO / 搜索优化 / 三态追踪接口
+
+- **激光笔 IO（ESP32 GPIO5，低电平点亮）**：02 板其余脚全被电机/舵机/PS2/
+  K230/循迹占用，GPIO5 是唯一空出的可输出脚；它是 strapping pin（上电必须为高），
+  所以按 active-low 接线（NPN+N-MOS），保证 bootloader 阶段不亮。
+  `applyLaserMode()` 只在 `GIMBAL_MANUAL`(R1)/`GIMBAL_TRACK`(R2) 点亮，
+  `GIMBAL_NONE`/上电熄灭；`carMode`(L1/L2) 完全不影响。实测 USB
+  `gnone/gmanual/gtrack/gnone` → `laser on=0/1/1/0`。改线只改
+  `PIN_LASER` / `LASER_ACTIVE_LOW`。
+- **激光搜索优化**：`laser_spot.py` fixed 模式改为每 `fixed_verify_every=5` 帧
+  复核一次，其余帧零搜索；连续 10 次复核失败后每 30 帧在 ±180px 内做 stride=6
+  的**受限重捕**，**永不回退全图**。`fixed_allow_reacquire` 只在 R2 代理置 1，
+  live/IDE 预览为 0 → 只有 R2 才进入（受限）全局搜索。没有
+  `/sdcard/laser_calib.json` 时代理直接关闭 `$LS`，不启动全图标定。
+- **帧率**：`jpeg_every=2`、`full_every=30`、`stats=15`、gc 每 16 帧、
+  ROI 160×120 保持质量；K230 live 实测 **13.6 → 18.2 fps**，激光 11 → 2ms；
+  代理约 20fps（含 `$LS`）。
+- **三态追踪接口（只预留，未实现控制）**：`$LS` 增加第 6 段
+  `src`（0 无 / 1 实拍 / 2 标定），ESP32 解析后存
+  `aimLaserX10/Y10/Conf/Src`、`aimLaserValid`、`aimBullLostFrames`、
+  `aimLastBullMs`、`aimState`；USB `aim` 打印原始输入，`status` 增加
+  `laser/laserValid/lsrc/bullLost`。**`updateTrack()` 一行未改**，三态 A/B/C
+  的判定与复位尚未接入（TODO 见 .ino `AIM-3STATE` 注释）。
+- **N 实测**（pose_v3，conf 0.25，bull conf≥0.3）：现场 60 帧 60/60（最大连续
+  漏检 0）；新视角 20 帧 16/20（最大连续 2）；80 负样本误检 1/80。建议
+  **N=10 帧 + 900ms 兜底**；该逻辑尚未实现。
+- **端到端**：ESP32 新固件烧录通过；K230 部署新代理后 USB `gtrack`：
+  `START_OK`、`$KT` 202 帧、`bad=2`（启动边界）、`$LS src=2`、
+  `laserValid=1`、激光 ON；`gnone` 后 STOP/激光灭。
+- 新增文档：`k230/docs/AIM_LASER_SEARCH.md`。

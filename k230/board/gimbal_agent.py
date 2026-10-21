@@ -46,6 +46,12 @@ from libs.YOLO import YOLOv8
 import libs.YOLO as _YL
 from ulab import numpy as _np
 
+try:
+    import laser_spot
+except Exception as _e:
+    laser_spot = None
+    print("agent: laser_spot import failed:", _e)
+
 # ============================ 配置 ============================
 MODEL = "/sdcard/models/pose_v3.kmodel"
 LABELS = ["target"]
@@ -58,6 +64,14 @@ MAX_BOXES = 20
 KP_NUM = 5
 KP_DIM = 3
 BULL_MIN_V = 0.30
+
+# ---- 激光上报（$LS，三态追踪接口；本轮不接控制）----
+# 代理只在 R2/START 后跑，所以允许 fixed 模式的受限重捕（±180px，每 30 帧最多一次）。
+# 没有 laser_calib.json 时直接关闭激光上报（不在瞄准启动时做全图标定，避免卡 2s）。
+LASER_ENABLE = 1
+LASER_VERIFY_EVERY = 5
+LASER_GLOBAL = 1
+LASER_CALIB_FILE = "/sdcard/laser_calib.json"
 
 UART_ENABLE = 1
 UART_ID = 3                     # 12Pin UART3: TX=GPIO32, RX=GPIO33
@@ -82,6 +96,7 @@ _ready = False
 _running = False
 _rxbuf = ""
 _fail = 0
+_laser = None
 
 # 工作模式下 REPL 被本脚本占用，不能再靠 Ctrl-C 切模式（实测会把板子
 # 打进 USB 不枚举状态）。ESP32 的 gnone 命令会发 `$E,STOP!`，连续 3 条
@@ -341,19 +356,21 @@ def _send_frame(seq, boxes, scores, kpts):
     if _uart is None:
         return
     run = 1 if boxes else 0
+    conf = 0
     if run:
         b = boxes[0]
         cx = int(b[0] + b[2] * 0.5)
         cy = int(b[1] + b[3] * 0.5)
-        conf = int(float(scores[0]) * 1000)
         kp = kpts[0]
         if len(kp) >= 15 and float(kp[14]) >= BULL_MIN_V:
             bx, by = int(kp[12]), int(kp[13])
+            # $KT 的 conf 协议上是**靶心置信度**（yolo_pose.py 也这么发）；
+            # 旧代理发的是框分数，ESP32 三态接口按 bull conf 判有效会误判。
+            conf = int(float(kp[14]) * 1000)
         else:
             bx = by = -1
     else:
         cx = cy = bx = by = -1
-        conf = 0
     _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d!\n" %
                 (seq, run, cx, cy, bx, by, conf))
     try:
@@ -362,8 +379,79 @@ def _send_frame(seq, boxes, scores, kpts):
         pass
 
 
+def _load_laser_calib():
+    """读 /sdcard/laser_calib.json（与 IDE 预览 / yolo_pose 共用）。"""
+    try:
+        f = open(LASER_CALIB_FILE)
+        s = f.read()
+        f.close()
+        i = s.find('"x"')
+        j = s.find('"y"')
+        if i >= 0 and j >= 0:
+            return (float(s[s.find(":", i) + 1:s.find(",", i)]),
+                    float(s[s.find(":", j) + 1:s.find("}", j)]))
+    except Exception:
+        pass
+    return None
+
+
+def _open_laser():
+    """初始化激光检测（固定标定 + 受限重捕）；失败不影响 $KT 推流。"""
+    global _laser
+    if not LASER_ENABLE or laser_spot is None:
+        _laser = None
+        return False
+    fx = _load_laser_calib()
+    if fx is None or fx[0] <= 0:
+        _laser = None
+        print("agent: 无 %s -> 激光上报关闭（先在 IDE 预览里标定一次）"
+              % LASER_CALIB_FILE)
+        return False
+    try:
+        _laser = laser_spot.LaserSpot({
+            "fixed_verify_every": LASER_VERIFY_EVERY,
+            "fixed_allow_reacquire": LASER_GLOBAL,
+        })
+        _laser.set_fixed(fx[0], fx[1])
+        print("agent: laser fixed (%.1f,%.1f), verify every %d, reacquire=%d"
+              % (fx[0], fx[1], LASER_VERIFY_EVERY, LASER_GLOBAL))
+        return True
+    except Exception as e:
+        _laser = None
+        print("agent: laser init failed:", e)
+        return False
+
+
+def _send_laser(seq, laser):
+    """`$LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!` —— 三态接口数据源。"""
+    if _uart is None:
+        return
+    try:
+        if laser is not None and float(laser.get("x", -1)) >= 0:
+            src = 2 if laser.get("src") == "fixed" else 1
+            _uart.write("$LS,%d,1,%d,%d,%d,%d!\n" % (
+                seq, int(laser["x"] * 10), int(laser["y"] * 10),
+                int(float(laser.get("conf", 0)) * 1000), src))
+        else:
+            fx = getattr(_laser, "fixed", None) if _laser is not None else None
+            if fx is not None and fx[0] > 0:
+                _uart.write("$LS,%d,1,%d,%d,0,2!\n" %
+                            (seq, int(fx[0] * 10), int(fx[1] * 10)))
+            else:
+                _uart.write("$LS,%d,0,-1,-1,0,0!\n" % seq)
+        _uart.flush()
+    except Exception as e:
+        print("agent: laser tx:", e)
+
+
 def _stream_frame(seq):
-    _sensor.snapshot(chn=CAM_CHN_ID_1)                   # 排空显示通道
+    img1 = _sensor.snapshot(chn=CAM_CHN_ID_1)           # 显示通道：激光检测用
+    laser = None
+    if _laser is not None:
+        try:
+            laser = _laser.locate(img1)
+        except Exception as e:
+            print("agent: laser:", e)
     arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
     res = _yolo.run(arr)
     if res and len(res) >= 4:
@@ -371,6 +459,7 @@ def _stream_frame(seq):
     else:
         boxes, scores, kpts = [], [], []
     _send_frame(seq, boxes, scores, kpts)
+    _send_laser(seq, laser)
     return len(boxes)
 
 
@@ -430,6 +519,7 @@ def main():
             print("agent: %dms 没收到 START, 自动开跑" % AUTO_START_MS)
         if cmd == "START":
             ok = _open_camera() and _open_model()
+            _open_laser()          # 失败只关闭 $LS，不影响 $KT 推流
             _running = ok
             _reply("START_OK" if ok else "ERR,INIT")
             print("agent: START -> %s" % ("streaming" if ok else "init failed"))

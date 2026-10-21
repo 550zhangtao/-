@@ -14,7 +14,8 @@ K230 视觉端（YOLOv8-Pose 靶纸/靶心检测）、USB 调试工具与模型�
   `$KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>!` 上报目标框中心、靶心、置信度。
   板端常驻一个代理（`/sdcard/main.py`），由 ESP32 指挥：
   `$E,START!` 才开相机跑识别，`$E,STOP!` 停。
-- **ESP32**：独占云台（pan GPIO27 / tilt GPIO14），把像素误差换算成舵机微秒，
+- **ESP32**：独占云台（pan GPIO27 / tilt GPIO14）与激光笔（GPIO5，低电平点亮，
+  仅 R1/R2 模式开），把像素误差换算成舵机微秒，
   跑 PID + 速度自适应前视；同时负责电机（TB6612）、8 路循迹、PS2 手柄与模式切换。
 - **上电默认无模式**：电机不使能、云台不动、K230 不跑识别；
   手柄按 **R2** 进跟踪（同时给 K230 发 START），**R1** 回手动（发 STOP）。
@@ -132,7 +133,7 @@ USB 命令：`status` / `mode` / `kt` / `pad` / `s1 <us>` / `s2 <us>` / `sh` /
 
 - `farneg_B` test 远靶召回 **50~56.5% → 100%**，靶心 **4.2~4.7 px → 1.48 px**；
 - 全新视角 26×38 px 小靶：旧模型 0%，v3 80%（开低置信复筛后 95%）；
-- 负样本误检 1.2%@0.25、0%@0.4；板端 13.3 fps / 推理 31 ms。
+- 负样本误检 1.2%@0.25、0%@0.4；板端 13.6 → 18.2 fps（激光搜索优化后）/ 推理 31 ms。
 
 配套的 `.pt` / `.onnx`、旧 poseB 与 v2 历史模型都在 `k230/models/`，
 说明见 [k230/models/README.md](k230/models/README.md)。
@@ -141,6 +142,7 @@ USB 命令：`status` / `mode` / `kt` / `pad` / `s1 <us>` / `s2 <us>` / `sh` /
 ## 文档
 
 - [k230/docs/POSE_V3_TRAINING.md](k230/docs/POSE_V3_TRAINING.md) —— **小目标/误检问题的诊断、数据集、训练与评测**
+- [k230/docs/AIM_LASER_SEARCH.md](k230/docs/AIM_LASER_SEARCH.md) —— 激光 IO / 搜索优化 / 三态追踪接口
 - [k230/docs/K230_ESP32_UART.md](k230/docs/K230_ESP32_UART.md) —— `$KT` / `$E` 协议与调参记录
 - [k230/docs/YOLOV8_DEPLOY.md](k230/docs/YOLOV8_DEPLOY.md) —— 训练 → ONNX → kmodel → 板端
 - [k230/docs/POSE_ANNOTATION.md](k230/docs/POSE_ANNOTATION.md) —— 5 关键点标注规范

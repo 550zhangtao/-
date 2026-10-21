@@ -64,7 +64,7 @@ def build_cfg(args) -> Dict[str, object]:
     labels = _labels(args)
     cfg: Dict[str, object] = {
         "w": args.width, "h": args.height, "q": args.quality,
-        "fps": args.fps, "stats": 10, "limit": 0,
+        "fps": args.fps, "stats": 15, "limit": 0,
     }
     if not args.no_ai:
         cfg.update({
@@ -84,6 +84,10 @@ def build_cfg(args) -> Dict[str, object]:
             "roi_pad": args.roi_pad,
             "roi_min": args.roi_min,
             "roi_max": args.roi_max,
+            "laser_enable": 1, "laser_every": 1,
+            "laser_verify_every": 5,
+            # USB live 不是 R2 瞄准态：不做受限重捕（只有 R2 代理才打开）
+            "laser_global": 0,
             "reset_on_exit": 1,
             "uart_enable": 1, "uart_id": 3, "uart_tx": 32, "uart_rx": 33,
             "uart_baud": 115200,
@@ -419,9 +423,9 @@ def _add_live_args(p):
     p.add_argument("--labels", default=None, help="逗号分隔，如 target")
     p.add_argument("--labels-file", default=None, help="标签文件（每行一个或 JSON）")
     p.add_argument("--input-size", type=int, default=320, help="kmodel 输入尺寸")
-    p.add_argument("--jpeg-every", type=int, default=1,
+    p.add_argument("--jpeg-every", type=int, default=2,
                    help="每 N 帧回传一张图（结果 JSON 每帧都发）")
-    p.add_argument("--full-every", type=int, default=15,
+    p.add_argument("--full-every", type=int, default=30,
                    help="每 N 帧回传一张缩小全图")
     p.add_argument("--roi-pad", type=float, default=0.25)
     p.add_argument("--roi-min", type=int, default=160)

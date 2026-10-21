@@ -38,7 +38,7 @@ import time
 
 # ----------------------------------------------------------- 配置
 # 会被 PC 端按正则替换，务必保持**单行** dict 字面量
-CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 12, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 60, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'slow_every': 8,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120}
+CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 6, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 60, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'slow_every': 8,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120, 'fixed_verify_every': 5, 'fixed_allow_reacquire': 0, 'fixed_reacquire_after': 10, 'fixed_reacquire_every': 30, 'fixed_reacquire_rad': 180, 'fixed_reacquire_stride': 6}
 
 # 亮白阈值（板端 LAB：L 0~100）。光斑核心 L 接近 100。
 LAB_WHITE = [(82, 100, -30, 30, -30, 30)]
@@ -435,19 +435,22 @@ class LaserSpot:
         return (sx / sw, sy / sw)
 
     # ------------------------------------------------------ 对外
-    def _scan_window(self, img, cx, cy, rad, base_luma):
+    def _scan_window(self, img, cx, cy, rad, base_luma, stride=1):
         """只在 (cx,cy)±rad 的小窗口里逐像素找光斑，不调用 find_blobs。
 
         为什么可行：相机与激光笔固连，云台小幅转动时光斑只移动几~几十 px
         （遗留 aim_core 实测 pan 50µs ≈ 5~9px）。所以绝大多数帧只需在上一帧
         附近几十 px 内确认一下即可。
-        开销：窗口 (2*rad)^2 个像素 × ~7µs。rad=14 → 784 px ≈ 5ms，
-        远低于 find_blobs 的 ~11ms 固定开销（与 ROI 大小无关）。
+        开销：窗口 (2*rad)^2 / stride^2 个像素 × ~7µs。rad=14,stride=1 →
+        784 px ≈ 5ms；受限重捕 rad=180,stride=6 → 3600 px ≈ 25ms（每 30 帧一次）。
         """
         c = self.cfg
         w = img.width()
         h = img.height()
         ba = self._ba
+        stride = int(stride)
+        if stride < 1:
+            stride = 1
         x0 = int(cx) - rad
         y0 = int(cy) - rad
         if x0 < 0:
@@ -467,8 +470,8 @@ class LaserSpot:
         bx = -1
         by = -1
         bmk = -1
-        for yy in range(y0, y1):
-            for xx in range(x0, x1):
+        for yy in range(y0, y1, stride):
+            for xx in range(x0, x1, stride):
                 r, g, bl = _rgb565(ba, w, xx, yy)
                 lu = _luma(r, g, bl)
                 if lu < need_l:
@@ -509,36 +512,60 @@ class LaserSpot:
 
         # ===== 固定标定模式：每帧小窗口跟踪，绝不回退全图搜索 =====
         # 设计要点（踩过两个坑后定的）：
-        #  1) 早先每 verify_every 帧才复核一次，两次之间坐标冻结，
-        #     云台一动标记就不跟着走 → 改为**每帧**小窗口扫（~4~8ms）。
-        #  2) 早先复核连续失败会清掉 fixed、回退到全图 find_blobs，
-        #     复杂画面下单帧要 0.5~2.3 秒，FPS 直接掉到 3 → 现在**永不回退**：
-        #     找不到就保持原位置，只把窗口逐步放大（12→30→60px）。
-        #     位置真变了（重装/掰云台）由用户重新标定，不自动乱搜。
+        #  1) 相机与激光笔固连，光斑在画面里的位置基本是常量：只在每
+        #     fixed_verify_every 帧复核一次（12~60px 小窗，~5ms），其余帧
+        #     直接返回标定位置，**零搜索开销**。
+        #  2) 复核连续失败 fixed_reacquire_after 次后，每 fixed_reacquire_every
+        #     帧做一次 ±fixed_reacquire_rad 的**受限**重捕（stride=6，~25ms），
+        #     绝不回退全图 find_blobs（复杂画面单帧 0.5~2.3s，会把流拖到 0.5fps）。
+        #  3) fixed_allow_reacquire 只由 R2/START 的离线代理置 1；IDE 预览 /
+        #     live 置 0，保证「只有 R2 才进入（受限）全局搜索」。
         if self.fixed is not None:
             self._frame_n += 1
             fx, fy = self.fixed
             if self._base_luma is None:
                 self._base_luma = self._estimate_base(ba, w, h)
-            # 窗口随连续未命中次数放大，够跟上云台小幅移动
-            rad = c["win_rad"] + self._verify_fail * c["win_grow"]
-            if rad > c["win_rad_max"]:
-                rad = c["win_rad_max"]
-            vr = self._scan_window(img, fx, fy, rad, self._base_luma)
-            if vr is not None:
-                fx, fy = vr["x"], vr["y"]
-                self.fixed = (fx, fy)
-                self._verify_fail = 0
-                conf = vr["conf"]
+            ve = int(c.get("fixed_verify_every", 5))
+            src = "fixed"
+            mode = "fixed"
+            if ve <= 1 or (self._frame_n % ve) == 0:
+                # 窗口随连续未命中次数放大，够跟上云台小幅移动
+                rad = c["win_rad"] + self._verify_fail * c["win_grow"]
+                if rad > c["win_rad_max"]:
+                    rad = c["win_rad_max"]
+                vr = self._scan_window(img, fx, fy, rad, self._base_luma)
+                if vr is not None:
+                    fx, fy = vr["x"], vr["y"]
+                    self.fixed = (fx, fy)
+                    self._verify_fail = 0
+                    conf = vr["conf"]
+                    src = "measured"
+                else:
+                    self._verify_fail += 1
+                    conf = 0.35          # 没看到光斑：位置沿用旧值，降置信度
+                    if (c.get("fixed_allow_reacquire", 0)
+                            and self._verify_fail >= int(c.get("fixed_reacquire_after", 10))
+                            and (self._frame_n % int(c.get("fixed_reacquire_every", 30))) == 0):
+                        vr2 = self._scan_window(
+                            img, fx, fy, int(c.get("fixed_reacquire_rad", 180)),
+                            self._base_luma,
+                            stride=int(c.get("fixed_reacquire_stride", 6)))
+                        if vr2 is not None:
+                            fx, fy = vr2["x"], vr2["y"]
+                            self.fixed = (fx, fy)
+                            self._verify_fail = 0
+                            conf = vr2["conf"]
+                            src = "measured"
+                            mode = "fixed+reacquire"
             else:
-                self._verify_fail += 1
-                conf = 0.35          # 没看到光斑：位置沿用旧值，但降低置信度
+                # 非复核帧：位置就是标定值，没有任何搜索/分配
+                conf = 1.0
             self.last = (fx, fy)
             self.last_ms = time.ticks_diff(time.ticks_ms(), t0)
             self.last_cands = 1
             return {"x": fx, "y": fy, "conf": conf, "contrast": 0,
-                    "warm": 0, "sat": 0, "mode": "fixed", "area": 0,
-                    "ms": self.last_ms}
+                    "warm": 0, "sat": 0, "mode": mode, "area": 0,
+                    "src": src, "ms": self.last_ms}
 
         # 背景基线低频更新：全图稀疏采样约 8ms，每 10 帧算一次即可
         self._frame_n += 1

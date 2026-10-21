@@ -61,6 +61,19 @@ constexpr int SERVO_MID_US = 1500;
 constexpr uint8_t CH_PAN = 0;
 constexpr uint8_t CH_TILT = 1;
 
+// ---------------- 激光笔（仅 R1/R2 点亮）----------------
+// 02 板 30Pin 排针上唯一空出的可输出脚是 GPIO5：
+//   2/4/13/25/26/32/33=电机, 14/27=舵机, 15/18/19/23=PS2,
+//   16/17=K230 UART2, 21/22=循迹 I2C。GPIO5 是 strapping pin（上电必须为高）。
+// 因此默认按**低电平点亮**接线，保证 bootloader 阶段（GPIO5=高）不亮：
+//   GPIO5 -> 1k -> NPN 基极；NPN 集电极 -> N-MOSFET 栅极(10k 上拉到 3.3V)；
+//   N-MOSFET 源极 GND、漏极接激光笔负极；激光笔正极接 5V/3.3V（按模块）。
+//   GPIO5 高 = NPN 导通 = MOS 栅极低 = 灭；GPIO5 低 = MOS 栅极高 = 亮。
+// 若激光模块本身带 active-low 使能，可直接接 GPIO5；active-high 模块请加反相，
+// 否则上电时 GPIO5 的高电平会短暂点亮激光。
+constexpr uint8_t PIN_LASER = 5;
+constexpr bool LASER_ACTIVE_LOW = true;
+
 // 机械行程（沿用原 V19 的安全范围）
 constexpr int PAN_MIN_US = 740;
 constexpr int PAN_MAX_US = 2260;
@@ -314,6 +327,22 @@ uint32_t lastAckSeq = 0;
 int trackState = 0;  // 0 idle, 1 tracking, 2 aligned, 3 stale
 char lastLine[128] = "-";
 
+// ---- 预留：瞄准三态接口（本轮只维护输入数据，不做任何控制/复位）----
+// TODO(AIM-3STATE): 后续在 updateTrack()/状态机里实现：
+//   A 靶心丢失: aimBullLostFrames >= N（实测 v3 在 60 帧现场序列最大连续漏检 2，
+//     建议 N=10 帧 + 900ms 兜底）-> gimbalMode=NONE + 激光关 + K230 STOP；
+//   B 有靶心、!aimLaserValid -> 用 aimLaserX10/Y10（$LS src=2 标定位置）驱动；
+//   C 有靶心、aimLaserValid -> 用实拍激光（$LS src=1）驱动。
+// 本轮只把 $LS / $KT 的数据填进来，updateTrack() 保持原样。
+enum : uint8_t { AIM_IDLE = 0, AIM_BULL_LOST = 1, AIM_NO_LASER = 2, AIM_READY = 3 };
+uint8_t aimState = AIM_IDLE;
+int aimLaserX10 = -1, aimLaserY10 = -1, aimLaserConf = 0, aimLaserSrc = 0;
+bool aimLaserValid = false;
+uint32_t aimLaserMs = 0;
+uint32_t aimBullLostFrames = 0;
+uint32_t aimLastBullMs = 0;
+bool laserOn = false;
+
 // ---- 新增：手柄 / 模式 / 电机 / 循迹 运行状态 ----
 PS2Controller ps2(PS2_DAT, PS2_CMD, PS2_ATT, PS2_CLK);
 uint32_t lastPs2Poll = 0, lastValidPs2 = 0, padBadFrames = 0, padNeutralSince = 0;
@@ -414,6 +443,38 @@ void centerServos() {
   applyServos();
 }
 
+// 激光笔输出：只有 R1(MANUAL)/R2(TRACK) 点亮，NONE/上电熄灭。
+// 与 carMode 完全无关，L1/L2 并行运行不受影响。
+void setLaserOutput(bool on) {
+  laserOn = on;
+  const uint8_t onLevel  = LASER_ACTIVE_LOW ? LOW : HIGH;
+  const uint8_t offLevel = LASER_ACTIVE_LOW ? HIGH : LOW;
+  digitalWrite(PIN_LASER, on ? onLevel : offLevel);
+}
+
+void applyLaserMode() {
+  setLaserOutput(gimbalMode == GIMBAL_MANUAL || gimbalMode == GIMBAL_TRACK);
+}
+
+// 只打印三态接口的原始输入，不做状态切换（本轮不实现追踪算法）
+void printAimInterface() {
+  const uint32_t now = millis();
+  Serial.print("AIM-IFACE state="); Serial.print((int)aimState);
+  Serial.print(" (TODO not wired) bullLostFrames="); Serial.print(aimBullLostFrames);
+  Serial.print(" bullAge="); Serial.print(aimLastBullMs ? (now - aimLastBullMs) : 0);
+  Serial.print(" laserValid="); Serial.print(aimLaserValid ? 1 : 0);
+  Serial.print(" laser=");
+  if (aimLaserX10 >= 0) {
+    Serial.print(aimLaserX10 / 10.0f, 1);
+    Serial.print(","); Serial.print(aimLaserY10 / 10.0f, 1);
+  } else {
+    Serial.print("none");
+  }
+  Serial.print(" src="); Serial.print(aimLaserSrc);
+  Serial.print(" conf="); Serial.print(aimLaserConf);
+  Serial.print(" age="); Serial.println(aimLaserMs ? (now - aimLaserMs) : 0);
+}
+
 // ---------------- USB 命令 ----------------
 void printStatus() {
   Serial.print("PAN="); Serial.print(panUs);
@@ -425,7 +486,11 @@ void printStatus() {
   Serial.print(" last="); Serial.print(lastCx); Serial.print(","); Serial.print(lastCy);
   Serial.print(" bull="); Serial.print(lastBx); Serial.print(","); Serial.print(lastBy);
   Serial.print(" conf="); Serial.print(lastConf);
-  Serial.print(" age="); Serial.println(millis() - lastFrameMs);
+  Serial.print(" age="); Serial.print(millis() - lastFrameMs);
+  Serial.print(" laser="); Serial.print(laserOn ? "ON" : "OFF");
+  Serial.print(" laserValid="); Serial.print(aimLaserValid ? 1 : 0);
+  Serial.print(" lsrc="); Serial.print(aimLaserSrc);
+  Serial.print(" bullLost="); Serial.println(aimBullLostFrames);
 }
 
 void help() {
@@ -437,6 +502,7 @@ void help() {
   Serial.println("          trk <alpha> <lead_s> / smooth <tau_s>  (目标平滑/前视/速度低通)");
   Serial.println("          probe16   (sample GPIO16 for 10s; toggle K230 GPIO9)");
   Serial.println("          $KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>!  (模拟 K230 帧)");
+  Serial.println("          aim / laser  (三态接口原始数据 / 激光 IO 状态，只读)");
   helpExtra();
 }
 
@@ -493,6 +559,14 @@ void handleTargetLine(char *line, bool fromUsb) {
   lastRun = (run != 0);
   lastFrameMs = millis();
   lastAckSeq = seq;
+  // ---- 三态接口：只统计输入，不做任何云台/激光动作（见 AIM_* 注释）----
+  const bool bullOkIface = (run != 0) && bx >= 0 && by >= 0 && lastConf >= 300;
+  if (bullOkIface) {
+    aimBullLostFrames = 0;
+    aimLastBullMs = lastFrameMs;
+  } else if (gimbalMode == GIMBAL_TRACK) {
+    ++aimBullLostFrames;
+  }
   sendAck(seq);
 
   if (fromUsb) {
@@ -523,6 +597,17 @@ void readLineFrom(Stream &s, char *buf, size_t cap, size_t &used,
 void onUsbLine(char *line, bool) {
   if (!strncmp(line, "$KT,", 4)) {
     handleTargetLine(line, true);
+    return;
+  }
+  if (!strcmp(line, "aim")) {
+    printAimInterface();
+    return;
+  }
+  if (!strcmp(line, "laser")) {
+    Serial.print("LASER pin=GPIO"); Serial.print(PIN_LASER);
+    Serial.print(" on="); Serial.print(laserOn ? 1 : 0);
+    Serial.print(" active_low="); Serial.print(LASER_ACTIVE_LOW ? 1 : 0);
+    Serial.print(" gimbalMode="); Serial.println((int)gimbalMode);
     return;
   }
   if (!strncmp(line, "pidshow", 7)) {
@@ -795,6 +880,13 @@ void setGimbalMode(uint8_t m) {
   autoTrack = (m == GIMBAL_TRACK);        // 直接复用原有的跟踪开关
   panVel = tiltVel = 0.0f;
   if (m != GIMBAL_TRACK) trackState = 0;
+  // 激光只在 R1(手动)/R2(跟踪) 点亮；L1/L2 小车模式完全不影响
+  applyLaserMode();
+  // 三态接口计数清零（本轮不做状态机动作）
+  aimBullLostFrames = 0;
+  aimLastBullMs = millis();
+  aimLaserValid = false;
+  aimLaserSrc = 0;
   Serial.print("GIMBAL: ");
   if (m == GIMBAL_TRACK)       Serial.println("TRACK (K230 $KT)");
   else if (m == GIMBAL_MANUAL) Serial.println("MANUAL (PS2 L-X / R-Y)");
@@ -1592,9 +1684,29 @@ bool handleCarLine(const char *line) {
   return false;
 }
 
+// ---------- $LS 激光帧（三态接口的数据源，本轮不接控制）----------
+void handleLaserLine(char *line) {
+  unsigned long seq = 0;
+  int run = 0, x10 = -1, y10 = -1, conf = 0, src = 0;
+  int n = sscanf(line, "$LS,%lu,%d,%d,%d,%d,%d",
+                 &seq, &run, &x10, &y10, &conf, &src);
+  if (n < 5) {
+    ++badFrames;
+    Serial.print("BAD LS: "); Serial.println(line);
+    return;
+  }
+  aimLaserX10 = x10;
+  aimLaserY10 = y10;
+  aimLaserConf = conf;
+  aimLaserSrc = (n >= 6) ? src : ((run != 0 && x10 >= 0) ? 1 : 0);
+  aimLaserValid = (run != 0 && x10 >= 0 && y10 >= 0);
+  aimLaserMs = millis();
+}
+
 // ---------- K230 串口行分发（原有 handleTargetLine 仍负责 $KT） ----------
 void onK230Line(char *line, bool fromUsb) {
   if (!strncmp(line, "$KT,", 4)) { handleTargetLine(line, fromUsb); return; }
+  if (!strncmp(line, "$LS,", 4)) { handleLaserLine(line); return; }
   if (!strcmp(line, CMD_DONE)) { lnResumeFromParking(); return; }
   if (!strncmp(line, "$E,K230,", 8)) {              // K230 常驻代理的回执
     Serial.print("K230: "); Serial.println(line + 8);
@@ -1613,6 +1725,9 @@ void onK230Line(char *line, bool fromUsb) {
 // ---------------- setup / loop ----------------
 void setup() {
   Serial.begin(BAUD);
+  // 激光笔先拉到熄灭电平（GPIO5 低电平点亮，上电 strapping=高=灭）
+  pinMode(PIN_LASER, OUTPUT);
+  setLaserOutput(false);
   K230.begin(BAUD, SERIAL_8N1, BUS_RX, BUS_TX);
 
   ledcAttachChannel(PIN_PAN, SERVO_FREQ, SERVO_RES, CH_PAN);

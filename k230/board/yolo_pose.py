@@ -20,10 +20,17 @@ CFG 必须保持单行，PC 端会用正则整行替换后下发。
 
 激光坐标另外走 UART（与 `$KT` 并列）：
 
-    $LS,<seq>,<run>,<x>,<y>,<conf>!      x,y 是 640x480 原图像素，无光斑时 -1
+    $LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!
+        x,y 是 640x480 原图像素（×10）；src: 0=无位置 1=本帧实拍 2=标定位置
+
+三态追踪接口（**本轮只上报数据，不实现控制算法**）：
+    A 靶心丢失 / B 有靶心无激光 / C 两者都有。
+    `$LS` 的 src=2 就是 B 的输入（laser_calib.json 推算位置）；
+    src=1 是 C 的输入。状态判定/云台复位在 ESP32 侧预留（见 .ino 的
+    AIM_* 注释与 `aim` 调试命令），K230 不做状态切换。
 """
 
-CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 1, 'full_every': 15, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'fps': 0, 'stats': 10, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
+CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 2, 'full_every': 30, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'laser_verify_every': 5, 'laser_global': 0, 'fps': 0, 'stats': 15, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
 
 from media.sensor import *
 from media.media import *
@@ -435,16 +442,22 @@ def _send_uart(seq, det, bull, has_det):
 
 # ---------------------------------------------------------------- 主流程
 def _send_uart_laser(seq, laser):
-    """`$LS,<seq>,<run>,<x>,<y>,<conf>!` —— 激光光斑绝对坐标（原图 640x480）。"""
+    """`$LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!`
+
+    坐标是原图 640x480 像素（×10 传整数）。src 是**三态追踪预留接口**：
+        0 = 无位置；1 = 本帧实拍；2 = 来自 laser_calib.json 的标定位置。
+    旧 ESP32 用 5 字段 sscanf 会忽略第 6 段，保持兼容。
+    """
     if _uart is None or not CFG.get("uart_laser", 1):
         return
     try:
-        if laser is not None:
-            line = "$LS,%d,1,%d,%d,%d!\n" % (seq, int(laser["x"] * 10),
-                                             int(laser["y"] * 10),
-                                             int(laser["conf"] * 1000))
+        if laser is not None and float(laser.get("x", -1)) >= 0:
+            src = 2 if laser.get("status") == "calib" else 1
+            line = "$LS,%d,1,%d,%d,%d,%d!\n" % (
+                seq, int(laser["x"] * 10), int(laser["y"] * 10),
+                int(float(laser.get("conf", 0)) * 1000), src)
         else:
-            line = "$LS,%d,0,-1,-1,0!\n" % seq
+            line = "$LS,%d,0,-1,-1,0,0!\n" % seq
         _uart.write(line)
     except Exception as e:
         log("uart ls: %s" % e)
@@ -492,7 +505,12 @@ def main():
     _yolo.config_preprocess()
     _init_uart()
     if CFG.get("laser_enable", 1) and laser_spot is not None:
-        _laser = laser_spot.LaserSpot()
+        _laser = laser_spot.LaserSpot({
+            "fixed_verify_every": int(CFG.get("laser_verify_every", 5)),
+            # 受限重捕（±180px）只在 R2/START 的离线代理里打开；
+            # USB live / IDE 预览默认 0，避免非瞄准状态做任何全局搜索。
+            "fixed_allow_reacquire": int(CFG.get("laser_global", 0)),
+        })
         # 和 IDE 预览共用 /sdcard/laser_calib.json：有标定就直接锁死，
         # 避免每次上电都做 12 次全图搜索（复杂画面单次要 0.5~2.3s，
         # 会把整条流拖到 0.5fps）。
@@ -680,11 +698,22 @@ def main():
             jpg_ms = time.ticks_diff(time.ticks_ms(), t_j)
 
         if laser is not None:
+            src = laser.get("src", "measured")
             laser_out = {"x": round(laser["x"], 1), "y": round(laser["y"], 1),
                          "conf": round(laser["conf"], 3), "mode": laser["mode"],
-                         "status": "ok"}
+                         "status": "ok" if src == "measured" else "calib",
+                         "src": src}
         else:
-            laser_out = {"x": -1, "y": -1, "conf": 0, "status": "none"}
+            # 没有实拍光斑，但有 /sdcard/laser_calib.json -> 直接用标定位置。
+            # 这是三态 B 的**数据接口**：只上报坐标，不在本文件里驱动云台。
+            _fx = getattr(_laser, "fixed", None) if _laser is not None else None
+            if _fx is not None and _fx[0] > 0:
+                laser_out = {"x": round(_fx[0], 1), "y": round(_fx[1], 1),
+                             "conf": 0, "mode": "calib", "status": "calib",
+                             "src": "fixed"}
+            else:
+                laser_out = {"x": -1, "y": -1, "conf": 0, "status": "none",
+                             "src": "none"}
 
         out = {"seq": seq, "w": CFG["w"], "h": CFG["h"],
                "ms": infer_ms, "ref_ms": refine_ms, "lms": laser_ms,
@@ -712,7 +741,9 @@ def main():
         if CFG["limit"] and seq >= CFG["limit"]:
             log("limit %d reached" % CFG["limit"])
             break
-        if (seq & 0x07) == 0:
+        if (seq & 0x0F) == 0:
+            # 每 16 帧回收一次：jpeg_every=2 后临时 bytes 减半，8 帧一次太勤
+            # （每次 gc 在板端约 1~2ms）。
             gc.collect()
         if target_fps:
             due = time.ticks_add(time.ticks_ms(), 1000 // target_fps)
