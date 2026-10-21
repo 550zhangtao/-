@@ -71,6 +71,8 @@ BULL_MIN_V = 0.30
 LASER_ENABLE = 1
 LASER_VERIFY_EVERY = 5
 LASER_GLOBAL = 1
+LASER_BUDGET_MS = 25
+LASER_COOLDOWN = 8
 LASER_CALIB_FILE = "/sdcard/laser_calib.json"
 
 UART_ENABLE = 1
@@ -97,6 +99,7 @@ _running = False
 _rxbuf = ""
 _fail = 0
 _laser = None
+_laser_skip = 0
 
 # 工作模式下 REPL 被本脚本占用，不能再靠 Ctrl-C 切模式（实测会把板子
 # 打进 USB 不枚举状态）。ESP32 的 gnone 命令会发 `$E,STOP!`，连续 3 条
@@ -445,13 +448,24 @@ def _send_laser(seq, laser):
 
 
 def _stream_frame(seq):
+    global _laser_skip
     img1 = _sensor.snapshot(chn=CAM_CHN_ID_1)           # 显示通道：激光检测用
     laser = None
     if _laser is not None:
-        try:
-            laser = _laser.locate(img1)
-        except Exception as e:
-            print("agent: laser:", e)
+        if _laser_skip > 0:
+            _laser_skip -= 1
+        else:
+            try:
+                t_l = time.ticks_ms()
+                laser = _laser.locate(img1)
+                lms = time.ticks_diff(time.ticks_ms(), t_l)
+                if lms > LASER_BUDGET_MS:
+                    _laser_skip = LASER_COOLDOWN
+                    print("agent: laser %dms > %dms, skip %d"
+                          % (lms, LASER_BUDGET_MS, LASER_COOLDOWN))
+            except Exception as e:
+                print("agent: laser:", e)
+                _laser_skip = LASER_COOLDOWN
     arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
     res = _yolo.run(arr)
     if res and len(res) >= 4:

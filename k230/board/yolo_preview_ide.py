@@ -53,6 +53,8 @@ LASER_ENABLE = 1              # 1=检测并绘制激光光斑
 LASER_EVERY = 2
 LASER_VERIFY_EVERY = 5        # 每 5 帧复核一次（固定标定基本不变）
 LASER_GLOBAL = 0              # IDE 预览不是 R2 瞄准态：不做受限重捕
+LASER_BUDGET_MS = 25          # 单帧激光超过此值就跳过几帧（看门狗）
+LASER_COOLDOWN = 8
 LASER_CFG = {}                # 覆盖 board/laser_spot.py 的 CFG，如 {"min_contrast": 45}
 LASER_LABEL = 0               # 1=在光斑旁画坐标文字（会让每帧多一条 deprecation 警告，略拖慢）
 # 固定标定：相机与激光笔固连 → 光斑在画面里是常量，标定一次就不用每帧找。
@@ -101,6 +103,7 @@ W, H = CAPTURE_SIZE
 _sensor = None
 _yolo = None
 _laser = None
+_laser_skip = 0
 
 
 def _display_init():
@@ -412,7 +415,7 @@ def _init_laser():
 
 
 def main():
-    global _sensor, _yolo
+    global _sensor, _yolo, _laser_skip
     _sensor = Sensor(id=2)
     _sensor.reset()
     _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_1)
@@ -472,19 +475,27 @@ def main():
 
         # 激光光斑：直接在 chn1 RGB565 原图上找（坐标即原图坐标）
         if _laser is not None and (n % LASER_EVERY) == 0:
-            t_l = time.ticks_ms()
-            try:
-                laser = _laser.locate(img, anchor=_bull_of(res))
-            except Exception as e:
-                print("laser:", e)
+            if _laser_skip > 0:
+                _laser_skip -= 1
                 laser = None
-            laser_ms = time.ticks_diff(time.ticks_ms(), t_l)
-            # 上电首次视觉标定成功后存盘，之后走窄窗跟踪
-            if _laser is not None and _laser.just_calibrated:
-                _laser.just_calibrated = False
-                _save_calib(laser["x"], laser["y"])
-                print("laser: 首次视觉标定完成 (%.1f, %.1f)，之后窄窗跟踪"
-                      % (laser["x"], laser["y"]))
+            else:
+                t_l = time.ticks_ms()
+                try:
+                    laser = _laser.locate(img, anchor=_bull_of(res))
+                except Exception as e:
+                    print("laser:", e)
+                    laser = None
+                laser_ms = time.ticks_diff(time.ticks_ms(), t_l)
+                if laser_ms > LASER_BUDGET_MS:
+                    _laser_skip = LASER_COOLDOWN
+                    print("laser %dms > %dms, skip %d"
+                          % (laser_ms, LASER_BUDGET_MS, LASER_COOLDOWN))
+                # 上电首次视觉标定成功后存盘，之后走窄窗跟踪
+                if laser is not None and _laser.just_calibrated:
+                    _laser.just_calibrated = False
+                    _save_calib(laser["x"], laser["y"])
+                    print("laser: 首次视觉标定完成 (%.1f, %.1f)，之后窄窗跟踪"
+                          % (laser["x"], laser["y"]))
         # 三态接口：没有实拍光斑时用固定标定位置上报 $LS（src=2）。
         # 这里只上报/绘制，不做云台控制（控制算法后续再接）。
         if laser is None and _laser is not None:

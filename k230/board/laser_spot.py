@@ -38,7 +38,7 @@ import time
 
 # ----------------------------------------------------------- 配置
 # 会被 PC 端按正则替换，务必保持**单行** dict 字面量
-CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 6, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 60, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'slow_every': 8,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120, 'fixed_verify_every': 5, 'fixed_allow_reacquire': 0, 'fixed_reacquire_after': 10, 'fixed_reacquire_every': 30, 'fixed_reacquire_rad': 180, 'fixed_reacquire_stride': 6}
+CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 6, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 60, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'win_red_warm': 120, 'win_red_luma': 50, 'win_warm_hot': 70, 'win_luma_low': 150, 'win_hot_luma': 245, 'win_hot_min': 220, 'slow_every': 1,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120, 'budget_ms': 12, 'gate_k': 3.0, 'kf_q': 40.0, 'kf_r': 4.0, 'kf_max_gate': 48.0, 'fixed_coast_max': 10, 'fixed_verify_every': 5, 'fixed_allow_reacquire': 0, 'fixed_reacquire_after': 10, 'fixed_reacquire_every': 30, 'fixed_reacquire_rad': 180, 'fixed_reacquire_stride': 6}
 
 # 亮白阈值（板端 LAB：L 0~100）。光斑核心 L 接近 100。
 LAB_WHITE = [(82, 100, -30, 30, -30, 30)]
@@ -102,6 +102,124 @@ def _overlap(a, b, pad=3):
     return True
 
 
+# ----------------------------------------------------------- 时间（板端/PC 通用）
+def _now_ms():
+    try:
+        return time.ticks_ms()
+    except AttributeError:
+        return int(time.monotonic() * 1000)
+
+
+def _diff_ms(a, b):
+    try:
+        return time.ticks_diff(a, b)
+    except AttributeError:
+        return int(a) - int(b)
+
+
+# ----------------------------------------------------------- 光斑预测器
+class SpotKalman:
+    """2D 匀速 Kalman（x/y 各一组 p,v），SORT 运动模型的轻量版。
+
+    为什么不用 OpenCV KCF/CSRT：K230 板端没有 OpenCV，CSRT 内存/算力也
+    撑不住；光斑是单点、运动近似匀速，2 状态 Kalman + 门控就够。
+    参考：
+      * SORT（Kalman + Mahalanobis 门控）https://github.com/abewley/sort
+      * ByteTrack（track/coast/lost 生命周期）
+        https://github.com/ifzhang/ByteTrack
+      * OpenCV Kalman 教程
+        https://docs.opencv.org/4.x/dd/d6a/tutorial_track_kalman.html
+
+    q: 过程噪声（px^2/s^3），r: 测量噪声（px^2）
+    max_gate: 门控最大半径（px），防止预测发散后窗口无限大
+    """
+    def __init__(self, q=40.0, r=4.0, max_gate=48.0):
+        self.q = float(q)
+        self.r = float(r)
+        self.max_gate = float(max_gate)
+        self.init = False
+        self.t = 0
+        self.px = 0.0; self.vx = 0.0
+        self.Px0 = 0.0; self.Px1 = 0.0; self.Px2 = 0.0
+        self.py = 0.0; self.vy = 0.0
+        self.Py0 = 0.0; self.Py1 = 0.0; self.Py2 = 0.0
+
+    def reset(self, x, y, t):
+        self.px = float(x); self.py = float(y)
+        self.vx = 0.0; self.vy = 0.0
+        self.Px0 = self.r * 64.0; self.Px1 = 0.0; self.Px2 = 25.0
+        self.Py0 = self.r * 64.0; self.Py1 = 0.0; self.Py2 = 25.0
+        self.t = int(t)
+        self.init = True
+
+    def _predict_axis(self, p, v, P0, P1, P2, dt):
+        p += v * dt
+        P0 += dt * (2.0 * P1 + dt * P2) + self.q * dt * dt * dt / 3.0
+        P1 += dt * P2 + self.q * dt * dt / 2.0
+        P2 += self.q * dt
+        return p, P0, P1, P2
+
+    def predict(self, t):
+        if not self.init:
+            return (self.px, self.py)
+        dt = _diff_ms(t, self.t) / 1000.0
+        if dt < 0.001:
+            dt = 0.001
+        if dt > 0.20:
+            dt = 0.20
+        self.t = int(t)
+        self.px, self.Px0, self.Px1, self.Px2 = self._predict_axis(
+            self.px, self.vx, self.Px0, self.Px1, self.Px2, dt)
+        self.py, self.Py0, self.Py1, self.Py2 = self._predict_axis(
+            self.py, self.vy, self.Py0, self.Py1, self.Py2, dt)
+        return (self.px, self.py)
+
+    def _update_axis(self, z, p, v, P0, P1, P2):
+        S = P0 + self.r
+        if S <= 1e-6:
+            return z, v, P0, P1, P2
+        K0 = P0 / S
+        K1 = P1 / S
+        innov = float(z) - p
+        p += K0 * innov
+        v += K1 * innov
+        P0n = (1.0 - K0) * P0
+        P1n = (1.0 - K0) * P1
+        P2n = P2 - K1 * P1
+        return p, v, P0n, P1n, P2n
+
+    def update(self, zx, zy):
+        if not self.init:
+            self.reset(zx, zy, self.t)
+            return
+        self.px, self.vx, self.Px0, self.Px1, self.Px2 = self._update_axis(
+            zx, self.px, self.vx, self.Px0, self.Px1, self.Px2)
+        self.py, self.vy, self.Py0, self.Py1, self.Py2 = self._update_axis(
+            zy, self.py, self.vy, self.Py0, self.Py1, self.Py2)
+
+    def gate_radius(self, k=3.0):
+        if not self.init:
+            return self.max_gate
+        rx = k * ((self.Px0 + self.r) ** 0.5)
+        ry = k * ((self.Py0 + self.r) ** 0.5)
+        r = rx if rx > ry else ry
+        if r < 8.0:
+            r = 8.0
+        if r > self.max_gate:
+            r = self.max_gate
+        return r
+
+    def gate_ok(self, zx, zy, k=3.0):
+        if not self.init:
+            return True
+        dx = float(zx) - self.px
+        dy = float(zy) - self.py
+        if abs(dx) > self.max_gate or abs(dy) > self.max_gate:
+            return False
+        return (dx * dx <= k * k * (self.Px0 + self.r)
+                and dy * dy <= k * k * (self.Py0 + self.r))
+
+
 # ----------------------------------------------------------- 单次检测
 class LaserSpot:
     """有状态的光斑检测器：记住上一帧位置，下一帧先在小 ROI 里找。"""
@@ -125,6 +243,11 @@ class LaserSpot:
         self._conf_n = 0        # 弱特征候选连续命中计数
         self._conf_xy = None    # 上次数时序位置
         self.mode_hist = []     # 最近几次命中模式（诊断）
+        self.kf = SpotKalman(self.cfg["kf_q"], self.cfg["kf_r"],
+                             self.cfg["kf_max_gate"])
+        self.coast = 0          # 连续无测量帧数
+        self._grid_i = 0        # 无先验捕获的分格索引
+        self._budget_hit = False
 
     def set_fixed(self, x, y):
         """写入标定位置：之后 locate() 直接返回它，几乎零开销。
@@ -137,6 +260,8 @@ class LaserSpot:
         self._verify_ok = True
         self.just_calibrated = False
         self.last = (float(x), float(y))
+        self.kf.reset(float(x), float(y), _now_ms())
+        self.coast = 0
 
     def reset(self):
         # 注意：fixed 不清（标定是物理量），只清跟踪状态
@@ -147,6 +272,11 @@ class LaserSpot:
         self._conf_n = 0
         self._conf_xy = None
         self.mode_hist = []
+        self.coast = 0
+        self._grid_i = 0
+        self._budget_hit = False
+        if self.fixed:
+            self.kf.reset(self.fixed[0], self.fixed[1], _now_ms())
 
     # ------------------------------------------------------ 单 ROI 检测
     def _scan(self, img, roi, base_luma=0, stride=1, allow_wide=False,
@@ -435,7 +565,7 @@ class LaserSpot:
         return (sx / sw, sy / sw)
 
     # ------------------------------------------------------ 对外
-    def _scan_window(self, img, cx, cy, rad, base_luma, stride=1):
+    def _scan_window(self, img, cx, cy, rad, base_luma, stride=1, t0=0, budget=0):
         """只在 (cx,cy)±rad 的小窗口里逐像素找光斑，不调用 find_blobs。
 
         为什么可行：相机与激光笔固连，云台小幅转动时光斑只移动几~几十 px
@@ -451,6 +581,7 @@ class LaserSpot:
         stride = int(stride)
         if stride < 1:
             stride = 1
+        rad = int(rad)          # gate_radius() 是 float；range() 必须 int
         x0 = int(cx) - rad
         y0 = int(cy) - rad
         if x0 < 0:
@@ -471,14 +602,32 @@ class LaserSpot:
         by = -1
         bmk = -1
         for yy in range(y0, y1, stride):
+            # 硬时间预算：小窗逐像素是 Python 级循环，必须能中途放弃。
+            if budget and _diff_ms(_now_ms(), t0) > budget:
+                self._budget_hit = True
+                break
             for xx in range(x0, x1, stride):
                 r, g, bl = _rgb565(ba, w, xx, yy)
                 lu = _luma(r, g, bl)
-                if lu < need_l:
-                    continue
                 warm = r - g
-                if warm < c["win_warm"]:
+                # 过曝白核：live 曝光可能把红点打成纯白，warm≈0 但 luma 很高
+                hot = (lu >= c.get("win_hot_luma", 245)
+                       and r >= c.get("win_hot_min", 220)
+                       and g >= c.get("win_hot_min", 220)
+                       and bl >= c.get("win_hot_min", 220))
+                if warm < c["win_warm"] and not hot:
                     continue
+                if lu < need_l and not hot:
+                    # 墙很亮时，激光点 luma 只比墙高一点（实测 RGB≈255,174,197,
+                    # luma≈200 vs 墙≈190），但 r-g≈81 远高于墙；允许这种
+                    # “高暖色 + 中亮”的点。纯暗红点走 win_red_* 通道。
+                    if warm >= c.get("win_red_warm", 120) and lu >= c.get("win_red_luma", 50):
+                        pass
+                    elif (warm >= c.get("win_warm_hot", 70)
+                          and lu >= c.get("win_luma_low", 150)):
+                        pass
+                    else:
+                        continue
                 # 亮的 + 偏红的优先（激光是"最亮又带红晕"的那一点）
                 mk = lu + warm
                 if mk > best:
@@ -500,7 +649,9 @@ class LaserSpot:
         """
         if not self.cfg["enabled"]:
             return None
-        t0 = time.ticks_ms()
+        t0 = _now_ms()
+        now = t0
+        self._budget_hit = False
         try:
             self._ba = img.bytearray()
         except Exception:
@@ -509,8 +660,9 @@ class LaserSpot:
         w = img.width()
         h = img.height()
         c = self.cfg
+        budget = int(c.get("budget_ms", 12))
 
-        # ===== 固定标定模式：每帧小窗口跟踪，绝不回退全图搜索 =====
+        # ===== 固定标定模式：预测点门控 + 每 N 帧复核，绝不回退全图搜索 =====
         # 设计要点（踩过两个坑后定的）：
         #  1) 相机与激光笔固连，光斑在画面里的位置基本是常量：只在每
         #     fixed_verify_every 帧复核一次（12~60px 小窗，~5ms），其余帧
@@ -522,50 +674,97 @@ class LaserSpot:
         #     live 置 0，保证「只有 R2 才进入（受限）全局搜索」。
         if self.fixed is not None:
             self._frame_n += 1
-            fx, fy = self.fixed
+            if not self.kf.init:
+                self.kf.reset(self.fixed[0], self.fixed[1], now)
+            # 先预测下一帧位置，再只在预测点附近的门控窗里找
+            px, py = self.kf.predict(now)
+            pred_x, pred_y = px, py
             if self._base_luma is None:
                 self._base_luma = self._estimate_base(ba, w, h)
             ve = int(c.get("fixed_verify_every", 5))
             src = "fixed"
             mode = "fixed"
+            conf = 1.0
             if ve <= 1 or (self._frame_n % ve) == 0:
-                # 窗口随连续未命中次数放大，够跟上云台小幅移动
-                rad = c["win_rad"] + self._verify_fail * c["win_grow"]
+                # 门控半径来自预测协方差，不再"逐级放大搜索范围"
+                rad = self.kf.gate_radius(float(c.get("gate_k", 3.0))) + 4.0
+                grow = c["win_rad"] + self._verify_fail * c["win_grow"]
+                if grow > rad:
+                    rad = float(grow)
+                if rad < c["win_rad"]:
+                    rad = float(c["win_rad"])
                 if rad > c["win_rad_max"]:
-                    rad = c["win_rad_max"]
-                vr = self._scan_window(img, fx, fy, rad, self._base_luma)
-                if vr is not None:
-                    fx, fy = vr["x"], vr["y"]
-                    self.fixed = (fx, fy)
+                    rad = float(c["win_rad_max"])
+                # 两段搜索：先在预测点 ±16px 中心小窗找（光斑通常就在预测点），
+                # 找不到再扩到门控大窗。中心先扫很关键：_scan_window 从左上角
+                # 开始，而预算包含前面的 _estimate_base(8ms)，大窗可能还没扫到
+                # 中心的点就超时了（实测一直 calib 的根因）。
+                vr = self._scan_window(img, int(px), int(py), 16,
+                                       self._base_luma, stride=2,
+                                       t0=t0, budget=budget)
+                if vr is None:
+                    vr = self._scan_window(img, int(px), int(py), int(rad),
+                                           self._base_luma, stride=2,
+                                           t0=t0, budget=budget)
+                if vr is not None and (self.kf.gate_ok(
+                        vr["x"], vr["y"], float(c.get("gate_k", 3.0)))
+                        or self._verify_fail >= 2):
+                    px, py = vr["x"], vr["y"]
+                    self.kf.update(px, py)
+                    if (not self.just_calibrated
+                            and _dist(px, py, self.fixed[0], self.fixed[1]) > 15):
+                        self.just_calibrated = True   # 上层写回 laser_calib.json
+                    self.fixed = (px, py)
                     self._verify_fail = 0
+                    self._verify_ok = True
+                    self.coast = 0
                     conf = vr["conf"]
                     src = "measured"
                 else:
                     self._verify_fail += 1
-                    conf = 0.35          # 没看到光斑：位置沿用旧值，降置信度
+                    self._verify_ok = False
+                    self.coast += 1
+                    conf = 0.35
+                    # 连续失败后的受限重捕（±180px、stride6、仍受预算约束）
                     if (c.get("fixed_allow_reacquire", 0)
                             and self._verify_fail >= int(c.get("fixed_reacquire_after", 10))
                             and (self._frame_n % int(c.get("fixed_reacquire_every", 30))) == 0):
                         vr2 = self._scan_window(
-                            img, fx, fy, int(c.get("fixed_reacquire_rad", 180)),
+                            img, int(px), int(py),
+                            int(c.get("fixed_reacquire_rad", 180)),
                             self._base_luma,
-                            stride=int(c.get("fixed_reacquire_stride", 6)))
+                            stride=int(c.get("fixed_reacquire_stride", 6)),
+                            t0=t0, budget=budget)
                         if vr2 is not None:
-                            fx, fy = vr2["x"], vr2["y"]
-                            self.fixed = (fx, fy)
+                            px, py = vr2["x"], vr2["y"]
+                            self.kf.reset(px, py, now)   # 重捕 = 重新锁定
+                            self.fixed = (px, py)
                             self._verify_fail = 0
+                            self._verify_ok = True
+                            self.coast = 0
                             conf = vr2["conf"]
                             src = "measured"
                             mode = "fixed+reacquire"
-            else:
-                # 非复核帧：位置就是标定值，没有任何搜索/分配
-                conf = 1.0
-            self.last = (fx, fy)
-            self.last_ms = time.ticks_diff(time.ticks_ms(), t0)
+                    if self.coast > int(c.get("fixed_coast_max", 10)):
+                        # 长期丢失：回到标定位置，避免预测漂移出画面
+                        self.kf.reset(self.fixed[0], self.fixed[1], now)
+                        self.coast = 0
+                        px, py = self.fixed
+            self.last = (px, py)
+            self.last_ms = _diff_ms(_now_ms(), t0)
             self.last_cands = 1
-            return {"x": fx, "y": fy, "conf": conf, "contrast": 0,
+            return {"x": px, "y": py, "conf": conf, "contrast": 0,
                     "warm": 0, "sat": 0, "mode": mode, "area": 0,
-                    "src": src, "ms": self.last_ms}
+                    "src": src, "ms": self.last_ms,
+                    "pred": [pred_x, pred_y], "coast": self.coast,
+                    "ok": 1 if self._verify_ok else 0,
+                    "budget": self._budget_hit}
+
+        # 非 fixed 路径（首帧捕获/无标定）：预算已用完就先返回，下一帧继续
+        if _diff_ms(_now_ms(), t0) > budget:
+            self._budget_hit = True
+            self.last_ms = _diff_ms(_now_ms(), t0)
+            return None
 
         # 背景基线低频更新：全图稀疏采样约 8ms，每 10 帧算一次即可
         self._frame_n += 1
@@ -610,31 +809,47 @@ class LaserSpot:
         wide_ok = c["wide_enable"] and (self.last is not None
                                         or anchor is not None)
         cands = []
-        if self.last is not None:
-            cands = self._scan(img, _roi(self.last[0], self.last[1],
-                                         c["search_rad"], w, h), base,
+        over = lambda: _diff_ms(_now_ms(), t0) > budget
+        # 搜索中心 = Kalman 预测点（有的话），否则上一帧位置
+        cx = cy = None
+        if self.kf.init:
+            cx, cy = self.kf.px, self.kf.py
+        elif self.last is not None:
+            cx, cy = self.last
+        if cx is not None:
+            rad = int(c["search_rad"])
+            if self.kf.init:
+                rad = int(self.kf.gate_radius(float(c.get("gate_k", 3.0))) + 8.0)
+                if rad < c["search_rad"]:
+                    rad = int(c["search_rad"])
+                if rad > c["reacquire_rad"]:
+                    rad = int(c["reacquire_rad"])
+            cands = self._scan(img, _roi(cx, cy, rad, w, h), base,
                                c["roi_stride"], wide_ok)
-            if not cands:
-                cands = self._scan(img, _roi(self.last[0], self.last[1],
-                                             c["reacquire_rad"], w, h), base,
-                                   c["roi_stride"], wide_ok)
-        if not cands:
+            # 门控失败才扩大到 reacquire_rad，且必须先看预算
+            if not cands and not over():
+                cands = self._scan(img, _roi(cx, cy, c["reacquire_rad"], w, h),
+                                   base, c["roi_stride"], wide_ok)
+        if not cands and not over():
             # 有靶心锚点：激光必定在靶纸附近，只在锚点窗口内搜。
-            # 这样"远处门框红标签/灭火器"这类红杂物根本进不了候选集，
-            # 也顺带省掉全图 find_blobs 的时间。
-            # 首次捕获且没有靶心锚点：这是最容易锁到红杂物的情形
-            # （红电缆的高光+红皮 = 白核+红晕）。此时只认"真过曝白核"，
-            # 宁可漏也不要错；一旦锁定，后续走小窗口就很稳。
+            # 首次捕获且没有靶心锚点：分格捕获，每帧只扫一格 160x120，
+            # **绝不扫全图**（复杂画面全图 find_blobs 单帧 0.5~2.3s，
+            # 会把整条流拖到 0.5fps，这是"板子像死锁"的根因）。
             strict = (self.last is None and anchor is None)
             if anchor is not None:
-                # 有靶心锚点：激光必须在靶纸附近。这里**不回退全图**——
-                # 否则远处门框红标签、红电缆会被重新捞回来（实测 20/20 误检）。
-                # 宁可不输出，也不要锁到红杂物上。
                 ar = c["anchor_rad"]
                 cands = self._scan(img, _roi(anchor[0], anchor[1], ar, w, h),
                                    base, 1, wide_ok, strict)
-            else:
-                cands = self._scan(img, (0, 0, w, h), base, 1, False, strict)
+            elif self.last is None and not self.kf.init:
+                gw, gh = 160, 120
+                cols = max(1, (w + gw - 1) // gw)
+                rows = max(1, (h + gh - 1) // gh)
+                gi = self._grid_i % (cols * rows)
+                self._grid_i += 1
+                gx = (gi % cols) * gw
+                gy = (gi // cols) * gh
+                cands = self._scan(img, (gx, gy, min(gw, w - gx),
+                                         min(gh, h - gy)), base, 1, False, strict)
         self.last_cands = len(cands)
         if not cands:
             self.miss += 1
@@ -708,6 +923,11 @@ class LaserSpot:
         x, y = self._subpixel(img, cd)
         self.last = (x, y)
         self.miss = 0
+        if not self.kf.init:
+            self.kf.reset(x, y, _now_ms())
+        else:
+            self.kf.update(x, y)
+        self.coast = 0
         conf = cd["contrast"] / float(c["conf_k"])
         if conf > 1.0:
             conf = 1.0
@@ -726,4 +946,6 @@ class LaserSpot:
             self.mode_hist.pop(0)
         return {"x": x, "y": y, "conf": conf, "contrast": cd["contrast"],
                 "warm": cd["warm"], "sat": cd["sat"], "mode": cd["mode"],
-                "area": cd["area"], "ms": self.last_ms}
+                "area": cd["area"], "ms": self.last_ms,
+                "pred": [self.kf.px, self.kf.py], "coast": self.coast,
+                "budget": self._budget_hit}

@@ -30,7 +30,7 @@ CFG 必须保持单行，PC 端会用正则整行替换后下发。
     AIM_* 注释与 `aim` 调试命令），K230 不做状态切换。
 """
 
-CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 2, 'full_every': 30, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'laser_verify_every': 5, 'laser_global': 0, 'fps': 0, 'stats': 15, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
+CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 2, 'full_every': 9999, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'laser_verify_every': 5, 'laser_global': 0, 'laser_budget_ms': 25, 'laser_cooldown': 8, 'fps': 0, 'stats': 15, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
 
 from media.sensor import *
 from media.media import *
@@ -61,6 +61,7 @@ except Exception as _e:
 _laser = None
 laser_ms = 0
 _lref_skip = 0        # 低置信复筛冷却（剩下几帧内不再复筛）
+_laser_skip = 0       # 激光慢帧看门狗：连续跳过几帧
 
 MAGIC = b"\xAA\x55K2"
 HDR_LEN = 38
@@ -491,7 +492,7 @@ def _save_laser_calib(x, y):
 
 
 def main():
-    global _yolo, _laser, laser_ms, _lref_skip
+    global _yolo, _laser, laser_ms, _lref_skip, _laser_skip
     sen = _open_sensor()
     time.sleep_ms(300)
     _yolo = YOLOv8(task_type="pose", mode="image",
@@ -555,17 +556,30 @@ def main():
         # ---- 激光光斑：chn1 RGB565 原图，坐标即原图坐标
         laser = None
         laser_ms = 0
-        if _laser is not None and CFG.get("laser_every", 1) and (seq % CFG["laser_every"]) == 0:
+        if _laser_skip > 0:
+            _laser_skip -= 1
+        elif (_laser is not None and CFG.get("laser_every", 1)
+              and (seq % CFG["laser_every"]) == 0):
             try:
+                t_l = time.ticks_ms()
                 laser = _laser.locate(img)
-                laser_ms = 0 if laser is None else laser["ms"]
+                laser_ms = time.ticks_diff(time.ticks_ms(), t_l)
+                # 看门狗：单帧激光超过预算就跳过几帧，绝不让它拖住 AI/图传
+                if laser_ms > CFG.get("laser_budget_ms", 25):
+                    _laser_skip = int(CFG.get("laser_cooldown", 8))
+                    log("laser %dms > budget, skip %d frames" % (laser_ms, _laser_skip))
                 # 首次视觉标定成功 -> 存盘，下次上电直接 fixed（省掉全图搜索）
                 if laser is not None and getattr(_laser, "just_calibrated", False):
                     _laser.just_calibrated = False
                     _save_laser_calib(laser["x"], laser["y"])
             except Exception as e:
                 log("laser: %s" % e)
+                try:
+                    sys.print_exception(e)
+                except Exception:
+                    pass
                 laser = None
+                _laser_skip = int(CFG.get("laser_cooldown", 8))
 
         arr = sen.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
         t_ai = time.ticks_ms()
@@ -699,10 +713,20 @@ def main():
 
         if laser is not None:
             src = laser.get("src", "measured")
+            if src == "measured":
+                st = "ok"
+            elif src == "fixed" and laser.get("ok"):
+                st = "track"          # 上一帧复核成功，本帧是 Kalman 预测
+            else:
+                st = "calib"          # 复核失败，位置来自标定/coast
             laser_out = {"x": round(laser["x"], 1), "y": round(laser["y"], 1),
                          "conf": round(laser["conf"], 3), "mode": laser["mode"],
-                         "status": "ok" if src == "measured" else "calib",
-                         "src": src}
+                         "status": st,
+                         "src": src,
+                         "pred": [round(float(v), 1) for v in
+                                  laser.get("pred", (laser["x"], laser["y"]))],
+                         "coast": int(laser.get("coast", 0)),
+                         "budget": 1 if laser.get("budget") else 0}
         else:
             # 没有实拍光斑，但有 /sdcard/laser_calib.json -> 直接用标定位置。
             # 这是三态 B 的**数据接口**：只上报坐标，不在本文件里驱动云台。
@@ -710,7 +734,8 @@ def main():
             if _fx is not None and _fx[0] > 0:
                 laser_out = {"x": round(_fx[0], 1), "y": round(_fx[1], 1),
                              "conf": 0, "mode": "calib", "status": "calib",
-                             "src": "fixed"}
+                             "src": "fixed", "pred": [round(_fx[0], 1), round(_fx[1], 1)],
+                             "coast": 0, "budget": 0}
             else:
                 laser_out = {"x": -1, "y": -1, "conf": 0, "status": "none",
                              "src": "none"}

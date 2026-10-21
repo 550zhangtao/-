@@ -167,7 +167,7 @@ enum { AIM_IDLE, AIM_BULL_LOST, AIM_NO_LASER, AIM_READY };
 | --- | --- | --- | --- |
 | `fixed_verify_every` | 每帧扫 | 5 | 激光 11ms → ~2ms/帧 |
 | `jpeg_every` | 1 | 2 | JPEG 18ms → ~9ms/帧 |
-| `full_every` | 15 | 30 | 全图上下文 1/15 → 1/30 |
+| `full_every` | 15 | **9999（默认关）** | 全图 JPEG 单帧 ~370ms，会周期性卡顿；需要全图用 `k230tool grab` |
 | `stats` | 10 | 15 | 少一次格式化 |
 | `gc` | 每 8 帧 | 每 16 帧 | 少一次 1~2ms |
 | `laser_global` | — | 0（live/预览） | 非 R2 不做重捕 |

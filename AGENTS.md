@@ -337,7 +337,7 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
   的**受限重捕**，**永不回退全图**。`fixed_allow_reacquire` 只在 R2 代理置 1，
   live/IDE 预览为 0 → 只有 R2 才进入（受限）全局搜索。没有
   `/sdcard/laser_calib.json` 时代理直接关闭 `$LS`，不启动全图标定。
-- **帧率**：`jpeg_every=2`、`full_every=30`、`stats=15`、gc 每 16 帧、
+- **帧率**：`jpeg_every=2`、`full_every=9999`（全图 JPEG 单帧约 370ms，默认关；需要全图用 `k230tool grab`）、`stats=15`、gc 每 16 帧、
   ROI 160×120 保持质量；K230 live 实测 **13.6 → 18.2 fps**，激光 11 → 2ms；
   代理约 20fps（含 `$LS`）。
 - **三态追踪（已接入控制）**：`$LS` 增加第 6 段 `src`（0 无 / 1 实拍 / 2 标定）。
@@ -361,3 +361,34 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
   `START_OK`、`$KT` 202 帧、`bad=2`（启动边界）、`$LS src=2`、
   `laserValid=1`、激光 ON；`gnone` 后 STOP/激光灭。
 - 新增文档：`k230/docs/AIM_LASER_SEARCH.md`。
+
+### 2026-10-22 激光预测跟踪 / 防卡死
+
+用户指出“分级搜索只是缩小范围”，要求改成**预测下一帧光斑位置 + 门控搜索**，并解决
+找不到激光时的板子卡死。调研/采用 SORT（Kalman+门控）、ByteTrack（track/coast/lost
+生命周期）的思路，在 `board/laser_spot.py` 实现 `SpotKalman`：
+
+- 2D 匀速 Kalman（x/y 各 p,v），预测点 ±16px 中心小窗优先，找不到再扩到 ±48px
+  门控窗；`fixed_verify_every=5`，其余帧零搜索；
+- **全图 `find_blobs` 彻底移除**：无标定/首帧用 160×120 分格捕获，每帧一格；
+  丢失只做有界重捕/分格；
+- 单帧 `budget_ms=12`（`_scan_window` 逐行检查）+ 调用侧 `laser_budget_ms=25`/
+  `laser_cooldown=8` 看门狗；超时跳帧，AI/图传继续；
+- 红点/粉点/过曝白核三种阈值；首次锁定与旧标定偏差 >15px 自动回写
+  `/sdcard/laser_calib.json`（实测从 375,275 修正到 303.6,233.3）；
+- `full_every` 默认 **9999**：640×480 全图 JPEG 单帧约 370ms，会让 fps 周期性
+  从 19 掉到 9；需要全图用 `k230tool grab`。
+
+**实测**（`scripts/motion_test_laser.py`，K230 debug + ESP32 R1 激光 + `--full-every 9999`）：
+30s 轮 97 帧/16 实测/**19.21fps**/最大 coast 5/最大激光 28ms/遮挡 2.75s 恢复；
+24s 轮 77 帧/12 实测/19.24fps/coast 7/遮挡 2.81s 恢复；两轮均**无全图搜索、无卡死**。
+`tools/test_spot_tracker.py` 单元测试全过（匀速误差 0.2px、5 帧 coast 7.7px、离群点
+拒绝、静止速度 0.47px/s）。
+
+**已知诊断问题**：PC 汇总的 `status=track` 数量与 `|pred-measured|` 仍显示 0/不可靠
+（看门狗跳帧时走 `laser=None` 的标定回退，实测帧 `pred` 字段被覆盖）；功能跟踪、
+fps、遮挡指标已实测有效，`$LS src` 仍为 1/2，不影响 R2 控制。下一步修统计标签，
+并把受限重捕从单次 ±180 大窗升级为多帧分格。
+
+文档：`k230/docs/LASER_PREDICTION.md`；测试脚本：`k230/tools/test_spot_tracker.py`、
+`k230/scripts/motion_test_laser.py`。

@@ -99,11 +99,12 @@ POSE_DEFAULT_CFG: Dict[str, object] = {
     "nms": 0.45,
     "kp_num": 5, "kp_dim": 3,     # 4 角点 + 靶心
     "max_boxes": 20,
-    "jpeg_every": 2, "full_every": 30,
+    "jpeg_every": 2, "full_every": 9999,
     "roi_pad": 0.25, "roi_min": 160, "roi_max": 256,
     "laser_enable": 1, "laser_every": 1,   # 激光光斑：每帧检测（board/laser_spot.py）
     # 固定标定下每 5 帧才复核一次；受限重捕默认关（仅 R2 代理打开）
     "laser_verify_every": 5, "laser_global": 0,
+    "laser_budget_ms": 25, "laser_cooldown": 8,
     "fps": 0, "stats": 15, "limit": 0,
     "sensor_id": 2,
     "uart_enable": 1, "uart_id": 3, "uart_tx": 32, "uart_rx": 33, "uart_baud": 115200,
