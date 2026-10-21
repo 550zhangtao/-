@@ -142,7 +142,7 @@ USB 命令：`status` / `mode` / `kt` / `pad` / `s1 <us>` / `s2 <us>` / `sh` /
 ## 文档
 
 - [k230/docs/POSE_V3_TRAINING.md](k230/docs/POSE_V3_TRAINING.md) —— **小目标/误检问题的诊断、数据集、训练与评测**
-- [k230/docs/AIM_LASER_SEARCH.md](k230/docs/AIM_LASER_SEARCH.md) —— 激光 IO / 搜索优化 / 三态追踪接口
+- [k230/docs/AIM_LASER_SEARCH.md](k230/docs/AIM_LASER_SEARCH.md) —— 激光 IO / 搜索优化 / 三态追踪
 - [k230/docs/K230_ESP32_UART.md](k230/docs/K230_ESP32_UART.md) —— `$KT` / `$E` 协议与调参记录
 - [k230/docs/YOLOV8_DEPLOY.md](k230/docs/YOLOV8_DEPLOY.md) —— 训练 → ONNX → kmodel → 板端
 - [k230/docs/POSE_ANNOTATION.md](k230/docs/POSE_ANNOTATION.md) —— 5 关键点标注规范

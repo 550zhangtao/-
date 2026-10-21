@@ -327,13 +327,17 @@ uint32_t lastAckSeq = 0;
 int trackState = 0;  // 0 idle, 1 tracking, 2 aligned, 3 stale
 char lastLine[128] = "-";
 
-// ---- 预留：瞄准三态接口（本轮只维护输入数据，不做任何控制/复位）----
-// TODO(AIM-3STATE): 后续在 updateTrack()/状态机里实现：
-//   A 靶心丢失: aimBullLostFrames >= N（实测 v3 在 60 帧现场序列最大连续漏检 2，
-//     建议 N=10 帧 + 900ms 兜底）-> gimbalMode=NONE + 激光关 + K230 STOP；
-//   B 有靶心、!aimLaserValid -> 用 aimLaserX10/Y10（$LS src=2 标定位置）驱动；
-//   C 有靶心、aimLaserValid -> 用实拍激光（$LS src=1）驱动。
-// 本轮只把 $LS / $KT 的数据填进来，updateTrack() 保持原样。
+// ---- 瞄准三态（A 靶心丢失 / B 有靶心无激光 / C 两者都有）----
+// A: 靶心连续 N 帧未检出或 900ms 无 bull -> 判定打靶完成，复位云台 NONE
+//    （只复位云台/激光/K230，不改 carMode，L1/L2 并行不受影响）；
+// B: 有 bull、!aimLaserValid 或 $LS src=2 -> 用 aimLaserX10/Y10 标定位置驱动；
+// C: 有 bull、$LS src=1 -> 用实拍激光位置驱动。
+// 实测 N：现场 60 帧最大连续漏检 0；新视角 20 帧最大 2 -> N=10 + 900ms 兜底。
+constexpr uint32_t AIM_LOST_FRAMES = 10;
+constexpr uint32_t AIM_LOST_MS = 900;
+constexpr uint32_t AIM_START_GRACE_MS = 3000;   // K230 启动约 1.5s，留余量
+constexpr uint32_t AIM_LASER_TIMEOUT_MS = 500;
+constexpr int AIM_BULL_MIN_CONF = 300;
 enum : uint8_t { AIM_IDLE = 0, AIM_BULL_LOST = 1, AIM_NO_LASER = 2, AIM_READY = 3 };
 uint8_t aimState = AIM_IDLE;
 int aimLaserX10 = -1, aimLaserY10 = -1, aimLaserConf = 0, aimLaserSrc = 0;
@@ -341,6 +345,9 @@ bool aimLaserValid = false;
 uint32_t aimLaserMs = 0;
 uint32_t aimBullLostFrames = 0;
 uint32_t aimLastBullMs = 0;
+bool aimEverBull = false;
+uint32_t aimStartMs = 0;
+float aimErrX = 0.0f, aimErrY = 0.0f;   // 当前控制误差（靶心 - 激光参考）
 bool laserOn = false;
 
 // ---- 新增：手柄 / 模式 / 电机 / 循迹 运行状态 ----
@@ -447,21 +454,27 @@ void centerServos() {
 // 与 carMode 完全无关，L1/L2 并行运行不受影响。
 void setLaserOutput(bool on) {
   laserOn = on;
-  const uint8_t onLevel  = LASER_ACTIVE_LOW ? LOW : HIGH;
-  const uint8_t offLevel = LASER_ACTIVE_LOW ? HIGH : LOW;
-  digitalWrite(PIN_LASER, on ? onLevel : offLevel);
+  if (!on) {
+    // 关断高阻：GPIO5 上若接的是蜂鸣器/未知负载，驱动 HIGH/LOW 都可能让它响
+    // （实测 laserpin z 能让它停）。激光模块请按需自带上下拉。
+    pinMode(PIN_LASER, INPUT);
+    return;
+  }
+  pinMode(PIN_LASER, OUTPUT);
+  digitalWrite(PIN_LASER, LASER_ACTIVE_LOW ? LOW : HIGH);
 }
 
 void applyLaserMode() {
   setLaserOutput(gimbalMode == GIMBAL_MANUAL || gimbalMode == GIMBAL_TRACK);
 }
 
-// 只打印三态接口的原始输入，不做状态切换（本轮不实现追踪算法）
+// 打印三态状态与输入（state: 0 IDLE / 1 BULL_LOST / 2 NO_LASER / 3 READY）
 void printAimInterface() {
   const uint32_t now = millis();
   Serial.print("AIM-IFACE state="); Serial.print((int)aimState);
-  Serial.print(" (TODO not wired) bullLostFrames="); Serial.print(aimBullLostFrames);
-  Serial.print(" bullAge="); Serial.print(aimLastBullMs ? (now - aimLastBullMs) : 0);
+  Serial.print(" everBull="); Serial.print(aimEverBull ? 1 : 0);
+  Serial.print(" bullLostFrames="); Serial.print(aimBullLostFrames);
+  Serial.print(" bullAge="); Serial.print(aimLastBullMs ? (now - aimLastBullMs) : (now - aimStartMs));
   Serial.print(" laserValid="); Serial.print(aimLaserValid ? 1 : 0);
   Serial.print(" laser=");
   if (aimLaserX10 >= 0) {
@@ -487,6 +500,8 @@ void printStatus() {
   Serial.print(" bull="); Serial.print(lastBx); Serial.print(","); Serial.print(lastBy);
   Serial.print(" conf="); Serial.print(lastConf);
   Serial.print(" age="); Serial.print(millis() - lastFrameMs);
+  Serial.print(" ctrlErr="); Serial.print(aimErrX, 1);
+  Serial.print(","); Serial.print(aimErrY, 1);
   Serial.print(" laser="); Serial.print(laserOn ? "ON" : "OFF");
   Serial.print(" laserValid="); Serial.print(aimLaserValid ? 1 : 0);
   Serial.print(" lsrc="); Serial.print(aimLaserSrc);
@@ -502,7 +517,8 @@ void help() {
   Serial.println("          trk <alpha> <lead_s> / smooth <tau_s>  (目标平滑/前视/速度低通)");
   Serial.println("          probe16   (sample GPIO16 for 10s; toggle K230 GPIO9)");
   Serial.println("          $KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>!  (模拟 K230 帧)");
-  Serial.println("          aim / laser  (三态接口原始数据 / 激光 IO 状态，只读)");
+  Serial.println("          aim / laser  (三态状态 / 激光 IO 状态)");
+  Serial.println("          kstop  (调试: TRACK 中只停 K230，用于验证状态 A 自动复位)");
   helpExtra();
 }
 
@@ -560,10 +576,11 @@ void handleTargetLine(char *line, bool fromUsb) {
   lastFrameMs = millis();
   lastAckSeq = seq;
   // ---- 三态接口：只统计输入，不做任何云台/激光动作（见 AIM_* 注释）----
-  const bool bullOkIface = (run != 0) && bx >= 0 && by >= 0 && lastConf >= 300;
+  const bool bullOkIface = (run != 0) && bx >= 0 && by >= 0 && lastConf >= AIM_BULL_MIN_CONF;
   if (bullOkIface) {
     aimBullLostFrames = 0;
     aimLastBullMs = lastFrameMs;
+    aimEverBull = true;
   } else if (gimbalMode == GIMBAL_TRACK) {
     ++aimBullLostFrames;
   }
@@ -601,6 +618,11 @@ void onUsbLine(char *line, bool) {
   }
   if (!strcmp(line, "aim")) {
     printAimInterface();
+    return;
+  }
+  if (!strcmp(line, "kstop")) {
+    // 调试：只给 K230 发 STOP，不改变 gimbalMode（用于验证三态 A）
+    k230Cmd("STOP");
     return;
   }
   if (!strcmp(line, "laser")) {
@@ -778,6 +800,28 @@ void updateTrack(uint32_t now) {
     trackState = 0;
     return;
   }
+
+  // ---- 三态 A：靶心丢失 -> 判定打靶完成，复位云台（不动 carMode）----
+  if (gimbalMode == GIMBAL_TRACK) {
+    const bool lostFrames = aimEverBull && (aimBullLostFrames >= AIM_LOST_FRAMES);
+    const bool lostMs = aimEverBull && aimLastBullMs && (now - aimLastBullMs > AIM_LOST_MS);
+    const bool neverFound = !aimEverBull && (now - aimStartMs > AIM_START_GRACE_MS + AIM_LOST_MS);
+    if (lostFrames || lostMs || neverFound) {
+      Serial.print("AIM: bull lost -> DONE (frames="); Serial.print(aimBullLostFrames);
+      Serial.print(" age="); Serial.print(aimLastBullMs ? (now - aimLastBullMs) : (now - aimStartMs));
+      Serial.println("ms); gimbal NONE, laser off, K230 STOP");
+      setGimbalMode(GIMBAL_NONE);
+      return;
+    }
+    if (aimEverBull && aimBullLostFrames == 0) {
+      aimState = (aimLaserValid && aimLaserSrc == 1) ? AIM_READY : AIM_NO_LASER;
+    } else if (aimBullLostFrames > 0) {
+      aimState = AIM_BULL_LOST;
+    } else {
+      aimState = AIM_IDLE;
+    }
+  }
+
   const bool stale = (lastFrameMs == 0) || (now - lastFrameMs > TARGET_TIMEOUT_MS);
   if (stale) {
     panVel = tiltVel = 0;
@@ -829,8 +873,15 @@ void updateTrack(uint32_t now) {
   // 速度自适应前视：慢速小前视（不抖），高速大前视（补延迟）
   const float leadF = constrain(fabsf(vxF) / 500.0f, 0.70f, 1.20f);
   const float leadT = constrain(fabsf(vyF) / 500.0f, 0.70f, 1.20f);
-  const float errX = (tx + vxF * trkLead * leadF) - (float)CENTER_X;
-  const float errY = (ty + vyF * trkLead * leadT) - (float)CENTER_Y;
+  // ---- 三态 B/C 的瞄准参考：有激光位置就用激光（src=2 标定 / src=1 实拍），
+  //      过期或没有才退回图像中心（旧行为）。PID/前视/低通结构不变。----
+  const bool laserFresh = aimLaserValid && aimLaserMs && (now - aimLaserMs < AIM_LASER_TIMEOUT_MS);
+  const float refX = laserFresh ? (aimLaserX10 / 10.0f) : (float)CENTER_X;
+  const float refY = laserFresh ? (aimLaserY10 / 10.0f) : (float)CENTER_Y;
+  const float errX = (tx + vxF * trkLead * leadF) - refX;
+  const float errY = (ty + vyF * trkLead * leadT) - refY;
+  aimErrX = errX;
+  aimErrY = errY;
 
   // ---- PID（输出角速度 us/s）----
   if (!pidInit) { panPrevE = errX; tiltPrevE = errY; pidInit = true; }
@@ -898,11 +949,14 @@ void setGimbalMode(uint8_t m) {
   if (m != GIMBAL_TRACK) trackState = 0;
   // 激光只在 R1(手动)/R2(跟踪) 点亮；L1/L2 小车模式完全不影响
   applyLaserMode();
-  // 三态接口计数清零（本轮不做状态机动作）
+  // 三态状态复位：R2 重新进入时从零开始
   aimBullLostFrames = 0;
-  aimLastBullMs = millis();
+  aimLastBullMs = 0;
   aimLaserValid = false;
   aimLaserSrc = 0;
+  aimEverBull = false;
+  aimStartMs = millis();
+  aimState = AIM_IDLE;
   Serial.print("GIMBAL: ");
   if (m == GIMBAL_TRACK)       Serial.println("TRACK (K230 $KT)");
   else if (m == GIMBAL_MANUAL) Serial.println("MANUAL (PS2 L-X / R-Y)");

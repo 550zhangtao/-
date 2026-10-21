@@ -1,8 +1,8 @@
 # 激光 IO / 搜索优化 / 三态追踪接口（2026-10-21）
 
-> 本轮范围：**① 激光笔 IO 与 R1/R2 门控；② 激光搜索优化；④ 帧率优化。**
-> **③ 三态追踪控制算法本轮不实现**，只保留协议、数据结构、`aim` 调试命令和 TODO。
-> `updateTrack()` 的 PID/前视/滤波**一行未改**。
+> 本轮范围：**① 激光笔 IO 与 R1/R2 门控；② 激光搜索优化；③ 三态追踪；④ 帧率优化。**
+> 三态 A/B/C 已接入 `updateTrack()`；PID/前视/低通/死区结构不变，
+> 只把瞄准参考点从图像中心改成 `$LS` 激光位置。
 
 ## 1. 激光笔 IO（ESP32，GPIO5）
 
@@ -101,7 +101,7 @@ void applyLaserMode() {
 | `fixed_reacquire_stride` | 6 | 稀疏步长 |
 | `calib_tries` | 6 | 首次自动标定最多 6 次（仅无标定文件的调试场景） |
 
-## 3. 三态追踪接口（**仅接口，未实现控制**）
+## 3. 三态追踪（已接入控制）
 
 ### 3.1 协议
 
@@ -114,31 +114,43 @@ $LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!
 
 旧 ESP32 的 5 字段 `sscanf` 会忽略第 6 段，向后兼容。
 
-### 3.2 ESP32 侧已填的数据（不改控制）
+### 3.2 状态机（`updateTrack()` 顶部）
 
 ```cpp
+constexpr uint32_t AIM_LOST_FRAMES = 10;
+constexpr uint32_t AIM_LOST_MS = 900;
+constexpr uint32_t AIM_START_GRACE_MS = 3000;
+constexpr uint32_t AIM_LASER_TIMEOUT_MS = 500;
+constexpr int AIM_BULL_MIN_CONF = 300;
 enum { AIM_IDLE, AIM_BULL_LOST, AIM_NO_LASER, AIM_READY };
-uint8_t aimState = AIM_IDLE;         // 只占位，状态机未接
-int aimLaserX10, aimLaserY10, aimLaserConf, aimLaserSrc;
-bool aimLaserValid;
-uint32_t aimBullLostFrames, aimLastBullMs, aimLaserMs;
 ```
 
-- `handleTargetLine()` 维护 `aimBullLostFrames` / `aimLastBullMs`（仅统计）；
-- `handleLaserLine()` 解析 `$LS` 并填 `aimLaser*`；
-- USB `aim` 打印原始输入（`state=0 (TODO not wired)`）；
-- `status` 增加 `laser=ON/OFF laserValid= lsrc= bullLost=`；
-- **`updateTrack()` 没有使用这些变量**，云台控制行为与之前完全一致。
-
-### 3.3 未来实现位置（TODO）
-
-| 状态 | 条件 | 行为（待实现） |
+| 状态 | 进入条件 | 行为 |
 | --- | --- | --- |
-| A 靶心丢失 | `aimBullLostFrames >= N` 或 `now-aimLastBullMs > 900ms` | `setGimbalMode(GIMBAL_NONE)` → 激光灭、K230 STOP；**只复位云台，不动 carMode** |
-| B 有靶心、无激光 | 有 bull 且 `!aimLaserValid` 或 `src==2` | 用 `aimLaserX10/Y10`（标定位置）驱动云台，不做全图搜索 |
-| C 两者都有 | 有 bull 且 `aimLaserValid && src==1` | 实拍激光 + 受限重捕驱动 |
+| A 靶心丢失 | `aimEverBull && (aimBullLostFrames >= 10 \|\| now-aimLastBullMs > 900ms)`，或从未见 bull 且已过 3.9s | `setGimbalMode(GIMBAL_NONE)`：激光关（GPIO5 高阻）、K230 STOP、云台保持；**不动 carMode** |
+| B 有靶心、无实拍激光 | 有 bull，`$LS src==2`（标定）或 laser 无效/过期 | 用 `aimLaserX10/Y10`（`laser_calib.json`）作为瞄准参考 |
+| C 两者都有 | 有 bull，`$LS src==1`（实拍） | 用实拍激光位置作为瞄准参考；K230 做局部复核 + 受限重捕 |
 
-**N 的实测依据**（`pose_v3`，conf 0.25，bull kpt conf≥0.3）：
+- **A 的 `aimEverBull` 门控**：上电/R2 刚进入时 K230 要 1.5s 才开相机，
+  不能立刻判完成；先给 `AIM_START_GRACE_MS=3000`，且只有“见过靶心再丢”
+  才按 900ms 立即复位。从未见靶心时 3.9s 后也会复位。
+- **“上电复位模式”只复位云台/激光/K230**；`carMode` 保持，L1/L2 并行不受影响。
+- **B/C 的控制参考点**从 `CENTER_X/Y` 改成激光位置：
+  ```cpp
+  laserFresh = aimLaserValid && (now - aimLaserMs < 500ms);
+  refX = laserFresh ? aimLaserX10/10.0 : CENTER_X;
+  errX = (tx + vxF*lead) - refX;   // tx 是靶心（无靶心时退回框中心）
+  ```
+  PID / 前视 / 低通 / 死区结构不变。`status` 新增 `ctrlErr=x,y`；
+  `aim` 打印 `state / everBull / bullLostFrames / laser= / src= / conf=`。
+- **激光关断 = 高阻**：`setLaserOutput(false)` 执行 `pinMode(PIN_LASER, INPUT)`。
+  这样即使 GPIO5 上误接了蜂鸣器，上电/NONE/R1 关断时也不会驱动它。
+- 调试命令 `kstop`：TRACK 中只给 K230 发 STOP、不改 `gimbalMode`，
+  用于验证状态 A 的 900ms 自动复位。
+
+### 3.3 N 的实测依据
+
+`pose_v3`，conf 0.25，bull kpt conf≥0.3：
 
 | 序列 | 命中 | 最大连续漏检 |
 | --- | --- | --- |
@@ -146,9 +158,8 @@ uint32_t aimBullLostFrames, aimLastBullMs, aimLaserMs;
 | 新视角 20 帧（26×38px） | 16/20 | 2（帧 0、1，相机未稳定） |
 | 80 张负样本 | 误检 1/80（box 0.294） | — |
 
-建议 **N=10 帧**（13~20fps 下 0.5~0.75s）+ 900ms 时间兜底；连续漏检 2 帧是
-运动模糊，10 帧有 5 倍余量。负样本偶发 1/80 的假 bull 可能打断计数，因此
-A 状态还应同时看 `now-aimLastBullMs`（未来实现时加）。
+取 **N=10 帧 + 900ms**（13~20fps 下 0.5~0.75s），对最大连续漏检 2 有 5 倍余量；
+`aimLastBullMs` 的 900ms 兜底覆盖 K230 停止发帧/掉线。
 
 ## 4. 帧率优化
 
@@ -188,8 +199,11 @@ AIM-IFACE state=0 (TODO not wired) bullLostFrames=0 laserValid=1
 - `$KT`、`$LS` 均到达；`$LS src=2` 证明代理在无实拍光斑时用了标定位置；
 - 激光随 R2 点亮、`gnone` 熄灭；
 - 2 个 `bad` 出现在启动边界（部分行），稳定后 `bad` 不增长；
-- `updateTrack()` 未改，所以云台仍按旧的「靶心居中」控制律运动（R1/R2 门控
-  和状态接口已就绪，三态控制待下一步）。
+- 三态 A/B/C 已接入；A 用 `kstop` 验证 902ms 自动复位；B/C 的 `src=2/1` 与
+  `ctrlErr` 可在 `status/aim` 观察。
+- **硬件观察**：测试中 `ctrlErr≈(-27,-13)` 时 pan 从 1562 持续加到 1798，但
+  靶心图像坐标几乎不变（326,281）——说明**云台/相机可能机械卡住、舵机没动或
+  限位**，不是控制律不收敛。需要检查 pan 舵机臂/相机支架/供电后再评估收敛。
 
 ## 6. 相关文件
 

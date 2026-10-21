@@ -323,7 +323,7 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
 - 板端低置信复筛：`low_refine=1`，仅对 ≤120 px 的候选、最多 2 个、
   7 倍裁剪放大，失败后冷却 3 帧；PC 实测 80 张负样本误检不变（1/80）。
 
-### 2026-10-21 激光 IO / 搜索优化 / 三态追踪接口
+### 2026-10-21 激光 IO / 搜索优化 / 三态追踪
 
 - **激光笔 IO（ESP32 GPIO5，低电平点亮）**：02 板其余脚全被电机/舵机/PS2/
   K230/循迹占用，GPIO5 是唯一空出的可输出脚；它是 strapping pin（上电必须为高），
@@ -340,15 +340,23 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
 - **帧率**：`jpeg_every=2`、`full_every=30`、`stats=15`、gc 每 16 帧、
   ROI 160×120 保持质量；K230 live 实测 **13.6 → 18.2 fps**，激光 11 → 2ms；
   代理约 20fps（含 `$LS`）。
-- **三态追踪接口（只预留，未实现控制）**：`$LS` 增加第 6 段
-  `src`（0 无 / 1 实拍 / 2 标定），ESP32 解析后存
-  `aimLaserX10/Y10/Conf/Src`、`aimLaserValid`、`aimBullLostFrames`、
-  `aimLastBullMs`、`aimState`；USB `aim` 打印原始输入，`status` 增加
-  `laser/laserValid/lsrc/bullLost`。**`updateTrack()` 一行未改**，三态 A/B/C
-  的判定与复位尚未接入（TODO 见 .ino `AIM-3STATE` 注释）。
+- **三态追踪（已接入控制）**：`$LS` 增加第 6 段 `src`（0 无 / 1 实拍 / 2 标定）。
+  A：`aimEverBull` 后连续 10 帧无 bull 或 900ms 无 bull → `setGimbalMode(NONE)`，
+  激光高阻关断、K230 STOP；**只复位云台，不改 carMode**。启动给 3s grace，
+  从未见 bull 时 3.9s 后也复位。B/C：控制参考点从 `CENTER_X/Y` 改为
+  `$LS` 激光位置（src=2 标定 / src=1 实拍），PID/前视/低通/死区结构不变。
+  `status` 增加 `ctrlErr=x,y`；`aim` 打印 state/everBull/bullLost/laser/src/conf；
+  `kstop` 调试命令用于在 TRACK 中单独停 K230 验证 A。
+- **激光关断 = 高阻**：`setLaserOutput(false)` 用 `pinMode(INPUT)`，避免 GPIO5
+  误接蜂鸣器时上电/NONE/R1 关断持续鸣叫；`laserpin 0|1|z` 可硬件排查。
 - **N 实测**（pose_v3，conf 0.25，bull conf≥0.3）：现场 60 帧 60/60（最大连续
-  漏检 0）；新视角 20 帧 16/20（最大连续 2）；80 负样本误检 1/80。建议
-  **N=10 帧 + 900ms 兜底**；该逻辑尚未实现。
+  漏检 0）；新视角 20 帧 16/20（最大连续 2）；80 负样本误检 1/80 →
+  **N=10 帧 + 900ms 兜底**，已实现。
+- **实测**：`kstop` 后 **902ms** 触发 `AIM: bull lost -> DONE`，云台 NONE、
+  激光 OFF、K230 STOP；B/C 在 `aim` 中分别显示 state=2（src=2）/ state=3（src=1）。
+- **硬件观察（重要）**：`ctrlErr≈(-27,-13)` 时 pan 1562→1798 持续增大，但靶心
+  图像坐标几乎不变（326,281）——**云台/相机可能机械卡住、舵机未动或限位**，
+  不是控制律不收敛。先检查 pan 舵机臂/相机支架/供电，再评估收敛。
 - **端到端**：ESP32 新固件烧录通过；K230 部署新代理后 USB `gtrack`：
   `START_OK`、`$KT` 202 帧、`bad=2`（启动边界）、`$LS src=2`、
   `laserValid=1`、激光 ON；`gnone` 后 STOP/激光灭。
