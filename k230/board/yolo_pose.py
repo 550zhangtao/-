@@ -543,6 +543,9 @@ def main():
     win_n = 0
     every = CFG["stats"]
     target_fps = CFG["fps"]
+    prev_loop_ms = 0
+    uart_ms = 0
+    post_ms = 0
 
     while True:
         t0 = time.ticks_ms()
@@ -551,7 +554,9 @@ def main():
             _lref_skip -= 1
 
         # ---- 先拍显示帧，再拍 AI 帧（避免 ROI/检测框与画面错位）
+        t_s1 = time.ticks_ms()
         img = sen.snapshot(chn=CAM_CHN_ID_1)
+        s1_ms = time.ticks_diff(time.ticks_ms(), t_s1)
 
         # ---- 激光光斑：chn1 RGB565 原图，坐标即原图坐标
         laser = None
@@ -581,7 +586,9 @@ def main():
                 laser = None
                 _laser_skip = int(CFG.get("laser_cooldown", 8))
 
+        t_s2 = time.ticks_ms()
         arr = sen.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
+        s2_ms = time.ticks_diff(time.ticks_ms(), t_s2)
         t_ai = time.ticks_ms()
         res = _yolo.run(arr)
         infer_ms = time.ticks_diff(time.ticks_ms(), t_ai)
@@ -731,12 +738,16 @@ def main():
 
         out = {"seq": seq, "w": CFG["w"], "h": CFG["h"],
                "ms": infer_ms, "ref_ms": refine_ms, "lms": laser_ms,
+               "s1": s1_ms, "s2": s2_ms, "jpg": jpg_ms,
+               "loop": prev_loop_ms, "uart": uart_ms, "post": post_ms,
                "det": det, "kp": kp_flat,
                "labels": CFG["labels"], "task": "pose",
                "roi": roi, "jpeg": jsz, "bull": bull, "laser": laser_out}
         emit(T_TARGET, seq, ujson.dumps(out).encode())
+        t_u = time.ticks_ms()
         _send_uart(seq, det, bull, has_det)
         _send_uart_laser(seq, laser)
+        uart_ms = time.ticks_diff(time.ticks_ms(), t_u)
         if jpg is not None:
             emit(T_FRAME, seq, jpg)
 
@@ -745,12 +756,17 @@ def main():
             now = time.ticks_ms()
             dt = time.ticks_diff(now, win_t)
             fps = 0.0 if dt <= 0 else (win_n * 1000.0 / dt)
-            emit(T_STATS, seq, ("seq=%d fps=%.1f infer_ms=%d jpg_ms=%d bytes=%d mem=%d bull=%s laser=%s"
-                                % (seq, fps, infer_ms, jpg_ms,
+            emit(T_STATS, seq, ("seq=%d fps=%.1f infer_ms=%d jpg_ms=%d s1=%d s2=%d bytes=%d mem=%d bull=%s laser=%s"
+                                % (seq, fps, infer_ms, jpg_ms, s1_ms, s2_ms,
                                    len(jpg) if jpg else 0, gc.mem_free(),
                                    bull.get("status"), laser_out["status"])).encode())
             win_t = now
             win_n = 0
+
+        prev_loop_ms = time.ticks_diff(time.ticks_ms(), t0)
+        post_ms = prev_loop_ms - s1_ms - laser_ms - s2_ms - infer_ms - jpg_ms - refine_ms - uart_ms
+        if post_ms < 0:
+            post_ms = 0
 
         if CFG["limit"] and seq >= CFG["limit"]:
             log("limit %d reached" % CFG["limit"])
