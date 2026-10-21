@@ -38,7 +38,7 @@ import time
 
 # ----------------------------------------------------------- 配置
 # 会被 PC 端按正则替换，务必保持**单行** dict 字面量
-CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 6, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 60, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'win_red_warm': 120, 'win_red_luma': 50, 'win_warm_hot': 70, 'win_luma_low': 150, 'win_hot_luma': 245, 'win_hot_min': 220, 'slow_every': 1,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120, 'budget_ms': 12, 'gate_k': 3.0, 'kf_q': 40.0, 'kf_r': 4.0, 'kf_max_gate': 48.0, 'fixed_coast_max': 10, 'fixed_verify_every': 5, 'fixed_allow_reacquire': 0, 'fixed_reacquire_after': 10, 'fixed_reacquire_every': 30, 'fixed_reacquire_rad': 180, 'fixed_reacquire_stride': 6}
+CFG = {'enabled': 1, 'auto_calib': 1, 'calib_tries': 6, 'white_enable': 1, 'min_sat': 190, 'core_sat': 200, 'strict_sat': 190, 'core_ratio_pct': 6, 'core_min_px': 1, 'core_max_px': 40, 'min_warm': 60, 'abs_contrast': 35, 'rel_contrast': 0.30, 'dim_peak': 45, 'min_contrast': 55, 'min_fill': 0.30, 'strict_fill': 0.40, 'max_side': 48, 'min_area_big': 2, 'wide_enable': 0, 'wide_peak': 110, 'wide_warm': 40, 'wide_area': 60, 'wide_contrast': 60, 'dim_conf_scale': 0.40, 'dim_radius': 50, 'anchor_rad': 120, 'confirm_rad': 30, 'win_rad': 12, 'win_grow': 12, 'win_rad_max': 60, 'win_luma': 110, 'win_warm': 40, 'win_contrast': 40, 'win_red_warm': 120, 'win_red_luma': 50, 'win_warm_hot': 70, 'win_luma_low': 150, 'win_hot_luma': 245, 'win_hot_min': 220, 'win_dark_warm': 80, 'win_dark_luma': 55, 'slow_every': 1,  'subpix_rad': 5, 'search_rad': 70, 'roi_stride': 2, 'reacquire_rad': 140, 'conf_k': 120, 'budget_ms': 12, 'gate_k': 3.0, 'kf_q': 40.0, 'kf_r': 4.0, 'kf_max_gate': 48.0, 'fixed_coast_max': 10, 'fixed_verify_every': 5, 'fixed_allow_reacquire': 0, 'fixed_reacquire_after': 10, 'fixed_reacquire_every': 30, 'fixed_reacquire_rad': 180, 'fixed_reacquire_stride': 6}
 
 # 亮白阈值（板端 LAB：L 0~100）。光斑核心 L 接近 100。
 LAB_WHITE = [(82, 100, -30, 30, -30, 30)]
@@ -626,6 +626,9 @@ class LaserSpot:
                     elif (warm >= c.get("win_warm_hot", 70)
                           and lu >= c.get("win_luma_low", 150)):
                         pass
+                    elif (warm >= c.get("win_dark_warm", 80)
+                          and lu >= c.get("win_dark_luma", 55)):
+                        pass   # 暗红点：RGB≈166,71,75，luma≈100，warm≈95
                     else:
                         continue
                 # 亮的 + 偏红的优先（激光是"最亮又带红晕"的那一点）
@@ -711,9 +714,10 @@ class LaserSpot:
                         or self._verify_fail >= 2):
                     px, py = vr["x"], vr["y"]
                     self.kf.update(px, py)
-                    if (not self.just_calibrated
-                            and _dist(px, py, self.fixed[0], self.fixed[1]) > 15):
-                        self.just_calibrated = True   # 上层写回 laser_calib.json
+                    # 注意：这里**不能**写 just_calibrated / laser_calib.json。
+                    # 固定分支会跟着移动的光斑更新 self.fixed；如果每偏移>15px
+                    # 就回写标定，移动测试会把 calib 写成 (0,26) 这种漂移值
+                    # （2026-10-22 实测）。只有“首次无标定捕获”才允许自动回写。
                     self.fixed = (px, py)
                     self._verify_fail = 0
                     self._verify_ok = True

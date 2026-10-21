@@ -385,10 +385,18 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
 `tools/test_spot_tracker.py` 单元测试全过（匀速误差 0.2px、5 帧 coast 7.7px、离群点
 拒绝、静止速度 0.47px/s）。
 
-**已知诊断问题**：PC 汇总的 `status=track` 数量与 `|pred-measured|` 仍显示 0/不可靠
-（看门狗跳帧时走 `laser=None` 的标定回退，实测帧 `pred` 字段被覆盖）；功能跟踪、
-fps、遮挡指标已实测有效，`$LS src` 仍为 1/2，不影响 R2 控制。下一步修统计标签，
-并把受限重捕从单次 ±180 大窗升级为多帧分格。
+**统计/标定修复（2026-10-22 晚）**：
+
+- 固定分支原先在偏移>15px 时自动写 `laser_calib.json`，移动测试把 calib 写成
+  `(307,215)→(0,26)` 的漂移值；现在**只有首次无标定捕获**才回写，固定分支只更新
+  内存 `self.fixed`，24s 测试后 calib 仍为 (312.5,230.1)。
+- `pred` 改为保留更新前预测；固定分支区分 `status=track`（复核成功）/`calib`
+  （coast/丢失）。24s 稳定标定轮：78 帧/13 实测/**54 预测跟踪**/11 丢失；
+  预测误差 **mean 2.24px / median 2.02 / p95 3.71 / max 5.73**；19.03fps；
+  最大激光 28ms；coast 9；无全图。
+- **CanMV “当前固件不支持 REPL 输入”**：板子在工作模式自动跑 main.py/代理或旧预览
+  脚本占着 REPL，不是固件问题。先 `mode.sh debug`/3×`gnone` 写 offline_off；仍不行
+  按 RESET（offline_off 保留，仍进 debug）；debug 下 IDE 可正常连。
 
 文档：`k230/docs/LASER_PREDICTION.md`；测试脚本：`k230/tools/test_spot_tracker.py`、
 `k230/scripts/motion_test_laser.py`。
