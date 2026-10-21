@@ -90,6 +90,10 @@ CFG = {
     "coast_max": 8,         # 微窗连续失败时最多外推几帧
     "rad_extra": 8,         # 微窗随速度最多放大多少 px（49x49 预算内）
     "coast_conf": 0.35,     # coast 输出置信度（逐帧轻微衰减）
+    # 在线慢速标定：光斑稳定（速度小）连续 N 帧后，把标定先验慢慢拉向实测
+    "rezero_rate": 0.03,    # 每帧拉近比例（0.03 @15fps ≈ 0.45/s）
+    "rezero_speed": 6.0,    # 速度低于此值才算"稳定"（px/s；静止噪声 <2）
+    "rezero_after": 8,      # 连续稳定多少帧才更新
 }
 
 
@@ -203,6 +207,7 @@ class LaserAim:
                            float(self.cfg["ab_beta"]),
                            float(self.cfg["v_max"]))
         self._reject_n = 0      # max_step 连续拒绝次数
+        self._still_n = 0       # 光斑连续稳定帧数（在线 re-zero 用）
         self.reject_dev = 0.0   # 最近一次被拒绝的偏移（诊断）
         self.last = None
         self.last_ms = 0
@@ -225,6 +230,7 @@ class LaserAim:
         self._s = None
         self.tr.reset()
         self._reject_n = 0
+        self._still_n = 0
         self.reject_dev = 0.0
         self.last = (float(x), float(y))
         self.miss = 0
@@ -501,6 +507,19 @@ class LaserAim:
         if out is None:
             out = (mx, my)
         px, py = out
+        # 在线慢速 re-zero：光斑稳定时把标定先验慢慢拉向实测位置。
+        # 靶纸举高/换姿态后，下一次丢失的回退位置就不会差几十像素。
+        if self.tr.speed() < float(c["rezero_speed"]):
+            self._still_n += 1
+        else:
+            self._still_n = 0
+        if self._still_n >= int(c["rezero_after"]):
+            rr = float(c["rezero_rate"])
+            cx, cy, ckx, cky, cref = self.calib
+            cx += rr * (self.tr.x - cx)
+            cy += rr * (self.tr.y - cy)
+            self.calib = (cx, cy, ckx, cky, cref)
+
         self.off = [self.tr.x - bx, self.tr.y - by]
         self.calib_dev = (self.off[0] ** 2 + self.off[1] ** 2) ** 0.5
         # 不要用 offset 判"标定过期"：靶纸距离/倾斜会让光斑在图像里真的移动
@@ -527,6 +546,7 @@ class LaserAim:
         self._s = None
         self.tr.reset()
         self._reject_n = 0
+        self._still_n = 0
         self.reject_dev = 0.0
         self.last_budget = False
         self.miss = 0

@@ -1,1 +1,1 @@
-seq=337 fps=8.5 targets=1 age=1335ms connected=False
+seq=190 fps=8.4 targets=1 age=1335ms connected=False

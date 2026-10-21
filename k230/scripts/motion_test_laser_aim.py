@@ -55,6 +55,7 @@ RE_FRAMES = re.compile(r"frames=(\d+)")
 RE_BAD = re.compile(r"bad=(\d+)")
 RE_GMODE = re.compile(r"state=(\d+)")
 RE_BULLLOST = re.compile(r"bullLost=(\d+)")
+RE_PANTILT = re.compile(r"PAN=(\d+) TILT=(\d+)")
 
 
 def _log(msg: str) -> None:
@@ -103,6 +104,11 @@ def main() -> int:
     ap.add_argument("--no-live", action="store_true", help="live 已在跑，不要重复起")
     ap.add_argument("--no-gtrack", action="store_true", help="不自动进 R2 跟踪")
     ap.add_argument("--out", default=None, help="CSV 路径")
+    ap.add_argument("--pid", default=None, help="PAN PID 'kp ki kd'（gtrack 前下发）")
+    ap.add_argument("--pid2", default=None, help="TILT PID 'kp ki kd'")
+    ap.add_argument("--smooth", type=float, default=None, help="速度低通 tau")
+    ap.add_argument("--trk", default=None, help="目标 alpha/lead 'a lead'")
+    ap.add_argument("--label", default="", help="本次运行标签（写入 CSV 名）")
     args = ap.parse_args()
 
     try:
@@ -112,8 +118,9 @@ def main() -> int:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    csv_path = Path(args.out) if args.out else (OUT_DIR / ("motion_%s.csv" % stamp))
-    live_log = OUT_DIR / ("motion_live_%s.log" % stamp)
+    tag = ("_" + args.label) if args.label else ""
+    csv_path = Path(args.out) if args.out else (OUT_DIR / ("motion_%s%s.csv" % (stamp, tag)))
+    live_log = OUT_DIR / ("motion_live_%s%s.log" % (stamp, tag))
 
     live = None
     if not args.no_live:
@@ -140,6 +147,15 @@ def main() -> int:
         _log("ESP32 %s 已打开" % args.esp_port)
     except Exception as e:
         _log("ESP32 打不开（%s）-> 只采 latest.json，不采 aim/status" % e)
+
+    if ser is not None:
+        for cmd, val in (("pid", args.pid), ("pid2", args.pid2),
+                         ("trk", args.trk)):
+            if val:
+                _log("ESP32 %s %s -> %s" % (cmd, val, _send(ser, "%s %s" % (cmd, val)).strip()))
+        if args.smooth is not None:
+            _log("ESP32 smooth -> %s" % _send(ser, "smooth %.4f" % args.smooth).strip())
+        _log("ESP32 pidshow: %s" % _send(ser, "pidshow").strip())
 
     if ser is not None and not args.no_gtrack:
         _log("发 gtrack（R2）；请开始移动靶纸…")
@@ -175,6 +191,10 @@ def main() -> int:
                     "laser_vx": lz.get("vx"), "laser_vy": lz.get("vy"),
                     "bull_x": bull.get("x"), "bull_y": bull.get("y"),
                     "bull_status": bull.get("status"),
+                    "align_x": (float(bull["x"]) - float(lz["x"]))
+                               if (bull.get("x") is not None and lz.get("x") is not None) else None,
+                    "align_y": (float(bull["y"]) - float(lz["y"]))
+                               if (bull.get("y") is not None and lz.get("y") is not None) else None,
                     "box_w": box[2] if len(box) > 2 else None,
                     "box_h": box[3] if len(box) > 3 else None,
                     "fps_pc": d.get("fps"),
@@ -215,6 +235,13 @@ def main() -> int:
             m = RE_BULLLOST.search(txt)
             if m:
                 row["bull_lost"] = int(m.group(1))
+            m = RE_PANTILT.search(txt)
+            if m:
+                row["pan"] = int(m.group(1))
+                row["tilt"] = int(m.group(2))
+            m = RE_GMODE.search(txt)
+            if m:
+                row["track_state"] = int(m.group(1))
             rows.append(row)
 
             if now - last_print >= 5.0:
@@ -282,6 +309,17 @@ def main() -> int:
         print("laser y 抖动   : std=%.2f range=%.1f" % (st.pstdev(ly), max(ly) - min(ly)))
     print("$KT 帧率       : p50=%s" % _pct(kt, .5))
     print("bull 检出比例  : %.1f%%" % (100.0 * len(bull_ok) / max(1, len(rows))))
+    ax = [float(r["align_x"]) for r in rows if r.get("align_x") is not None]
+    ay = [float(r["align_y"]) for r in rows if r.get("align_y") is not None]
+    if ax and ay:
+        print("瞄准误差(靶心-激光): p50=(%.1f,%.1f) p95=(%.1f,%.1f) mean=(%.1f,%.1f) std=(%.1f,%.1f)"
+              % (_pct(sorted(abs(v) for v in ax), .5),
+                 _pct(sorted(abs(v) for v in ay), .5),
+                 _pct(sorted(abs(v) for v in ax), .95),
+                 _pct(sorted(abs(v) for v in ay), .95),
+                 sum(ax) / len(ax), sum(ay) / len(ay),
+                 st.pstdev(ax) if len(ax) > 1 else 0.0,
+                 st.pstdev(ay) if len(ay) > 1 else 0.0))
     modes = [r.get("laser_mode") for r in rows if r.get("laser_mode")]
     if modes:
         print("laser mode     : roi=%d coast=%d calib=%d lost=%d"

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import cv2
@@ -160,6 +161,27 @@ def test_coast():
     print("      coast -> %s/%s (conf %.2f)" % (r["mode"], r["status"], r["conf"]))
 
 
+def test_rezero():
+    """光斑稳定时，标定先验应慢慢被拉向实测（在线 re-zero）。"""
+    img = FakeImg(load_big(SAMPLE))
+    # 测试里把 rezero 速度阈值放宽、速率加快，专门验证"机制"能收敛；
+    # 板端默认是 rezero_speed=6 / rate=0.03（更慢、更保守）。
+    la = LA.LaserAim({"rad": 12, "budget_ms": 20,
+                      "rezero_speed": 50.0, "rezero_rate": 0.05})
+    la.set_calib(SPOT_640[0] + 5.0, SPOT_640[1])     # 偏 5px，仍在微窗内
+    d0 = None
+    for i in range(30):
+        time.sleep(0.02)          # 模拟板端 ~50fps 的帧间隔，避免 dt 下限放大速度噪声
+        r = la.sample(img)
+        assert r is not None and r["mode"] == "roi", r
+        if i == 0:
+            d0 = abs(la.calib[0] - r["x"]) + abs(la.calib[1] - r["y"])
+    d1 = abs(la.calib[0] - r["x"]) + abs(la.calib[1] - r["y"])
+    assert d1 < d0 * 0.7, "re-zero 没把标定拉近：%.2f -> %.2f" % (d0, d1)
+    print("      calib->measured dist %.2f -> %.2f, calib=(%.1f,%.1f)"
+          % (d0, d1, la.calib[0], la.calib[1]))
+
+
 def test_calib_io():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "laser_calib.json"
@@ -186,6 +208,7 @@ def main() -> int:
         ("distance-model", test_distance_model),
         ("tracker-cv", test_tracker_cv),
         ("coast", test_coast),
+        ("rezero", test_rezero),
         ("calib-io", test_calib_io),
     ):
         ok = run(name, fn) and ok
