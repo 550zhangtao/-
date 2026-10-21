@@ -610,6 +610,22 @@ void onUsbLine(char *line, bool) {
     Serial.print(" gimbalMode="); Serial.println((int)gimbalMode);
     return;
   }
+  // 硬件排查：直接控制 GPIO5（0=低 1=高 z=高阻），用来判断蜂鸣器/激光接在哪
+  if (!strncmp(line, "laserpin", 8)) {
+    const char *arg = line + 8;
+    while (*arg == ' ') arg++;
+    if (*arg == '0') {
+      pinMode(PIN_LASER, OUTPUT); digitalWrite(PIN_LASER, LOW);
+      Serial.println("GPIO5 -> OUTPUT LOW");
+    } else if (*arg == '1') {
+      pinMode(PIN_LASER, OUTPUT); digitalWrite(PIN_LASER, HIGH);
+      Serial.println("GPIO5 -> OUTPUT HIGH");
+    } else {
+      pinMode(PIN_LASER, INPUT);
+      Serial.println("GPIO5 -> INPUT (high-Z)");
+    }
+    return;
+  }
   if (!strncmp(line, "pidshow", 7)) {
     Serial.printf("PAN kp=%.3f ki=%.4f kd=%.4f | TILT kp=%.3f ki=%.4f kd=%.4f\n",
                   panKp, panKi, panKd, tiltKp, tiltKi, tiltKd);
