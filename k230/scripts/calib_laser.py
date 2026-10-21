@@ -432,7 +432,7 @@ def main() -> int:
 
     # ---- 手动坐标
     if args.x is not None and args.y is not None:
-        write_calib(out, args.x, args.y, ref=args.s)
+        write_calib(out, args.x, args.y, ref=args.s, method="manual")
         if args.push:
             push_calib(out, args.port)
         return 0

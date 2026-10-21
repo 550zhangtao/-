@@ -104,7 +104,7 @@ POSE_DEFAULT_CFG: Dict[str, object] = {
     "roi_pad": 0.25, "roi_min": 160, "roi_max": 256,
     # 激光：标定先验 + ±laser_roi_rad 微窗质心（board/laser_aim.py）
     "laser_enable": 1, "laser_every": 1,
-    "laser_roi_rad": 12, "laser_budget_ms": 10,
+    "laser_roi_rad": 12, "laser_budget_ms": 12,
     "laser_lead_ms": 50, "laser_ab_alpha": 0.45, "laser_ab_beta": 0.10,
     "fps": 0, "stats": 15, "limit": 0,
     "sensor_id": 2,

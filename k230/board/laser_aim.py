@@ -70,7 +70,7 @@ CFG = {
     "enabled": 1,
     "rad": 12,              # 初始微窗半径：±12 -> 25×25，实测 ~1ms
     "rad_max": 24,          # 连续丢失后放大的上限：±24 -> 49×49，实测 ~4ms
-    "budget_ms": 10,        # 单帧硬预算；超时按"没找到"处理，绝不拖住主循环
+    "budget_ms": 12,        # 单帧硬预算；超时按"没找到"处理，绝不拖住主循环
     "warm_min": 55,         # R-G 阈值（本机实测激光 119~220，白墙 2~33）
     "luma_min": 30,         # 压掉暗红色噪点/暗红物体
     "min_px": 2,            # 至少几个满足阈值的像素才算光斑
@@ -503,7 +503,10 @@ class LaserAim:
         px, py = out
         self.off = [self.tr.x - bx, self.tr.y - by]
         self.calib_dev = (self.off[0] ** 2 + self.off[1] ** 2) ** 0.5
-        self.need_recalib = self.calib_dev > float(c["calib_warn"])
+        # 不要用 offset 判"标定过期"：靶纸距离/倾斜会让光斑在图像里真的移动
+        # （手举靶实测 36~48px），这是物理量不是标定错。只有丢失/连续拒识
+        # 才置 need_recalib；重新命中就清掉。
+        self.need_recalib = False
         conf = (mw - int(c["warm_min"])) / float(c["warm_k"]) + float(c["conf_floor"])
         if conf > 1.0:
             conf = 1.0

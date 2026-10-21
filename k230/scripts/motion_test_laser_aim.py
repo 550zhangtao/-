@@ -132,15 +132,21 @@ def main() -> int:
             return 2
         _log("live 已出图")
 
-    ser = serial.Serial(args.esp_port, 115200, timeout=0.3)
-    time.sleep(0.3)
-    ser.reset_input_buffer()
-    _log("ESP32 %s 已打开" % args.esp_port)
+    ser = None
+    try:
+        ser = serial.Serial(args.esp_port, 115200, timeout=0.3)
+        time.sleep(0.3)
+        ser.reset_input_buffer()
+        _log("ESP32 %s 已打开" % args.esp_port)
+    except Exception as e:
+        _log("ESP32 打不开（%s）-> 只采 latest.json，不采 aim/status" % e)
 
-    if not args.no_gtrack:
+    if ser is not None and not args.no_gtrack:
         _log("发 gtrack（R2）；请开始移动靶纸…")
         _send(ser, "gtrack")
         time.sleep(0.8)
+    elif ser is None:
+        _log("没有 ESP32：只测激光自身的 src/mode/耗时/抖动")
     else:
         _log("不进跟踪；只测激光/抗干扰")
 
@@ -176,7 +182,7 @@ def main() -> int:
             else:
                 row["live"] = 0
 
-            txt = _send(ser, "aim")
+            txt = _send(ser, "aim") if ser is not None else ""
             m = RE_AIM_LASER.search(txt)
             if m:
                 row["ls_x"] = float(m.group(1))
@@ -190,7 +196,7 @@ def main() -> int:
             if ms:
                 row["aim_state"] = int(ms.group(1))
 
-            txt = _send(ser, "status")
+            txt = _send(ser, "status") if ser is not None else ""
             m = RE_CTRL.search(txt)
             if m:
                 row["ctrl_ex"] = float(m.group(1))
@@ -220,10 +226,14 @@ def main() -> int:
                 last_print = now
             time.sleep(0.2)
     finally:
-        if not args.no_gtrack:
+        if ser is not None and not args.no_gtrack:
             _log("发 gmanual（停止跟踪）")
             _send(ser, "gmanual")
-        ser.close()
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
 
     # ---- CSV
     keys = []

@@ -83,7 +83,7 @@ BULL_MIN_V = 0.30
 # 没有标定文件就关闭 $LS，绝不临场做全图搜索。
 LASER_ENABLE = 1
 LASER_ROI_RAD = 12
-LASER_BUDGET_MS = 10
+LASER_BUDGET_MS = 12
 LASER_LEAD_MS = 50          # α-β 前瞻：补偿相机->UART->ESP32 延迟
 LASER_AB_ALPHA = 0.45       # 位置增益
 LASER_AB_BETA = 0.10        # 速度增益
