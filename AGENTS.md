@@ -400,3 +400,10 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
 
 文档：`k230/docs/LASER_PREDICTION.md`；测试脚本：`k230/tools/test_spot_tracker.py`、
 `k230/scripts/motion_test_laser.py`。
+
+**2026-10-22 晚回退**：用户要求“不用预测激光，用回原来的算法”，已移除
+`SpotKalman`/门控/coast/`pred`/`track`，恢复 `fixed_verify_every=5` + `win_rad/
+win_grow` + 受限重捕的原算法；**保留**无全图/160×120 分格捕获/12ms 预算/25ms
+看门狗/暗红点阈值/`full_every=9999`。`$LS src` 仍为 1/2，三态 A/B/C 不变。
+`tools/test_spot_tracker.py` 随预测层删除；回退后需重新跑基线/运动测试确认
+fps 与遮挡（原 24s 预测版的 2.24px/54 track 不再适用）。

@@ -713,20 +713,10 @@ def main():
 
         if laser is not None:
             src = laser.get("src", "measured")
-            if src == "measured":
-                st = "ok"
-            elif src == "fixed" and laser.get("ok"):
-                st = "track"          # 上一帧复核成功，本帧是 Kalman 预测
-            else:
-                st = "calib"          # 复核失败，位置来自标定/coast
             laser_out = {"x": round(laser["x"], 1), "y": round(laser["y"], 1),
                          "conf": round(laser["conf"], 3), "mode": laser["mode"],
-                         "status": st,
-                         "src": src,
-                         "pred": [round(float(v), 1) for v in
-                                  laser.get("pred", (laser["x"], laser["y"]))],
-                         "coast": int(laser.get("coast", 0)),
-                         "budget": 1 if laser.get("budget") else 0}
+                         "status": "ok" if src == "measured" else "calib",
+                         "src": src}
         else:
             # 没有实拍光斑，但有 /sdcard/laser_calib.json -> 直接用标定位置。
             # 这是三态 B 的**数据接口**：只上报坐标，不在本文件里驱动云台。
@@ -734,8 +724,7 @@ def main():
             if _fx is not None and _fx[0] > 0:
                 laser_out = {"x": round(_fx[0], 1), "y": round(_fx[1], 1),
                              "conf": 0, "mode": "calib", "status": "calib",
-                             "src": "fixed", "pred": [round(_fx[0], 1), round(_fx[1], 1)],
-                             "coast": 0, "budget": 0}
+                             "src": "fixed"}
             else:
                 laser_out = {"x": -1, "y": -1, "conf": 0, "status": "none",
                              "src": "none"}
