@@ -68,7 +68,7 @@ python3 -m k230tool push board/gimbal_agent.py --dest /sdcard/main.py
 
 CanMV 上电自动执行 `/sdcard/main.py`：常驻等命令 → 收到 `$E,START!` 才开相机跑识别。
 
-### 4) 调试 / 工作模式切换 + CanMV IDE 预览
+### 3) 调试 / 工作模式切换 + CanMV IDE 预览
 
 板端**常驻代理会占着 REPL**，用 IDE 预览前先切到调试模式
 （`/sdcard/main.py` 不启动、相机空闲）：
@@ -109,7 +109,7 @@ python3 tools/bench_pose.py --weights models/pose_v3.pt \
 排查「远靶/靶心识别率下降、误检上升」的完整过程和数据见
 [k230/docs/POSE_V3_TRAINING.md](k230/docs/POSE_V3_TRAINING.md)。
 
-### 3) ESP32 侧
+### 5) ESP32 侧
 
 Arduino-ESP32 core **3.3.10**，板型 `ESP32 Dev Module`：用 Arduino IDE 打开
 `firmware/ESP32_Gimbal_K230/` 直接上传；或
