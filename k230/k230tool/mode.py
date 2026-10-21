@@ -167,27 +167,42 @@ def _push_replace(link: K230Link, local: Path, remote: str, tmp: str,
         % (remote, tmp, remote, remote),
         timeout=15)
     if not ok or ("SZ %d" % local.stat().st_size) not in out:
-        raise BoardError(
-            "替换 %s 失败（期望 %d 字节）：%s\n"
-            "  可先切 debug 后重试，或手工检查 %s"
-            % (remote, local.stat().st_size, (err or out)[:500], tmp))
+        # 假失败：切换工作模式时板子可能在替换后复位，REPL 没吐 SZ。
+        # 重连后按 md5 再核对一次；文件对就继续，别吓人。
+        verified = False
+        for _ in range(3):
+            time.sleep(1.5)
+            try:
+                link.close()
+                link.open()
+                if link._board_md5(remote) == want:
+                    verified = True
+                    break
+            except Exception as e:
+                _log("替换后复核失败：%s" % (e or type(e).__name__))
+        if not verified:
+            raise BoardError(
+                "替换 %s 失败（期望 %d 字节）：%s\n"
+                "  可先切 debug 后重试，或手工检查 %s"
+                % (remote, local.stat().st_size, (err or out)[:500], tmp))
+        _log("替换后 REPL 无输出，但 md5 一致 -> 视为成功（板子可能在切换中复位）")
     _log("已部署 %s（%d 字节, md5 %s）"
          % (remote, local.stat().st_size, got))
 
 
 def _deploy_agent(link: K230Link, local_path: str) -> None:
-    """把本地代理 + 同目录 laser_spot.py 一起推到 /sdcard，md5 校验后替换。"""
+    """把本地代理 + 同目录 laser_aim.py 一起推到 /sdcard，md5 校验后替换。"""
     src = Path(local_path).expanduser().resolve()
     if not src.is_file():
         raise BoardError("--agent 文件不存在：%s" % src)
-    dep = src.parent / "laser_spot.py"
+    dep = src.parent / "laser_aim.py"
     if not dep.is_file():
         raise BoardError(
-            "缺少依赖 %s；代理必须和 laser_spot.py 同目录部署（A：版本统一）"
+            "缺少依赖 %s；代理必须和 laser_aim.py 同目录部署（版本统一）"
             % dep)
     # 先推依赖：这样 reset 后 main.py 启动时 import 到的就是新版
-    _push_replace(link, dep, "/sdcard/laser_spot.py",
-                  "/sdcard/laser_spot.py.new", "laser_spot.py")
+    _push_replace(link, dep, "/sdcard/laser_aim.py",
+                  "/sdcard/laser_aim.py.new", "laser_aim.py")
     _push_replace(link, src, MAIN, MAIN_TMP, "main.py")
 
 

@@ -182,13 +182,13 @@ python3 -m k230tool live --duration 20 --conf 0.25      # 默认已经是 pose_v
 | `in_w/in_h` | 320/320 | 与 kmodel 一致；换 416 要三处一起改并重新编译 |
 | `conf` | 0.25 | v3 在 0.4 下远靶仍 100%，可按现场再提高 |
 | `low_refine` | 1 | 低置信小靶（≤120px）裁 7 倍放大复筛，冷却 3 帧 |
-| `laser_every` | 1 | 有 `/sdcard/laser_calib.json` 时 fixed 模式 ~11ms |
+| `laser_every` | 1 | 标定先验 + 25×25 微窗，实测 1~2ms（见 LASER_AIM.md） |
 | `low_refine_topk` | 2 | 只对前 2 个候选复筛 |
 
-板端必须加载激光标定：`board/yolo_pose.py` 现在会和 IDE 预览一样读
-`/sdcard/laser_calib.json`，首次自动标定成功后写回。**没有这份标定文件时，
-复杂画面下每次上电要做 12 次全图搜索（单次 0.5~2.3s），整条流会掉到
-0.5~3 fps** —— 这是排查时踩到的另一个坑。
+板端必须加载激光标定：`board/yolo_pose.py` / IDE 预览 / 离线代理都读
+`/sdcard/laser_calib.json`（PC 端 `scripts/calib_laser.py` 生成）。
+**没有标定文件时激光上报直接关闭**（`$LS run=0`），不会在板上做任何全图搜索；
+标定一次约 1 分钟，之后运行时只在 ±12px 微窗里做质心（1~2ms）。
 
 ## 7. 复现
 

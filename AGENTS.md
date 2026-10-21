@@ -317,14 +317,19 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
 - **板端模型路径改为 `/sdcard/models/pose_v3.kmodel`**（旧 `target_pose.kmodel`
   被 KPU 占用时写入会 EBUSY，故用新文件名，旧文件保留回退）；
   `link.py` / `yolo_pose.py` / `yolo_preview_ide.py` / `gimbal_agent.py` 默认值已同步；
-- **激光标定必须共用**：`board/yolo_pose.py` 现在也读 `/sdcard/laser_calib.json`
-  （首次自动标定后写回）。没有标定文件时，复杂画面下每次上电要做 12 次
-  全图搜索（单次 0.5~2.3 s），整条流会掉到 0.5~3 fps；
+- **激光标定必须共用**：`board/yolo_pose.py` 也读 `/sdcard/laser_calib.json`
+  （2026-10-22 起由 PC `scripts/calib_laser.py` 生成，板端不再自动全图搜索；
+  详见文末「2026-10-22 激光识别重构」）；
 - 板端低置信复筛：`low_refine=1`，仅对 ≤120 px 的候选、最多 2 个、
   7 倍裁剪放大，失败后冷却 3 帧；PC 实测 80 张负样本误检不变（1/80）。
 
+> **历史章节（2026-10-21 / 10-22）**：以下三节描述的 `board/laser_spot.py`
+> 已于 2026-10-22 删除（快照 `0c5ff1b`），当前方案见文末
+> 「2026-10-22 激光识别重构」。`$LS` 协议、ESP32 三态 A/B/C、激光 IO 代码保留。
+
 ### 2026-10-21 激光 IO / 搜索优化 / 三态追踪
 
+- **（2026-10-22 更新：GPIO5 已弃用，激光常亮；以下 IO 代码保留但当前不驱动激光）**
 - **激光笔 IO（ESP32 GPIO5，低电平点亮）**：02 板其余脚全被电机/舵机/PS2/
   K230/循迹占用，GPIO5 是唯一空出的可输出脚；它是 strapping pin（上电必须为高），
   所以按 active-low 接线（NPN+N-MOS），保证 bootloader 阶段不亮。
@@ -407,3 +412,111 @@ win_grow` + 受限重捕的原算法；**保留**无全图/160×120 分格捕获
 看门狗/暗红点阈值/`full_every=9999`。`$LS src` 仍为 1/2，三态 A/B/C 不变。
 `tools/test_spot_tracker.py` 随预测层删除；回退后需重新跑基线/运动测试确认
 fps 与遮挡（原 24s 预测版的 2.24px/54 track 不再适用）。
+
+### 2026-10-22 激光识别重构（当前方案）
+
+用户明确要求删掉旧激光识别、换新方案。旧 `board/laser_spot.py`（1200 行、
+fixed/verify/reacquire/confirm 状态机）已删除并有快照 `0c5ff1b`；
+新方案是 **"标定即识别"**：标定一次光斑位置，运行时只在 ±12px 微窗做质心，
+不再"找"光斑，也没有全图/分格/重捕。
+
+**硬件前提（用户 2026-10-22 确认）**：
+- **激光常亮，GPIO5 已弃用**。ESP32 `setLaserOutput()`/`applyLaserMode()`/
+  `laserpin` 代码保留（以后接可控开关可用），但当前对激光没有实际作用；
+- 所以标定默认走 **单帧 LAB + PC 人工点选**；只有以后能可靠关激光时才用
+  `--pair` 做 ON/OFF 主动差分。
+
+**板端 API 实测（CanMV v1.4.3 / K230，2026-10-22）**：
+| API | 耗时 |
+| --- | --- |
+| `find_blobs(48×48)` | 11~14 ms（固定开销，和 ROI 大小基本无关） |
+| `find_blobs(160×120)` | 12~14 ms |
+| `find_blobs(640×480)` | **22 ms**（旧文档"0.5~2.3s"是误记） |
+| `img.difference()` 全图 | 7 ms |
+| `img.binary()` 全图 | 16 ms |
+| `img.mean_pool(4,4)` | 3 ms |
+| `img.get_statistics(roi)` | ~0 ms |
+| 纯 Python bytearray 25×25 / 49×49 | **1 ms / 4 ms** |
+
+**关键结论：不要再用 `find_blobs` 做每帧激光识别**（12ms 起步）；
+25×25 的 `img.bytearray()` 直扫只要 1ms，这才是每帧可用的。
+
+**新文件 / 改动**：
+- `board/laser_aim.py`：`LaserAim` 类；`predict = calib + k·(s-ref) + off`，
+  `sample()` 只扫微窗；状态只有 `ok / calib / lost`；无全图路径；
+- `scripts/calib_laser.py`：PC 标定（单帧 LAB + 鼠标点选；可选 ON/OFF 差分；
+  `--fit` 多点拟合 `c + k·s`；`--push` 推到板端）；
+- `tools/test_laser_aim.py`：PC 单测（命中/偏标定/关激光/距离模型/标定读写）；
+- `board/yolo_pose.py`、`board/yolo_preview_ide.py`、`board/gimbal_agent.py`
+  三处已切到 `laser_aim`，`$LS` 协议不变；
+- `k230tool/link.py` / `mode.py` 的依赖文件名改为 `laser_aim.py`；
+- 删除旧算法专用工具：`capture_laser/eval_laser/laser_bench/laser_hardset/
+  laser_label.html/make_label_page/replay_laser/test_laser_frame/
+  motion_test_laser/check_laser_deploy`；
+- 保留 `tools/laser_samples/`（回归数据）、`augment_spot.py` / `eval_spot_robust.py`
+  （训练用，让 pose 抗光斑遮挡）、ESP32 `$LS`/AIM/激光 IO；
+- 文档：新增 `k230/docs/LASER_AIM.md`，删除 `AIM_LASER_SEARCH.md` /
+  `LASER_PREDICTION.md`。
+
+**板端实测（2026-10-22，现场墙 + 真实激光）**：
+- 标定 `(306.28, 229.32)`；`LaserAim.sample()` 20 次 **1~2ms**，
+  实测 `(306.7,229.7)`、`n=25`、`src=measured`；
+- `img.save('/sdcard/laser_aim_dbg.jpg')` + `k230tool pull` 核对：
+  十字/圆环正好压在激光点上（板端绘制路径已验证）；
+- `k230tool live` 端到端：`latest.json` 的 `laser=(306.7,229.4) src=measured
+  calib_dev=0.4px laser_ms=2`；ESP32 `aim` 显示 `laser=306.6,229.1 src=1 conf=356`；
+  `loop=67ms`、`infer=32ms`、`uart=7ms`。
+- **运动/静止靶基线**（`scripts/motion_test_laser_aim.py`，`latest.json` + ESP32
+  `aim/status` 同时采样）：
+
+  | 场景 | 采样 | `$LS src=1` | `calib_dev` p95 | `laser_ms` p95 | 抖动 std | `$KT` fps |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 静止（10ms） | 20 | **100%** | 0.4px | 2ms | x 0.13 / y 0.08 | 18.2 |
+  | 运动（6ms，旧） | 44 | 56.8% | 2.7px | 6ms（顶预算） | x 1.02 / y 0.88 | 15.4 |
+  | 运动（10ms） | 29 | **86.2%** | 16.9px\* | 5ms | x 5.59 / y 2.00 | 17.3 |
+
+  \* 16.9px 是靶纸移动/倾斜让光斑图像位置真的移动（打白墙时 2.7px），不是噪声；
+  `off` EMA 跟着实测走，窗口中心随之平移，所以 86% 仍是 measured。
+- **6ms 预算是主要瓶颈**：运动轮 `laser_ms` p95 正好 6ms，预算截断直接变成
+  `src=2`；改 10ms 后静止 100%、运动 86.2%。`budget_ms` 默认 10。
+- `need_recalib` 现在在**连续丢失**或 **`max_step` 连续拒绝**时也会置 1
+  （之前只在缓慢漂移超过 `calib_warn` 时置），agent/preview 会打印告警；
+  `$LS` 仍发 `src=2`（三态 B 的标定参考），`conf=0`，`latest.json` 有 `need_recalib`。
+- 靶纸表观边长 `s` 改为 **4 角点平均边长 + 内部 EMA(0.3)**，不再用检测框
+  `sqrt(w*h)`；角点不可信时才退回框。`k·s` 的点标定不会被框抖污染。
+- IDE 预览的激光标记改成**中间留 6px 的十字 + 圆环**（不再用 `draw_cross`
+  压住光斑）；板端 `img.save('/sdcard/laser_aim_dbg2.jpg')` + pull 已核对，
+  圆环套住光斑、中心可见。
+- **`mode work` 假失败修复**：替换 `/sdcard/main.py` 后板子可能复位、REPL 不吐
+  `SZ`；`mode._push_replace` 现在会重连并按 md5 复核一次，文件对就继续，
+  不再误报（这次曾骗我去按 RESET）。
+
+**标定文件**：
+```json
+{"x":306.28,"y":229.32,"kx":0.0,"ky":0.0,"ref":0.0}
+```
+`x,y` 是 640×480 原图坐标；`kx,ky` 是 `c + k·s` 的距离项（`s`=靶纸表观边长，
+pose 每帧给），单距离标定时为 0。没有这份文件时三处都关闭 `$LS`（run=0），
+不做任何自动全图搜索。
+
+**踩坑 / 更正**：
+- **`from media.sensor import *` 会把 `sys` 覆盖成 `mpp.sys`**（没有 `.path` /
+  `.modules`）。之前 AGENTS 里"本机固件 sys 没有 modules"其实是这个原因：
+  真正的 `sys` 有 `modules`（实测 `hasattr(sys,"modules")=True`）。
+  写板端脚本时：`import sys` 要放在 `from media.sensor import *` **之后**，
+  或者先 `_sys = sys` 存引用；`gimbal_agent.py` 的 `sys.path` 块一直静默失效
+  （`/sdcard` 本来就在默认 path 里，所以没出问题）。
+- 真实小光斑（5~10px）的 LAB 阈值环只有 2~3px 宽，**3×3 `MORPH_OPEN` 会把它
+  直接抹掉**（实测 19px → 0px）。标定工具的形态学只做 `close`，不做 `open`；
+  5×5 close 才能把被 JPEG 压断的 2~3 块重新连成一个连通域。
+- `/sdcard/laser_calib.json` 被占着时 `open(...,'w')` 报 **EPERM**、
+  `os.remove` 也 EPERM（不是 EBUSY）；`k230tool mode reset` 后即可写。
+
+**待办 / 注意**：
+- 工作模式下 `/sdcard/main.py` 仍是旧代理时，新标定不会被旧 `laser_spot.py`
+  使用；切工作模式前先 `python3 -m k230tool mode work --agent board/gimbal_agent.py`
+  重新部署（本文件已改好，但板端是否重部署取决于现场）；
+- 激光笔如果以后换可控开关，优先用 `calib_laser.py --pair` 做 ON/OFF 差分，
+  比单帧点选更稳；
+- 多距离 `c + k·s` 的第二点需要在板上同时拿到靶纸表观边长 `s`（`latest.json`
+  的 `detections[0].box`）与光斑坐标；当前只有单距离标定（k=0）。

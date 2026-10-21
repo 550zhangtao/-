@@ -29,7 +29,9 @@ k230/
 ├── board/                     板端 MicroPython（会被自动下发）
 │   ├── stream_camera.py       采图 -> JPEG -> USB
 │   ├── yolo_pose.py           YOLOv8-Pose 推理 -> 关键点 JSON + ROI JPEG
-│   └── yolo_preview_ide.py    ★ 在 CanMV IDE 里直接看框/四角/靶心
+│   ├── gimbal_agent.py        离线代理（ESP32 START/STOP 指挥）
+│   ├── laser_aim.py           激光：标定先验 + ±12px 微窗质心（1~2ms）
+│   └── yolo_preview_ide.py    ★ 在 CanMV IDE 里直接看框/四角/靶心/光斑
 ├── tools/                     Pose 训练/标注/转换工具
 │   ├── pose_label.html        ★ 5 关键点浏览器标注工具
 │   ├── pose_prefill.js        约 180 张推荐图的预标注框
@@ -41,7 +43,7 @@ k230/
 │   ├── dataset_from_captures.py  抓图 -> 数据集
 │   └── check_env.py           环境自检
 ├── models/                    本地 kmodel / labels 放置处
-├── scripts/                   udev 规则、启动脚本
+├── scripts/                   udev 规则、启动脚本、calib_laser.py（PC 激光标定）
 ├── examples/                  二次开发示例
 ├── docs/                      部署/架构/排错文档
 ├── live/                      运行时生成（latest.jpg / latest.json / history）

@@ -6,6 +6,8 @@ __pycache__/
 # K230 运行时产物
 live/*
 !live/.gitkeep
+k230/live/*
+!k230/live/.gitkeep
 captures/
 runs/
 dataset/

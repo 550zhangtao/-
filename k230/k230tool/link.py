@@ -102,10 +102,9 @@ POSE_DEFAULT_CFG: Dict[str, object] = {
     "max_boxes": 20,
     "jpeg_every": 2, "full_every": 9999,
     "roi_pad": 0.25, "roi_min": 160, "roi_max": 256,
-    "laser_enable": 1, "laser_every": 1,   # 激光光斑：每帧检测（board/laser_spot.py）
-    # 固定标定下每 5 帧才复核一次；受限重捕默认关（仅 R2 代理打开）
-    "laser_verify_every": 5, "laser_global": 1,
-    "laser_budget_ms": 35, "laser_cooldown": 1,
+    # 激光：标定先验 + ±laser_roi_rad 微窗质心（board/laser_aim.py）
+    "laser_enable": 1, "laser_every": 1,
+    "laser_roi_rad": 12, "laser_budget_ms": 10,
     "fps": 0, "stats": 15, "limit": 0,
     "sensor_id": 2,
     "uart_enable": 1, "uart_id": 3, "uart_tx": 32, "uart_rx": 33, "uart_baud": 115200,
@@ -561,7 +560,7 @@ class K230Link:
 
     def _ensure_board_deps(self) -> None:
         """把板端依赖推到 /sdcard；按 md5 比对，不再只看文件大小。"""
-        deps = [BOARD_DIR / "laser_spot.py"]
+        deps = [BOARD_DIR / "laser_aim.py"]
         for local in deps:
             if not local.exists():
                 continue
