@@ -40,6 +40,11 @@ try:
 except Exception:                      # 固件没有 cv_lite 时置 None，sample 返回 None
     cv_lite = None
 
+try:
+    import ulab.numpy as _np           # 只用来把红通道比较成 0/255 掩码
+except Exception:
+    _np = None
+
 VERSION = "2026-10-22.8-roi"
 
 # ---- 诊断模式：True 时逐 blob 打印（含真实像素数），用于确认阈值是否合适 ----
@@ -47,7 +52,7 @@ DIAG_MODE = False
 
 CFG = {
     # ROI：画面中心 120x120（640x480 中心是 (320,240)，左上角 = 中心 - 60）
-    "roi": (260, 220, 120, 120),
+    "roi": (207, 168, 80, 80),
     # 灰度阈值。实测扫描（本机现场）：200~220 选中的是激光；230~240 时激光会
     # 被拆成两片、反光反而面积最大 -> 选错；245 只剩激光碎片。取 220 留余量。
     "threshold": (220, 255),
@@ -59,7 +64,27 @@ CFG = {
     # （白色圆柱边缘 7x9=63px 与激光同尺寸，尺寸上无法区分，见文档说明）
     "max_side": 40,
     "max_area": 600,
-    # ---- 红占优颜色门控（可选，需同时传入 RGB888 图像）----
+    # ---- 方案 B：红掩码作主检测（推荐）----
+    # 激光是"红"而不是"亮"：实测红晕 R−G≈150，而白纸/白瓶 R−G≈−10，
+    # 但激光灰度只有 120~160（红通道饱和时 G/B 仍低），白物体灰度 229+。
+    # 所以用 (R>red_rmin 且 G<red_gmax) 建 0/255 掩码，再交给 cv_lite 找连通域。
+    # 注意必须用 uint8 比较，不能先做 R-G（uint8 相减会溢出回绕）。
+    "red_primary": 1,      # 1=红掩码主检测；0=退回灰度
+    "red_dg": 60,          # R-G 阈值（相对判据，实测激光≈150，白物≈-10）
+    "red_rmin": 200,       # 红色亮度下限。木纹墙 R≈160，激光 R≈255 ->
+                           # 调到 200 可把木纹/棕墙排除（实测关键）
+    "red_gmax": 110,       # 已不用；保留配置兼容
+    "red_min_area": 40,    # 掩码连通域最小面积（像素）
+    # 自动获取 ROI：连续 miss 到阈值后，把画面切成 4x3 块逐块建红掩码，
+    # 找到"尺寸像激光"的红块就把 ROI 挪过去（单帧行为，不引入状态机）。
+    # 只在丢失时跑，一次约 25ms；固定 ROI 够用时设 0 关闭。
+    "auto_roi": 1,
+    "auto_roi_miss": 2,      # 连续丢失多少帧后触发
+    "auto_roi_every": 5,     # 最多每 N 帧触发一次
+    "auto_roi_min_area": 60, # 候选红块的最小 bbox 面积
+    "auto_roi_max_area": 800,
+    "auto_roi_max_side": 45,
+    # ---- 红占优颜色门控（灰度模式下的可选白物判据）----
     # 白色物体/白墙在灰度上与激光同样"小而亮"，灰度无解；但激光有**红色光晕**，
     # 白物体没有。这里在同一个 ROI 上再跑一次 rgb888_find_blobs（红阈值），
     # 只有"灰度候选点附近存在红色像素团"才接受，否则丢弃。
@@ -129,6 +154,9 @@ class LaserSpot:
         self.mode = "none"
         self.src = "none"
         self.status = "none"
+        self.frame = 0
+        self.miss = 0
+        self.auto_moves = 0
 
     # ---- 兼容旧接口：本轮不用先验 ----
     def load(self, path=None):
@@ -146,6 +174,61 @@ class LaserSpot:
         self.src = "none"
         self.status = "none"
 
+    def _auto_roi(self, rgb_img, t0):
+        """扫 4x3 块，找尺寸像激光的红块，把 ROI 挪过去。返回 True 表示挪了。"""
+        c = self.cfg
+        tw, th = 160, 120
+        best = None
+        best_area = 0
+        for ty in range(0, 480, th):
+            for tx in range(0, 640, tw):
+                try:
+                    a = rgb_img.crop(roi=(tx, ty, tw, th)).to_numpy_ref()
+                    dg2 = int(c.get("red_dg", 60))
+                    rmin2 = int(c.get("red_rmin", 150))
+                    m = _np.where((a[0] > rmin2) & (a[1] <= 255 - dg2) &
+                                  (a[0] > a[1] + dg2), 255, 0)
+                    raw = cv_lite.grayscale_find_blobs(
+                        [th, tw], m, 128, 255,
+                        int(c.get("auto_roi_min_area", 60)), 1)
+                except Exception:
+                    continue
+                for i in range(0, len(raw) - 3, 4):
+                    bw = raw[i + 2]
+                    bh = raw[i + 3]
+                    if bw > int(c.get("auto_roi_max_side", 45)):
+                        continue
+                    if bh > int(c.get("auto_roi_max_side", 45)):
+                        continue
+                    area = bw * bh
+                    if area > int(c.get("auto_roi_max_area", 800)):
+                        continue
+                    if area > best_area:
+                        best_area = area
+                        best = (tx + raw[i] + bw * 0.5,
+                                ty + raw[i + 1] + bh * 0.5)
+        if best is None:
+            return False
+        rw, rh = self.roi[2], self.roi[3]
+        nx = int(best[0] - rw * 0.5)
+        ny = int(best[1] - rh * 0.5)
+        if nx < 0:
+            nx = 0
+        if ny < 0:
+            ny = 0
+        if nx + rw > 640:
+            nx = 640 - rw
+        if ny + rh > 480:
+            ny = 480 - rh
+        old = self.roi
+        self.roi = (nx, ny, rw, rh)
+        self.auto_moves = getattr(self, "auto_moves", 0) + 1
+        self.miss = 0
+        if c.get("diag_mode", 0) or self.auto_moves <= 3:
+            print("laser: 自动 ROI %s -> %s (红块中心 %.0f,%.0f area=%d)"
+                  % (old, self.roi, best[0], best[1], best_area))
+        return True
+
     def _diag_pixels(self, arr, x, y, w, h):
         """诊断用：数 blob 内真实像素数（只对 <= diag_max_side 的块做）。"""
         lim = int(self.cfg.get("diag_max_side", 40))
@@ -160,6 +243,16 @@ class LaserSpot:
         return n
 
     def sample(self, gray_img, rgb_img=None):
+        """对外入口：维护 frame/miss 计数，供自动 ROI 使用。"""
+        self.frame += 1
+        r = self._sample_impl(gray_img, rgb_img)
+        if r is None:
+            self.miss += 1
+        else:
+            self.miss = 0
+        return r
+
+    def _sample_impl(self, gray_img, rgb_img=None):
         """gray_img: GRAYSCALE Image（建议 chn0）。
         rgb_img: 可选 RGBP888/RGB888 Image（同一个 ROI 用于红占优门控）。
                  不传或 red_gate=0 时不做颜色判定。
@@ -178,28 +271,52 @@ class LaserSpot:
 
         t0 = _now_ms()
         x0, y0, rw, rh = self.roi
-        # ---- ROI 裁剪（0.3ms）----
-        try:
-            sub = gray_img.crop(roi=(x0, y0, rw, rh))
-            arr = sub.to_numpy_ref()
-        except Exception as e:
-            self.status = "crop_err"
-            self.last_ms = _diff_ms(_now_ms(), t0)
-            if self.cfg.get("diag_mode", 0):
-                print("laser: crop 失败 %s" % e)
-            return None
+        use_red = (int(self.cfg.get("red_primary", 1)) and rgb_img is not None
+                   and _np is not None and cv_lite is not None)
+        if use_red:
+            self.mode = "red"
+        else:
+            self.mode = "gray"
+        # ---- 自动获取 ROI（只在持续丢失时触发）----
+        self.miss = getattr(self, "miss", 0)
+        if (use_red and int(self.cfg.get("auto_roi", 1))
+                and self.miss >= int(self.cfg.get("auto_roi_miss", 2))
+                and self.frame % int(self.cfg.get("auto_roi_every", 5)) == 0):
+            self._auto_roi(rgb_img, t0)
 
-        # ---- cv_lite（120x120 实测 0.2ms）----
-        lo, hi = self.threshold
+        arr = None
         try:
-            raw = cv_lite.grayscale_find_blobs(
-                [rh, rw], arr, lo, hi,
-                int(self.cfg["min_area"]), int(self.cfg["kernel_size"]))
+            if use_red:
+                # ---- 红掩码：uint8 比较，避免 R-G 溢出回绕 ----
+                # 注意：这里必须"整帧取数组 + 切片"，不能用 img.crop()。
+                # 实测 crop() 出来的 RGBP888 数组内容与切片不一致（对不上画面），
+                # 而整帧 to_numpy_ref() 再切片是可以精确定位的。
+                full = rgb_img.to_numpy_ref()
+                arr = full[:, y0:y0 + rh, x0:x0 + rw]
+                # 相对判据 R-G>red_dg，用 uint8 技巧绕开溢出：
+                # G<=195 时 G+60 不会回绕；G>195 时 R-G>60 不可能成立，
+                # 用 (G<=195) 这一项排掉。
+                dg = int(self.cfg.get("red_dg", 60))
+                R = arr[0]
+                G = arr[1]
+                rmin = int(self.cfg.get("red_rmin", 150))
+                mask = _np.where((R > rmin) & (G <= 255 - dg) & (R > G + dg),
+                                 255, 0)
+                raw = cv_lite.grayscale_find_blobs(
+                    [rh, rw], mask, 128, 255,
+                    int(self.cfg.get("red_min_area", 30)), 1)
+            else:
+                sub = gray_img.crop(roi=(x0, y0, rw, rh))
+                arr = sub.to_numpy_ref()
+                lo, hi = self.threshold
+                raw = cv_lite.grayscale_find_blobs(
+                    [rh, rw], arr, lo, hi,
+                    int(self.cfg["min_area"]), int(self.cfg["kernel_size"]))
         except Exception as e:
-            self.status = "cv_err"
+            self.status = "crop_err" if arr is None else "cv_err"
             self.last_ms = _diff_ms(_now_ms(), t0)
             if self.cfg.get("diag_mode", 0):
-                print("laser: cv_lite 失败 %s" % e)
+                print("laser: %s 失败 %s" % (self.mode, e))
             return None
 
         nblob = len(raw) // 4
@@ -268,7 +385,9 @@ class LaserSpot:
         # 按分数从大到小试；红占优判据不通过就试下一个候选。
         # （旧写法只试"最大那个"，一旦它被白物判据拒掉就整帧返回 None。）
         ordered = sorted(groups, key=lambda g: -_key(g))
-        gate = bool(int(self.cfg.get("red_gate", 0))) and rgb_img is not None
+        # 红掩码模式下本身就是红色，不再重复做颜色门控
+        gate = ((not use_red) and bool(int(self.cfg.get("red_gate", 0)))
+                and rgb_img is not None)
         rarr = None
         if gate:
             try:
