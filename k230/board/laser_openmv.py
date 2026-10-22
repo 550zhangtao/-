@@ -69,7 +69,7 @@ CFG = {
     # 但激光灰度只有 120~160（红通道饱和时 G/B 仍低），白物体灰度 229+。
     # 所以用 (R>red_rmin 且 G<red_gmax) 建 0/255 掩码，再交给 cv_lite 找连通域。
     # 注意必须用 uint8 比较，不能先做 R-G（uint8 相减会溢出回绕）。
-    "red_primary": 0,      # 本步验证 ROI 跟随：只走灰度      # 1=红掩码主检测；0=退回灰度
+    "red_primary": 1,      # 本步验证 ROI 跟随：只走灰度      # 1=红掩码主检测；0=退回灰度
     "red_dg": 60,          # R-G 阈值（相对判据，实测激光≈150，白物≈-10）
     # 比例判据（抗曝光漂移）：R/(R+G+B) > red_ratio 才算法是"饱和红"。
     # 与 red_rmin（绝对亮度）相比，亮度整体升降不影响判定——
@@ -83,6 +83,12 @@ CFG = {
     "step_confirm": 3,
     "jump_guard": 1,
     "acquire": 1,   # 启动全图捕获一次
+    # 直方图自适应阈值：用 ROI 的 R 通道直方图取"最亮的 1%"作为红色下限，
+    # 替代写死的 R>200（光照变化时自动跟随）。
+    "hist_thr": 1,
+    "hist_pct": 0.01,
+    "rmin_floor": 150,
+    "rmin_ceil": 245,
     "iso_band": 2,
     "iso_max": 0.35,
     "red_rmin": 200,       # 红色亮度下限。木纹墙 R≈160，激光 R≈255 ->
@@ -252,6 +258,50 @@ class LaserSpot:
             self.roi_c = (self.last_x, self.last_y)
             print("laser: 启动捕获 (%.0f,%.0f)" % best)
 
+    def _acquire_color(self, rgb_img):
+        """全图一次 R−G 扫描，挑最像激光的红色小块作为跟随起点。"""
+        c = self.cfg
+        full = rgb_img.to_numpy_ref()
+        H, W = 480, 640
+        if len(full.shape) == 3 and full.shape[0] == 3:
+            Rf, Gf, Bf = full[0], full[1], full[2]
+        else:
+            Rf = full[:, :, 0]
+            Gf = full[:, :, 1]
+            Bf = full[:, :, 2]
+        dg = int(c.get("red_dg", 60))
+        rmin = int(c.get("red_rmin", 200))
+        cond = (Rf > rmin) & (Gf <= 255 - dg) & (Rf > Gf + dg)
+        mask = _np.where(cond, 255, 0)
+        raw = cv_lite.grayscale_find_blobs([H, W], mask, 128, 255, 40, 1)
+        mx_side = int(c.get("max_side", 40))
+        mx_area = int(c.get("max_area", 600))
+        best = None
+        best_score = -1e9
+        for i in range(0, len(raw) - 3, 4):
+            bx, by, bw, bh = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
+            if bw <= 0 or bh <= 0 or bw > mx_side or bh > mx_side:
+                continue
+            area = bw * bh
+            if area > mx_area or area < 100:
+                continue
+            big = bw if bw > bh else bh
+            sml = bh if bw > bh else bw
+            asp = float(big) / float(sml) if sml else 99.0
+            if asp > 2.2:
+                continue
+            score = 100.0 - abs(asp - 1.2) * 20.0 - abs(area - 300) * 0.05
+            if score > best_score:
+                best_score = score
+                best = (bx + bw * 0.5, by + bh * 0.5)
+        if best is not None:
+            self.last_x = float(best[0])
+            self.last_y = float(best[1])
+            self.roi_c = (self.last_x, self.last_y)
+            print("laser: 颜色捕获 (%.0f,%.0f)" % best)
+        else:
+            print("laser: 颜色捕获失败，沿用起点")
+
     def _auto_roi(self, rgb_img, t0):
         """扫 4x3 块，找尺寸像激光的红块，把 ROI 挪过去。返回 True 表示挪了。"""
         c = self.cfg
@@ -373,11 +423,13 @@ class LaserSpot:
 
         t0 = _now_ms()
         # ---- 启动自动捕获（只做一次）----
-        if ((not self.acquired) and int(self.cfg.get("acquire", 1))
-                and not int(self.cfg.get("red_primary", 0))):
+        if (not self.acquired) and int(self.cfg.get("acquire", 1)):
             self.acquired = 1
             try:
-                self._acquire(gray_img)
+                if int(self.cfg.get("red_primary", 0)) and rgb_img is not None:
+                    self._acquire_color(rgb_img)
+                elif gray_img is not None:
+                    self._acquire(gray_img)
             except Exception:
                 pass
         # ---- ROI 跟随：中心 = 上一帧检测坐标 ----
@@ -446,6 +498,32 @@ class LaserSpot:
                 # 注意 ulab 没有 int32：整数用 int16 且换算成不溢出的比例式，
                 # 比例判据用 float（无溢出）。
                 rmin = int(self.cfg.get("red_rmin", 200))
+                if int(self.cfg.get("hist_thr", 0)):
+                    try:
+                        _h = cv_lite.rgb888_calc_histogram(
+                            [rh, rw], _np.array(R, dtype=_np.uint8))
+                        _hr = _h[0]
+                        _tot = 0
+                        for _v in _hr:
+                            _tot += _v
+                        _tgt = _tot * float(self.cfg.get("hist_pct", 0.01))
+                        _acc = 0
+                        _b = 255
+                        while _b > 0:
+                            _acc += _hr[_b]
+                            if _acc >= _tgt:
+                                break
+                            _b -= 1
+                        _lo = int(self.cfg.get("rmin_floor", 150))
+                        _hi = int(self.cfg.get("rmin_ceil", 245))
+                        rmin = _b
+                        if rmin < _lo:
+                            rmin = _lo
+                        if rmin > _hi:
+                            rmin = _hi
+                        self.auto_rmin = rmin
+                    except Exception:
+                        pass
                 rat = float(self.cfg.get("red_ratio", 0.0))
                 cond = (R > rmin) & (G <= 255 - dg) & (R > G + dg)
                 if rat > 0.0:
