@@ -90,10 +90,15 @@ CFG = {
     "track": 1,
     "roi_size": 120,
     "lost_reset": 30,
+    # 分级恢复的 ROI 尺寸（按连续丢失帧数）
+    "roi_lv2": 160,        # 丢失 6~15 帧
+    "roi_lv3": 200,        # 丢失 16~30 帧（改用纯面积选择）
     # 选择规则：跟随模式下"离 ROI 中心最近"比"面积最大"更稳——
     # 实测同一帧常有 3~4 个尺寸相近的候选，按面积选会在它们之间跳。
     # 1 = 按距离选（推荐）；0 = 按面积（旧行为）
-    "select_near": 1,
+    # 混合选择：面积主导，面积相近时才用距离
+    "area_dom": 1.5,       # 最大面积 > 次大 * area_dom -> 直接选最大
+    "select_near": 1,      # 1=面积相近时按距离；0=完全按面积（恢复段用）
     # 起始 ROI 中心（默认画面中心）。现场激光不在中心时，先指到它所在处，
     # 让跟随从正确的位置起步；之后完全由 last_x/last_y 接管。
     "start_x": 320.0,
@@ -320,7 +325,13 @@ class LaserSpot:
         t0 = _now_ms()
         # ---- ROI 跟随：中心 = 上一帧检测坐标 ----
         if int(self.cfg.get("track", 1)):
-            sz = int(self.cfg.get("roi_size", 120))
+            lr = int(getattr(self, "lost_run", 0))
+            if lr <= 5:
+                sz = int(self.cfg.get("roi_size", 120))
+            elif lr <= 15:
+                sz = int(self.cfg.get("roi_lv2", 160))
+            else:
+                sz = int(self.cfg.get("roi_lv3", 200))
             ccx = float(self.last_x)
             ccy = float(self.last_y)
             x0 = int(ccx - sz * 0.5)
@@ -504,66 +515,57 @@ class LaserSpot:
                 kept.append(g)
             groups = kept
 
-        ordered = sorted(groups, key=lambda g: -_key(g))
-        # 红掩码模式下本身就是红色，不再重复做颜色门控
-        gate = ((not use_red) and bool(int(self.cfg.get("red_gate", 0)))
-                and rgb_img is not None)
-        rarr = None
-        if gate:
-            try:
-                rarr = rgb_img.crop(roi=(x0, y0, rw, rh)).to_numpy_ref()
-            except Exception:
-                rarr = None          # 取不到颜色就退化成纯灰度
-                gate = False
+        # ---- 选择规则：面积为主、距离为辅（+ 恢复段纯面积）----
+        # 恢复段（连续丢失 16~30 帧）距离已不可靠，改为纯面积。
+        lr_now = int(getattr(self, "lost_run", 0))
+        recover = (lr_now > 15)
+        sel = None
         best = None
-        for g in ordered:
-            if not gate:
-                best = g
-                break
-            bw = int(g["w"])
-            bh = int(g["h"])
-            bx = int(g["cx"] - x0 - bw * 0.5)
-            by = int(g["cy"] - y0 - bh * 0.5)
-            if bx < 0:
-                bx = 0
-            if by < 0:
-                by = 0
-            if bx + bw > rw:
-                bw = rw - bx
-            if by + bh > rh:
-                bh = rh - by
-            tot = bw * bh
-            if tot < int(self.cfg.get("red_need_px", 6)) or bw <= 0 or bh <= 0:
-                best = g            # 太小，无法判定 -> 直接接受
-                break
-            dg = int(self.cfg.get("red_dg", 60))
-            rmin = int(self.cfg.get("red_rmin", 180))
-            red_n = 0
-            for yy in range(by, by + bh):
-                for xx in range(bx, bx + bw):
-                    v = rarr[0, yy, xx]
-                    if v > rmin and v - rarr[1, yy, xx] > dg:
-                        red_n += 1
-            frac = float(red_n) / float(tot)
-            self.last_red = (red_n, tot, round(frac, 2))
-            if frac >= float(self.cfg.get("red_frac", 0.5)):
-                best = g
-                break
-            self.rejected += 1      # 白物判据拒掉，继续看下一个候选
-
-        if best is None:
-            self.status = "red_reject"
+        if groups:
+            if len(groups) == 1:
+                best = groups[0]
+                sel = "recover" if recover else "area"
+            else:
+                srt = sorted(groups, key=lambda g: -float(g["area"]))
+                a1 = float(srt[0]["area"])
+                a2 = float(srt[1]["area"])
+                dom = float(self.cfg.get("area_dom", 1.5))
+                if recover or (not int(self.cfg.get("select_near", 1))):
+                    best = srt[0]
+                    sel = "recover" if recover else "area"
+                elif a1 > a2 * dom:
+                    best = srt[0]
+                    sel = "area"
+                else:
+                    # 面积相近：在相近候选里选离上一帧位置最近的
+                    lo = a1 / dom
+                    cands = [g for g in srt if float(g["area"]) >= lo]
+                    px = float(self.last_x)
+                    py = float(self.last_y)
+                    best = None
+                    bd = 1e18
+                    for g in cands:
+                        dx = g["cx"] - px
+                        dy = g["cy"] - py
+                        d = dx * dx + dy * dy
+                        if d < bd:
+                            bd = d
+                            best = g
+                    sel = "near"
+        self.sel = sel
+        if best is not None:
+            cx = best["cx"]
+            cy = best["cy"]
+        else:
+            self.status = "no_blob"
             self.mode = "none"
-            if self.cfg.get("diag_mode", 0):
-                print("  [DIAG] 全部候选都被白物判据拒掉 (red=%s)"
-                      % (getattr(self, "last_red", None),))
             self.last = None
             return None
 
-        cx, cy = best["cx"], best["cy"]
         area = best["area"]
         # conf 只是"相对面积"的可读指标，不参与任何逻辑
         conf = _clamp(area / 60.0, 0.10, 1.0)
+
         # ---- 跟随状态更新 ----
         self.last_x = float(cx)
         self.last_y = float(cy)
@@ -577,7 +579,8 @@ class LaserSpot:
         return {"x": cx, "y": cy, "conf": conf, "n": area, "red": getattr(self, "last_red", None),
                 "w": best["w"], "h": best["h"],
                 "mode": "roi", "src": "measured", "status": "ok",
-                "path": "roi", "raw": nblob, "ms": self.last_ms}
+                "path": "roi", "raw": nblob, "ms": self.last_ms,
+                "sel": sel}
 
 
 # 旧名字兼容
