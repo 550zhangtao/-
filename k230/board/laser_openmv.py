@@ -58,6 +58,9 @@ CFG = {
     # 选最大 blob 时，离 ROI 中心越远扣得越多（单帧、无状态）。
     # 0 = 纯按面积；0.35 表示最远处面积打 65 折。实测能压掉 ROI 角落的
     # 反光点（激光 273px@中心附近  vs  反光 156~300px@偏 35px）。
+    # cv_lite 没有 merge 参数：把质心相距 <= merge_px 的块当成同一光斑合并
+    # （激光常被阈值拆成 2~3 片相邻亮块，不合并会在几片之间来回跳）
+    "merge_px": 20.0,
     "center_bias": 0.35,
     "center_ref_px": 60.0,   # 距离归一化尺度
 }
@@ -176,20 +179,49 @@ class LaserSpot:
         self.raw_blobs = nblob
         self.last_ms = _diff_ms(_now_ms(), t0)      # 只算裁剪 + cv_lite
 
-        # ---- 取面积最大（cv_lite 只给外接框，用 w*h 当面积）----
+        # ---- 解析 raw -> self.blobs（cv_lite 只给外接框，用 w*h 当面积）----
+        for i in range(0, len(raw) - 3, 4):
+            bx, by, bw, bh = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
+            self.blobs.append({"x": bx, "y": by, "w": bw, "h": bh,
+                               "area": bw * bh,
+                               "cx": bx + bw * 0.5 + x0,
+                               "cy": by + bh * 0.5 + y0})
+
+        # ---- 近距离合并（模拟 OpenMV find_blobs 的 merge=True）----
+        mg = float(self.cfg.get("merge_px", 0.0) or 0.0)
+        groups = []
+        for it in self.blobs:
+            placed = False
+            if mg > 0.0:
+                for g in groups:
+                    dx = it["cx"] - g["cx"]
+                    dy = it["cy"] - g["cy"]
+                    if dx * dx + dy * dy <= mg * mg:
+                        a0 = g["area"]
+                        a1 = it["area"]
+                        tot = a0 + a1
+                        g["cx"] = (g["cx"] * a0 + it["cx"] * a1) / tot
+                        g["cy"] = (g["cy"] * a0 + it["cy"] * a1) / tot
+                        g["area"] = tot
+                        g["w"] = max(g["w"], it["w"])
+                        g["h"] = max(g["h"], it["h"])
+                        g["parts"] += 1
+                        placed = True
+                        break
+            if not placed:
+                groups.append({"cx": it["cx"], "cy": it["cy"], "w": it["w"],
+                               "h": it["h"], "area": it["area"], "parts": 1})
+        self.groups = groups
+
         bias = float(self.cfg.get("center_bias", 0.0) or 0.0)
         cref = float(self.cfg.get("center_ref_px", 60.0) or 60.0)
         ccx, ccy = x0 + rw * 0.5, y0 + rh * 0.5      # ROI 中心（原图坐标）
         best = None
         best_key = 0.0
-        for i in range(0, len(raw) - 3, 4):
-            bx, by, bw, bh = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
-            area = bw * bh
-            cx = bx + bw * 0.5 + x0
-            cy = by + bh * 0.5 + y0
-            item = {"x": bx, "y": by, "w": bw, "h": bh, "area": area,
-                    "cx": cx, "cy": cy}
-            self.blobs.append(item)
+        for item in groups:
+            area = item["area"]
+            cx = item["cx"]
+            cy = item["cy"]
             key = float(area)
             if bias > 0.0:
                 dx = cx - ccx
