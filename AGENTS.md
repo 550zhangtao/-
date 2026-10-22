@@ -13,12 +13,15 @@
 3. **训练数据集**：`recovered/dataset_pose_v3/`（最终模型用）+ `recovered/k230_target_project/`（两个父数据集）；
 4. **调试/工作模式切换脚本**：`k230/scripts/mode.sh`（根目录 `scripts/mode.sh` 转发）。
 
-> **激光识别已整体删除**（2026-10-22）：`board/laser_openmv.py`、PC 激光标定、
-> `$LS` 协议、固件里的激光三态瞄准与激光 IO **都不在了**。除非用户明确要求，
-> 不要再加回来。被删内容的快照在 `scratch/删除归档_20261022/`（被 gitignore）。
+> **旧激光识别已删除**（2026-10-22）：`board/laser_openmv.py`、PC 激光标定、
+> `$LS` 协议、固件里的激光三态瞄准与激光 IO **都不在了**，快照在
+> `scratch/删除归档_20261022/`（被 gitignore）。
+> 后来用户要求"简单地在 IDE 里看到激光点+坐标"，才加了**灰度版**：
+> `board/laser_detect_test.py` + `yolo_preview_ide.py` 里的激光图层（见第 5 节）。
+> 讨论"激光"时先分清是哪个：**旧的彩色/标定/闭环那套不要再复活**。
 >
 > 训练数据集里的"激光光斑"只是**图像增强**（让模型不把白光斑当成靶心），
-> 与板端激光识别无关。
+> 与板端激光检测无关。
 
 ---
 
@@ -140,6 +143,13 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
   80 张负样本 @0.25 误检 1/80、@0.4 误检 0；PC kmodel 评测 57/57，靶心 3.2 px；
 - **板端链路**：`$KT` 每个 AI 帧发一次（`ai_every=2`）；图像回传是
   **检测 ROI 原生像素**，没目标才发缩小全图；
+- **激光点检测（2026-10-22 加回，灰度版）**：`board/laser_detect_test.py`（独立脚本）
+  + `board/yolo_preview_ide.py`（IDE 预览里画十字和坐标）。用 `cv_lite.grayscale_find_blobs`，
+  **单独一路灰度通道 chn0**（三通道采集实测仍 57fps）；预览里激光图层让
+  22fps -> 18fps。关键参数：`THRESHOLD=(210,255)`、`MAX_PIXELS=150`、`MAX_SIDE=24`、
+  `LOCK_R=40`。教训：**阈值调太高会把 3~4px 的激光核心滤掉，反而去锁天花板灯**；
+  `KERNEL_SIZE` 必须 1（3×3 开运算会抹掉光斑）；不要逐像素泛洪拆分
+  （900px 一块 7ms，会把后处理拖到 45ms）；
 - **性能（2026-10-22 实测）**：采集 57 fps，**JPEG 编码 640×480 要 65~70 ms，
   是唯一真瓶颈**；Pose 384 推理 40~43 ms。端到端 `live` 约 11 fps（ROI 回传）。
   提速只能降**回传像素数**或隔帧：`CFG["roi_scale"]` / `live --enc-scale` /

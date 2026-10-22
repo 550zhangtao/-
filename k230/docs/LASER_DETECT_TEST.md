@@ -147,3 +147,39 @@ print(xs.mean(), ys.mean())     # 十字质心
 - 手电筒直射时整幅画面可能饱和，此时 `THRESHOLD[0]` 要提到 248~250，
   或把光斑调小/远离直射。
 - 每帧 `img.save()` 会显著掉帧，只在调试时用，且限制张数。
+
+---
+
+## 7. 在 CanMV IDE 预览里看激光（`yolo_preview_ide.py`）
+
+同一套检测逻辑已经接进 IDE 预览，**彩色画面 + 激光十字 + 坐标**可以同时看到：
+
+| 图层 | 内容 |
+| --- | --- |
+| Pose | 绿色检测框 + 四角连线 + 靶心红十字 |
+| 激光 | 黑色十字 + 圆圈 + 黑底白字 `L(cx,cy) A=<面积>` |
+
+实测（2026-10-22，288×216 预览）：**18 fps**，激光稳定在 (275,282)/(277,277)，
+Pose 靶心同时在画。加激光图层后预览从 22 fps 掉到 18 fps
+（多一路取帧 + `cv_lite` ~4ms + 文字）。
+
+### 实现要点
+
+- **单独一路灰度通道 chn0**：`perf.open_sensor(..., gray=True)` 会在
+  `MediaManager.init()`/`run()` **之前**配好 `chn0=GRAYSCALE`；
+  彩色 chn1 继续预览、chn2 送 AI。实测三通道采集仍是 **56.7 fps**，
+  不影响采集速度。
+- 参数在 `yolo_preview_ide.py` 顶部：`LASER_ENABLE` / `LASER_THRESHOLD` /
+  `LASER_MIN_PIXELS` / `LASER_AREA_THRESHOLD` / `LASER_MAX_PIXELS` /
+  `LASER_MAX_SIDE` / `LASER_LOCK_R` / `LASER_LABEL` / `LASER_LABEL_EVERY`。
+- 文字用 `draw_string`：`draw_string_advanced` 在本机固件缺字体
+  （`FreeType init failed, font (null)`）。`draw_string` 每次调用会打一条
+  `Deprecated function` 日志，所以每 `LASER_LABEL_EVERY`（默认 5）帧才重画一次；
+  嫌刷屏设 `LASER_LABEL = 0`，十字和圆圈仍然会画。
+- 坐标是 **640×480 原图坐标系**的真实值，和独立脚本打印的一致。
+
+### 已知现象
+
+- 刚启动的**前 ~20 帧**可能先锁到别的小亮点（自动曝光还没稳定、天花板灯边缘更亮），
+  之后会自己跳到激光并稳定下来。想避免这段抖动：把 `LASER_LOCK_R` 调小
+  （如 20）后再启动，或先让画面里只有激光可见。

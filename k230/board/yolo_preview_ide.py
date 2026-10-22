@@ -49,6 +49,24 @@ SENSOR_FPS = 60               # 采集帧率（GC2093 原生 1080p60，降下来
 SENSOR_FB = 3                 # 固件不支持时自动跳过
 ENC_SCALE = 0.80              # 预览图缩放：0.80 -> 512x384 更清晰，还比 640x480 快
 
+# ---- 激光点检测（cv_lite 灰度）----
+# 单独开一路灰度通道 chn0 专供检测（实测三通道采集仍是 56.7fps，不掉帧），
+# 彩色 chn1 继续做预览，所以"彩色画面 + 激光十字 + 坐标"可以同时看到。
+LASER_ENABLE = 1
+LASER_THRESHOLD = (210, 255)  # 灰度二值区间：暗背景 170~200，常光 200~225，强光 230~250
+LASER_MIN_PIXELS = 6          # 亮像素数下限
+LASER_AREA_THRESHOLD = 6      # 外接框面积下限
+LASER_MAX_PIXELS = 150        # 光斑像素上限（排除台灯/白墙/手电筒反光）
+LASER_MAX_SIDE = 24           # 外接框最长边上限
+LASER_LOCK_R = 40             # 时序锁定半径（激光相对相机固定；0=不锁）
+LASER_LOCK_LOST = 12          # 连续丢失多少帧后重新全局搜索
+LASER_EVERY = 1               # 每 N 帧做一次检测（其余帧复用上次结果）
+LASER_LABEL = 1               # 1=在十字旁画坐标文字
+LASER_LABEL_EVERY = 5         # 每 N 帧重画一次文字（draw_string 每次都会打一条
+                              #   deprecation 日志；嫌刷屏就调大，或 LASER_LABEL=0）
+LASER_CROSS_COLOR = (0, 0, 0) # 灰度/彩色画面都用黑色，压在亮光斑上最清楚
+LASER_LABEL_COLOR = (255, 255, 255)
+
 # ---- 板端绘制自检（AGENTS 要求）----
 # 每 N 帧把"叠加画好"的帧存到 /sdcard，PC 端 `k230tool pull` 拉回核对框/关键点。
 DBG_SAVE = 0                  # 0=关；调试时可改 120
@@ -80,6 +98,12 @@ try:
 except Exception as _e:
     perf = None
     print("k230_perf import failed:", _e)
+
+try:
+    import cv_lite
+except Exception as _e:
+    cv_lite = None
+    print("cv_lite 不可用，激光检测关闭:", _e)
 
 # 固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
 for _p in ("/sdcard", "/sdcard/board", "/"):
@@ -291,12 +315,126 @@ def _draw(img, res, s=1.0):
     return boxes[0]
 
 
+# ---------------------------------------------------------------- 激光点
+_laser_spot = None       # 最近一次结果 {"cx","cy","n","x","y","w","h"}
+_laser_lock = None       # 锁定的 (cx, cy)
+_laser_miss = 0
+_laser_n = 0
+
+
+def _laser_pick(cands, gray):
+    """在候选里挑激光点：峰值最亮 > 面积更小 > 离锁定点更近。"""
+    best = None
+    best_key = None
+    for c in cands:
+        if c["n"] < LASER_MIN_PIXELS or c["n"] > LASER_MAX_PIXELS:
+            continue
+        if c["w"] * c["h"] < LASER_AREA_THRESHOLD:
+            continue
+        if c["w"] > LASER_MAX_SIDE or c["h"] > LASER_MAX_SIDE:
+            continue
+        pk = _laser_peak(gray, c)
+        dx = c["cx"] - (_laser_lock[0] if _laser_lock else W * 0.5)
+        dy = c["cy"] - (_laser_lock[1] if _laser_lock else H * 0.5)
+        dist = (dx * dx + dy * dy) ** 0.5
+        key = (-pk, c["n"], dist)
+        if best_key is None or key < best_key:
+            best_key = key
+            best = c
+    return best
+
+
+def _laser_peak(gray, c, n=6):
+    """候选框内粗采样峰值（最多 n*n 点）。激光是镜面反射，峰值最高。"""
+    x, y, w, h = c["x"], c["y"], c["w"], c["h"]
+    sx = w // n if w >= n else 1
+    sy = h // n if h >= n else 1
+    pk = 0
+    yy = y
+    while yy < y + h:
+        xx = x
+        while xx < x + w:
+            v = gray[yy, xx]
+            if v > pk:
+                pk = v
+            xx += sx
+        yy += sy
+    return pk
+
+
+def _laser_detect(gray):
+    """对灰度 ndarray 跑 cv_lite，返回光斑 dict 或 None。"""
+    global _laser_lock, _laser_miss
+    raw = cv_lite.grayscale_find_blobs([H, W], gray, LASER_THRESHOLD[0],
+                                       LASER_THRESHOLD[1],
+                                       max(LASER_MIN_PIXELS, LASER_AREA_THRESHOLD),
+                                       1)
+    cands = []
+    for i in range(0, len(raw) - 3, 4):
+        rw, rh = raw[i + 2], raw[i + 3]
+        if (rw if rw > rh else rh) > LASER_MAX_SIDE:
+            continue
+        if rw * rh > LASER_MAX_PIXELS * 2:
+            continue
+        cands.append({"n": rw * rh, "x": raw[i], "y": raw[i + 1], "w": rw, "h": rh,
+                      "cx": raw[i] + rw * 0.5, "cy": raw[i + 1] + rh * 0.5})
+    # 时序锁定：先在上一帧位置附近找
+    best = None
+    if LASER_LOCK_R > 0 and _laser_lock is not None:
+        near = [c for c in cands
+                if (c["cx"] - _laser_lock[0]) ** 2 + (c["cy"] - _laser_lock[1]) ** 2
+                <= LASER_LOCK_R * LASER_LOCK_R]
+        best = _laser_pick(near, gray)
+        if best is None:
+            _laser_miss += 1
+            if _laser_miss >= LASER_LOCK_LOST:
+                _laser_lock = None
+                _laser_miss = 0
+        else:
+            _laser_miss = 0
+    if best is None:
+        best = _laser_pick(cands, gray)
+    if best is not None:
+        _laser_lock = (best["cx"], best["cy"])
+    return best
+
+
+def _draw_laser(dst, spot, sc=1.0, label=True):
+    """画十字 + 圆环 + 坐标文字（坐标是 640x480 原图系的真实值）。"""
+    if spot is None:
+        return
+    cx = int(round(spot["cx"] * sc))
+    cy = int(round(spot["cy"] * sc))
+    dst.draw_cross(cx, cy, color=LASER_CROSS_COLOR, size=max(8, int(14 * sc)),
+                   thickness=2)
+    dst.draw_circle(cx, cy, max(6, int(12 * sc)), color=LASER_CROSS_COLOR, thickness=2)
+    if not (label and LASER_LABEL):
+        return
+    txt = "L(%d,%d) A=%d" % (int(spot["cx"]), int(spot["cy"]), int(spot["n"]))
+    scale = 2 if sc > 0.5 else 1
+    tw = len(txt) * 8 * scale
+    th = 12 * scale
+    tx = cx + int(18 * sc)
+    ty = cy - th - int(6 * sc)
+    if tx + tw > dst.width() - 2:
+        tx = max(2, dst.width() - tw - 2)
+    if ty < 2:
+        ty = min(dst.height() - th - 2, cy + int(18 * sc))
+    # 先铺一块黑底再写白字：无论背景明暗都看得清
+    dst.draw_rectangle(tx - 2, ty - 2, tw + 4, th + 4, color=(0, 0, 0),
+                       thickness=1, fill=True)
+    dst.draw_string(tx, ty, txt, color=LASER_LABEL_COLOR, scale=scale)
+
+
 def main():
     global _sensor, _yolo
     if perf is not None:
         perf.apply_cpu(PERF_MODE)
         perf.ENC_SCALE = ENC_SCALE
-        _sensor = perf.open_sensor(2, W, H, framebuffers=SENSOR_FB, fps=SENSOR_FPS)
+        # gray=True 会额外开一路 chn0 灰度给激光检测
+        # （实测三通道采集仍是 ~57fps，不影响帧率）
+        _sensor = perf.open_sensor(2, W, H, framebuffers=SENSOR_FB, fps=SENSOR_FPS,
+                                   gray=(LASER_ENABLE and cv_lite is not None))
     else:
         _sensor = Sensor(id=2)
         _sensor.reset()
@@ -304,6 +442,9 @@ def main():
         _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
         _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_2)
         _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
+        if LASER_ENABLE and cv_lite is not None:
+            _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_0)
+            _sensor.set_pixformat(Sensor.GRAYSCALE, chn=CAM_CHN_ID_0)
         MediaManager.init()
         _sensor.run()
     try:
@@ -334,6 +475,16 @@ def main():
     while True:
         # 先拍显示帧，再拍 AI 帧（仅在 AI 帧执行）
         img = _sensor.snapshot(chn=CAM_CHN_ID_1)
+        # ---- 激光：每帧都取灰度帧（不取会堵管线），按 LASER_EVERY 做检测
+        global _laser_spot, _laser_n
+        if LASER_ENABLE and cv_lite is not None:
+            gimg = _sensor.snapshot(chn=CAM_CHN_ID_0)
+            if (n % LASER_EVERY) == 0:
+                try:
+                    _laser_spot = _laser_detect(gimg.to_numpy_ref())
+                except Exception as e:
+                    print("laser:", e)
+                    _laser_spot = None
         if last_res is None or (n % AI_EVERY) == 0:
             arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
             last_res = _yolo.run(arr)
@@ -359,12 +510,16 @@ def main():
                 sc = (d[0] / float(W)) if d else VIEW_SCALE
                 disp = img.copy(x_scale=sc, y_scale=sc)
                 _draw(disp, res, sc)
+                _draw_laser(disp, _laser_spot, sc,
+                            label=(n % LASER_LABEL_EVERY) == 0)
                 if d:
                     disp.compress_for_ide(x_size=d[0], y_size=d[1], quality=IDE_QUALITY)
                 else:
                     disp.compress_for_ide(quality=IDE_QUALITY)
             else:
                 _draw(img, res)
+                _draw_laser(img, _laser_spot, 1.0,
+                            label=(n % LASER_LABEL_EVERY) == 0)
                 roi = None
                 if res and res[0]:
                     b = res[0][0]
@@ -416,7 +571,13 @@ def main():
                         by = int(kp[13])
                 except Exception:
                     pass
-            print("[%d] %.1ffps %s bull (%d,%d)" % (n, fps, tg, bx, by))
+            if _laser_spot is not None:
+                lz = "laser (%d,%d) A=%d" % (int(_laser_spot["cx"]),
+                                             int(_laser_spot["cy"]),
+                                             int(_laser_spot["n"]))
+            else:
+                lz = "laser -"
+            print("[%d] %.1ffps %s bull (%d,%d) %s" % (n, fps, tg, bx, by, lz))
         if (n & 0x0F) == 0:
             gc.collect()
 

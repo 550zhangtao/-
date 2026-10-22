@@ -49,9 +49,10 @@ from media.media import MediaManager
 # 产生的 Sensor / CAM_CHN_ID_* **不会**出现在这里，必须自己 import。
 # （2026-10-22 实测：漏了这行 -> NameError: name 'Sensor' isn't defined）
 try:
-    from media.sensor import Sensor, CAM_CHN_ID_1, CAM_CHN_ID_2
+    from media.sensor import Sensor, CAM_CHN_ID_0, CAM_CHN_ID_1, CAM_CHN_ID_2
 except Exception:            # 个别固件常量名不同，回落到数字
     from media.sensor import Sensor
+    CAM_CHN_ID_0 = 0
     CAM_CHN_ID_1 = 1
     CAM_CHN_ID_2 = 2
 
@@ -128,7 +129,8 @@ def apply_cpu(mode=None):
     return mode
 
 
-def open_sensor(sensor_id=2, w=640, h=480, framebuffers=None, fps=None):
+def open_sensor(sensor_id=2, w=640, h=480, framebuffers=None, fps=None,
+                gray=False):
     """统一口径打开双通道相机，返回已 run() 的 Sensor。
 
     通道 1 = RGB565（预览/编码，比 RGB888 编码快 12 ms）；
@@ -151,6 +153,11 @@ def open_sensor(sensor_id=2, w=640, h=480, framebuffers=None, fps=None):
     # 通道 2：AI
     sen.set_framesize(w=w, h=h, chn=CAM_CHN_ID_2)
     sen.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
+    # 通道 0：灰度（给 cv_lite 激光检测用）**必须在 init/run 之前配好**，
+    # 否则 snapshot(chn=0) 会报 failed(3)。
+    if gray:
+        sen.set_framesize(w=w, h=h, chn=CAM_CHN_ID_0)
+        sen.set_pixformat(Sensor.GRAYSCALE, chn=CAM_CHN_ID_0)
     MediaManager.init()
     sen.run()
     return sen

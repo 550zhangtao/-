@@ -203,7 +203,15 @@ bash scripts/mode.sh reset    # 保持当前模式真软复位（machine.reset +
 2. 打开 CanMV IDE，连接板子
 3. 打开 `board/yolo_preview_ide.py`，按运行
 
-画面：**检测框 + 四个角点轮廓 + 靶心红十字**。默认配置：
+画面里同时有两层结果：
+
+| 图层 | 内容 |
+| --- | --- |
+| Pose | 绿色检测框 + 四角连线 + 靶心红十字 |
+| **激光** | 黑色十字 + 圆圈 + 黑底白字坐标 `L(cx,cy) A=<像素面积>` |
+
+激光坐标是 **640×480 原图坐标系**的真实值，和 `/sdcard/laser_detect_test.py`
+打印的完全一致。默认配置：
 
 ```python
 MODEL = "/sdcard/models/pose_v3_384.kmodel"   # 384 输入，远小靶更准
@@ -213,6 +221,10 @@ IDE_QUALITY = 70                              # 预览 JPEG 质量
 CONF = 0.25
 PERF_MODE = "performance"                     # 板端 CPU 频率（见 k230_perf.py）
 SENSOR_FB = 3                                 # 相机帧缓冲
+LASER_ENABLE = 1                              # 1=预览里也检测激光并画坐标
+LASER_THRESHOLD = (210, 255)                  # 激光灰度阈值（按现场调）
+LASER_MAX_PIXELS = 150                        # 光斑像素上限（排除灯/白墙）
+LASER_LABEL_EVERY = 5                         # 每 N 帧重画一次坐标文字
 ```
 
 实现要点（踩过的坑见 `AGENTS.md`）：
@@ -225,6 +237,19 @@ SENSOR_FB = 3                                 # 相机帧缓冲
   `[30] 19.0fps target 0.71 bull (243,405)`；
 - 每 N 帧可把"画好的帧"存到 `/sdcard/pose_preview_dbg.jpg`
   （`DBG_SAVE`，默认 0），用 `k230tool pull` 拉回核对绘制是否正确。
+
+### 5.3 激光图层的实现要点
+
+- **单独开一路灰度通道 chn0** 给 `cv_lite.grayscale_find_blobs`（彩色 chn1 继续做预览、
+  chn2 送 AI）。实测三通道采集仍是 **56.7 fps**，不掉帧；`chn0` 必须在
+  `MediaManager.init()`/`run()` **之前**配好，否则 `snapshot(chn=0) failed(3)`。
+- 阈值 `LASER_THRESHOLD` 和独立脚本 `laser_detect_test.py` 是同一套语义
+  （`MIN_PIXELS` / `AREA_THRESHOLD` / `MAX_PIXELS` / `MAX_SIDE` / `LOCK_R`）。
+- 文字用 `draw_string`（`draw_string_advanced` 在本机固件缺字体，会报
+  `FreeType init failed`）。它每次调用会打一条 `Deprecated function` 日志，
+  所以文字每 `LASER_LABEL_EVERY` 帧才重画一次；嫌刷屏就 `LASER_LABEL = 0`
+  （十字仍然画）。
+- 加了激光检测后预览 **22 fps → 18 fps**（多一路取帧 + cv_lite ~4ms + 文字）。
 
 > 停止脚本后板子会自动复位（KPU 析构死锁，复位最干净）。
 
