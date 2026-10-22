@@ -52,7 +52,7 @@ DIAG_MODE = False
 
 CFG = {
     # ROI：画面中心 120x120（640x480 中心是 (320,240)，左上角 = 中心 - 60）
-    "roi": (295, 207, 100, 100),
+    "roi": (315, 135, 100, 100),
     # 灰度阈值。实测扫描（本机现场）：200~220 选中的是激光；230~240 时激光会
     # 被拆成两片、反光反而面积最大 -> 选错；245 只剩激光碎片。取 220 留余量。
     "threshold": (220, 255),
@@ -189,14 +189,27 @@ class LaserSpot:
         tw, th = 160, 120
         best = None
         best_area = 0
+        try:
+            _full = rgb_img.to_numpy_ref()      # 必须整帧取再切片：
+        except Exception:                        # crop() 对 RGBP888 不可靠
+            return False
         for ty in range(0, 480, th):
             for tx in range(0, 640, tw):
                 try:
-                    a = rgb_img.crop(roi=(tx, ty, tw, th)).to_numpy_ref()
+                    a = _full[:, ty:ty + th, tx:tx + tw]
                     dg2 = int(c.get("red_dg", 60))
                     rmin2 = int(c.get("red_rmin", 150))
-                    m = _np.where((a[0] > rmin2) & (a[1] <= 255 - dg2) &
-                                  (a[0] > a[1] + dg2), 255, 0)
+                    rat2 = float(c.get("red_ratio", 0.0))
+                    Rr = a[0]
+                    Gg = a[1]
+                    cond2 = ((Rr > rmin2) & (Gg <= 255 - dg2) &
+                             (Rr > Gg + dg2))
+                    if rat2 > 0.0:
+                        R2 = _np.array(Rr, dtype=_np.float)
+                        S2 = (R2 + _np.array(Gg, dtype=_np.float)
+                              + _np.array(a[2], dtype=_np.float))
+                        cond2 = cond2 & (R2 > rat2 * S2)
+                    m = _np.where(cond2, 255, 0)
                     raw = cv_lite.grayscale_find_blobs(
                         [th, tw], m, 128, 255,
                         int(c.get("auto_roi_min_area", 60)), 1)
