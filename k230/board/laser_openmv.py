@@ -52,7 +52,7 @@ DIAG_MODE = False
 
 CFG = {
     # ROI：画面中心 120x120（640x480 中心是 (320,240)，左上角 = 中心 - 60）
-    "roi": (207, 168, 80, 80),
+    "roi": (295, 207, 100, 100),
     # 灰度阈值。实测扫描（本机现场）：200~220 选中的是激光；230~240 时激光会
     # 被拆成两片、反光反而面积最大 -> 选错；245 只剩激光碎片。取 220 留余量。
     "threshold": (220, 255),
@@ -71,14 +71,23 @@ CFG = {
     # 注意必须用 uint8 比较，不能先做 R-G（uint8 相减会溢出回绕）。
     "red_primary": 1,      # 1=红掩码主检测；0=退回灰度
     "red_dg": 60,          # R-G 阈值（相对判据，实测激光≈150，白物≈-10）
-    "red_rmin": 200,       # 红色亮度下限。木纹墙 R≈160，激光 R≈255 ->
+    # 比例判据（抗曝光漂移）：R/(R+G+B) > red_ratio 才算法是"饱和红"。
+    # 与 red_rmin（绝对亮度）相比，亮度整体升降不影响判定——
+    # 木墙 L 从 160 变到 230，R/sum 都稳定在 0.37 < 0.45。
+    # 实测：激光红晕 0.545 | 白物 0.324 | 木墙 0.372 | 红袋 0.547
+    "red_ratio": 0.45,
+    # 孤立性：激光是孤立的点，红袋子是大片红。检查候选 bbox 外圈 band 像素
+    # 内仍然"红"的比例，超过 iso_max 就判定它嵌在大片红色里，丢弃。
+    "iso_band": 2,
+    "iso_max": 0.35,
+    "red_rmin": 240,       # 红色亮度下限。木纹墙 R≈160，激光 R≈255 ->
                            # 调到 200 可把木纹/棕墙排除（实测关键）
     "red_gmax": 110,       # 已不用；保留配置兼容
     "red_min_area": 40,    # 掩码连通域最小面积（像素）
     # 自动获取 ROI：连续 miss 到阈值后，把画面切成 4x3 块逐块建红掩码，
     # 找到"尺寸像激光"的红块就把 ROI 挪过去（单帧行为，不引入状态机）。
     # 只在丢失时跑，一次约 25ms；固定 ROI 够用时设 0 关闭。
-    "auto_roi": 1,
+    "auto_roi": 0,
     "auto_roi_miss": 2,      # 连续丢失多少帧后触发
     "auto_roi_every": 5,     # 最多每 N 帧触发一次
     "auto_roi_min_area": 60, # 候选红块的最小 bbox 面积
@@ -299,9 +308,26 @@ class LaserSpot:
                 dg = int(self.cfg.get("red_dg", 60))
                 R = arr[0]
                 G = arr[1]
-                rmin = int(self.cfg.get("red_rmin", 150))
-                mask = _np.where((R > rmin) & (G <= 255 - dg) & (R > G + dg),
-                                 255, 0)
+                # 注意 ulab 没有 int32：整数用 int16 且换算成不溢出的比例式，
+                # 比例判据用 float（无溢出）。
+                rmin = int(self.cfg.get("red_rmin", 200))
+                rat = float(self.cfg.get("red_ratio", 0.0))
+                cond = (R > rmin) & (G <= 255 - dg) & (R > G + dg)
+                if rat > 0.0:
+                    # R/(R+G+B) > rat  <=>  R*20 > 9*(R+G+B)（rat=0.45 的等价式，
+                    # 两端都 < 6900，int16 安全）；其他 rat 用 float 兜底。
+                    if abs(rat - 0.45) < 1e-6:
+                        R16 = _np.array(R, dtype=_np.int16)
+                        S16 = (R16 + _np.array(G, dtype=_np.int16)
+                               + _np.array(arr[2], dtype=_np.int16))
+                        cond = cond & (R16 * 20 > S16 * 9)
+                    else:
+                        Rf = _np.array(R, dtype=_np.float)
+                        Sf = (Rf + _np.array(G, dtype=_np.float)
+                              + _np.array(arr[2], dtype=_np.float))
+                        cond = cond & (Rf > rat * Sf)
+                mask = _np.where(cond, 255, 0)
+                self._cond = cond
                 raw = cv_lite.grayscale_find_blobs(
                     [rh, rw], mask, 128, 255,
                     int(self.cfg.get("red_min_area", 30)), 1)
@@ -384,6 +410,37 @@ class LaserSpot:
 
         # 按分数从大到小试；红占优判据不通过就试下一个候选。
         # （旧写法只试"最大那个"，一旦它被白物判据拒掉就整帧返回 None。）
+        # ---- 孤立性过滤：去掉嵌在大片红色里的碎片（红袋子）----
+        iso_band = int(self.cfg.get("iso_band", 0) or 0)
+        iso_max = float(self.cfg.get("iso_max", 1.0))
+        cond_arr = getattr(self, "_cond", None)
+        if iso_band > 0 and cond_arr is not None and groups:
+            kept = []
+            for g in groups:
+                gw = int(g["w"])
+                gh = int(g["h"])
+                gx = int(g["cx"] - x0 - gw * 0.5)
+                gy = int(g["cy"] - y0 - gh * 0.5)
+                tot_b = 0
+                red_b = 0
+                for yy in range(gy - iso_band, gy + gh + iso_band):
+                    if yy < 0 or yy >= rh:
+                        continue
+                    for xx in range(gx - iso_band, gx + gw + iso_band):
+                        if xx < 0 or xx >= rw:
+                            continue
+                        # 只统计 bbox 之外的 ring
+                        if gx <= xx < gx + gw and gy <= yy < gy + gh:
+                            continue
+                        tot_b += 1
+                        if cond_arr[yy, xx]:
+                            red_b += 1
+                if tot_b and float(red_b) / float(tot_b) > iso_max:
+                    self.rejected += 1
+                    continue
+                kept.append(g)
+            groups = kept
+
         ordered = sorted(groups, key=lambda g: -_key(g))
         # 红掩码模式下本身就是红色，不再重复做颜色门控
         gate = ((not use_red) and bool(int(self.cfg.get("red_gate", 0)))
