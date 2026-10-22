@@ -31,6 +31,7 @@ k230/
 │   ├── gimbal_agent.py        离线常驻代理（ESP32 START/STOP 指挥）
 │   ├── k230_perf.py           板端性能单点入口（CPU 频率 / 相机帧缓冲）
 │   ├── stream_camera.py       采图 -> JPEG -> USB
+│   ├── laser_detect_test.py   ★ 独立激光点检测测试（cv_lite 灰度，不依赖 YOLO）
 │   └── uart_test_k230.py / uart_pin_diag.py   接线自检
 ├── tools/                     Pose 标注/训练/转换/评估
 │   ├── pose_label.html        ★ 5 关键点浏览器标注工具

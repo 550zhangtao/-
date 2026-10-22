@@ -131,6 +131,7 @@ python3 tools/compile_kmodel.py --onnx models/pose_v3_384.onnx --out models/pose
 - [k230/docs/K230_ESP32_UART.md](k230/docs/K230_ESP32_UART.md) —— `$KT` / `$E` 协议
 - [k230/docs/YOLOV8_DEPLOY.md](k230/docs/YOLOV8_DEPLOY.md) —— 训练 → ONNX → kmodel → 板端
 - [k230/docs/POSE_ANNOTATION.md](k230/docs/POSE_ANNOTATION.md) —— 5 关键点标注规范
+- [k230/docs/LASER_DETECT_TEST.md](k230/docs/LASER_DETECT_TEST.md) —— 激光点检测测试（cv_lite 灰度，独立脚本）
 - [k230/docs/ARCHITECTURE.md](k230/docs/ARCHITECTURE.md) / [TROUBLESHOOTING.md](k230/docs/TROUBLESHOOTING.md)
 - [k230/README.md](k230/README.md) —— K230 USB 工具链细节
 
