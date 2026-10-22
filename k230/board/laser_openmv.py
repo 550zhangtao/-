@@ -59,6 +59,22 @@ CFG = {
     # （白色圆柱边缘 7x9=63px 与激光同尺寸，尺寸上无法区分，见文档说明）
     "max_side": 40,
     "max_area": 600,
+    # ---- 红占优颜色门控（可选，需同时传入 RGB888 图像）----
+    # 白色物体/白墙在灰度上与激光同样"小而亮"，灰度无解；但激光有**红色光晕**，
+    # 白物体没有。这里在同一个 ROI 上再跑一次 rgb888_find_blobs（红阈值），
+    # 只有"灰度候选点附近存在红色像素团"才接受，否则丢弃。
+    # 实测 120x120 的 rgb888_find_blobs 只要 ~1ms。
+    # 0 = 关闭（只传灰度图时自动关闭）
+    "red_gate": 1,
+    # 判据：候选 blob **自己的 bbox 内**，满足 (R-G>red_dg 且 R>red_rmin) 的
+    # 像素占比 >= red_frac。实测（真实帧）：
+    #   激光 100% | 白色圆柱 1% | 笔电白屏 0% | 白瓶 0%
+    # 取 0.35 留余量（激光光晕弱时比例会下降，白物很难超过 0.2）。
+    # 比"按红色团距离/bbox 包含"稳得多——红色背景会把这些几何判据全污染。
+    "red_dg": 60,
+    "red_rmin": 180,
+    "red_frac": 0.35,
+    "red_need_px": 6,        # bbox 太小(<6px)时不做判定
     "diag_max_side": 40,  # 诊断时只对这么大的 blob 数真实像素，避免开销
     # 选最大 blob 时，离 ROI 中心越远扣得越多（单帧、无状态）。
     # 0 = 纯按面积；0.35 表示最远处面积打 65 折。实测能压掉 ROI 角落的
@@ -143,12 +159,17 @@ class LaserSpot:
                     n += 1
         return n
 
-    def sample(self, gray_img):
-        """gray_img: GRAYSCALE Image（建议 chn0）。返回 dict 或 None。"""
+    def sample(self, gray_img, rgb_img=None):
+        """gray_img: GRAYSCALE Image（建议 chn0）。
+        rgb_img: 可选 RGBP888/RGB888 Image（同一个 ROI 用于红占优门控）。
+                 不传或 red_gate=0 时不做颜色判定。
+        返回 dict 或 None。
+        """
         self.last_ms = 0
         self.raw_blobs = 0
         self.blobs = []
         self.rejected = 0
+        self.last_red = None
         self.candidates = 0
         if cv_lite is None:
             self.mode = "none"
@@ -231,40 +252,73 @@ class LaserSpot:
         bias = float(self.cfg.get("center_bias", 0.0) or 0.0)
         cref = float(self.cfg.get("center_ref_px", 60.0) or 60.0)
         ccx, ccy = x0 + rw * 0.5, y0 + rh * 0.5      # ROI 中心（原图坐标）
-        best = None
-        best_key = 0.0
-        for item in groups:
-            area = item["area"]
-            cx = item["cx"]
-            cy = item["cy"]
-            key = float(area)
+
+        def _key(g):
+            k = float(g["area"])
             if bias > 0.0:
-                dx = cx - ccx
-                dy = cy - ccy
+                dx = g["cx"] - ccx
+                dy = g["cy"] - ccy
                 d = (dx * dx + dy * dy) ** 0.5
                 f = d / cref
                 if f > 1.0:
                     f = 1.0
-                key = float(area) * (1.0 - bias * f)
-            item["key"] = key
-            if best is None or key > best_key:
-                best_key = key
-                best = item
+                k = float(g["area"]) * (1.0 - bias * f)
+            return k
 
-        if self.cfg.get("diag_mode", 0):
-            print("[DIAG] roi=%s thr=%s raw=%d lms=%.1fms"
-                  % (self.roi, self.threshold, nblob, self.last_ms))
-            for it in self.blobs:
-                px = self._diag_pixels(arr, it["x"], it["y"], it["w"], it["h"])
-                print("  [DIAG] blob cx=%.0f cy=%.0f w=%d h=%d area=%d pixels=%s"
-                      % (it["cx"], it["cy"], it["w"], it["h"], it["area"],
-                         "n/a" if px < 0 else px))
+        # 按分数从大到小试；红占优判据不通过就试下一个候选。
+        # （旧写法只试"最大那个"，一旦它被白物判据拒掉就整帧返回 None。）
+        ordered = sorted(groups, key=lambda g: -_key(g))
+        gate = bool(int(self.cfg.get("red_gate", 0))) and rgb_img is not None
+        rarr = None
+        if gate:
+            try:
+                rarr = rgb_img.crop(roi=(x0, y0, rw, rh)).to_numpy_ref()
+            except Exception:
+                rarr = None          # 取不到颜色就退化成纯灰度
+                gate = False
+        best = None
+        for g in ordered:
+            if not gate:
+                best = g
+                break
+            bw = int(g["w"])
+            bh = int(g["h"])
+            bx = int(g["cx"] - x0 - bw * 0.5)
+            by = int(g["cy"] - y0 - bh * 0.5)
+            if bx < 0:
+                bx = 0
+            if by < 0:
+                by = 0
+            if bx + bw > rw:
+                bw = rw - bx
+            if by + bh > rh:
+                bh = rh - by
+            tot = bw * bh
+            if tot < int(self.cfg.get("red_need_px", 6)) or bw <= 0 or bh <= 0:
+                best = g            # 太小，无法判定 -> 直接接受
+                break
+            dg = int(self.cfg.get("red_dg", 60))
+            rmin = int(self.cfg.get("red_rmin", 180))
+            red_n = 0
+            for yy in range(by, by + bh):
+                for xx in range(bx, bx + bw):
+                    v = rarr[0, yy, xx]
+                    if v > rmin and v - rarr[1, yy, xx] > dg:
+                        red_n += 1
+            frac = float(red_n) / float(tot)
+            self.last_red = (red_n, tot, round(frac, 2))
+            if frac >= float(self.cfg.get("red_frac", 0.5)):
+                best = g
+                break
+            self.rejected += 1      # 白物判据拒掉，继续看下一个候选
 
         if best is None:
-            self.last = None
+            self.status = "red_reject"
             self.mode = "none"
-            self.src = "none"
-            self.status = "none"
+            if self.cfg.get("diag_mode", 0):
+                print("  [DIAG] 全部候选都被白物判据拒掉 (red=%s)"
+                      % (getattr(self, "last_red", None),))
+            self.last = None
             return None
 
         cx, cy = best["cx"], best["cy"]
@@ -277,7 +331,7 @@ class LaserSpot:
         self.mode = "roi"
         self.src = "measured"
         self.status = "ok"
-        return {"x": cx, "y": cy, "conf": conf, "n": area,
+        return {"x": cx, "y": cy, "conf": conf, "n": area, "red": getattr(self, "last_red", None),
                 "w": best["w"], "h": best["h"],
                 "mode": "roi", "src": "measured", "status": "ok",
                 "path": "roi", "raw": nblob, "ms": self.last_ms}

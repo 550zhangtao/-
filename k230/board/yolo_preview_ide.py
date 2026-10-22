@@ -467,7 +467,13 @@ def main():
             gimg = _sensor.snapshot(chn=CAM_CHN_ID_0)
             if (n % LASER_EVERY) == 0:
                 try:
-                    _ls = _laser.sample(gimg)
+                    # 传一路 RGB888 给"白物判据"（bbox 内红占优），
+                    # 没有它也能跑，只是无法区分白墙/白纸和激光。
+                    try:
+                        _rgb = _sensor.snapshot(chn=CAM_CHN_ID_2)
+                    except Exception:
+                        _rgb = None
+                    _ls = _laser.sample(gimg, _rgb)
                     _laser_ms = int(getattr(_laser, "last_ms", 0))
                     if _ls is not None:
                         _laser_spot = {"cx": _ls["x"], "cy": _ls["y"],
