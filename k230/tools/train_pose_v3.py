@@ -16,9 +16,9 @@ mosaic（最后 8 轮关闭）、适度 scale/translate/degrees、HSV、AdamW + 
 用法：
     python3 tools/train_pose_v3.py \
         --data ../recovered/dataset_pose_v3/data.yaml \
-        --weights models/spot_v1.pt \
+        --weights models/pose_v3.pt \
         --epochs 40 --imgsz 320 --batch 16 --device cpu \
-        --project ../recovered/runs_v3 --name pose_v3
+        --project ../runs --name pose_v3
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def main(argv=None) -> int:
     ap.add_argument("--patience", type=int, default=12)
     ap.add_argument("--freeze", type=int, default=0,
                     help="冻结前 N 层（0=全量微调；小数据集可先 10）")
-    ap.add_argument("--project", default="../recovered/runs_v3")
+    ap.add_argument("--project", default="../runs")
     ap.add_argument("--name", default="pose_v3")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-cache", action="store_true")

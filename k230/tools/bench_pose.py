@@ -17,8 +17,8 @@
 用法
 ----
     python3 tools/bench_pose.py \
-        --weights models/poseB_farhead_merged.pt models/spot_v1.pt \
-        --data recovered/dataset_pose_spot \
+        --weights models/pose_v3.pt \
+        --data recovered/dataset_pose_v3 \
         --neg-data recovered/k230_target_project/dataset_pose_farneg_B \
         --splits test val --confs 0.1 0.25 0.4 --spot-copies 2 --out bench.json
 """

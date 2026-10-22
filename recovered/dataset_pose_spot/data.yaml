@@ -1,8 +1,0 @@
-path: /home/khalil/personal_prj/-/recovered/dataset_pose_spot
-train: images/train
-val: images/val
-test: images/test
-nc: 1
-names: ['target']
-kpt_shape: [5, 3]
-flip_idx: [1, 0, 3, 2, 4]

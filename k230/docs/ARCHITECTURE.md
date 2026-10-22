@@ -88,8 +88,8 @@ CFG = {'w':640,'h':480,'q':70,'fmt':'rgb565','mirror':0,'flip':0,
 
 ```python
 CFG = {'w':640,'h':480,'q':70,'aw':640,'ah':480,
-       'model':'/sdcard/models/v2_std1.kmodel','labels':['target'],
-       'in_w':320,'in_h':320,'conf':0.25,'nms':0.45,'max_boxes':20,
+       'model':'/sdcard/models/pose_v3_256.kmodel','labels':['target'],
+       'in_w':256,'in_h':256,'conf':0.25,'nms':0.45,'max_boxes':20,
        'fps':0,'stats':10,'limit':0,'sensor_id':2,'reset_on_exit':1}
 ```
 

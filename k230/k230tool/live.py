@@ -79,19 +79,26 @@ def build_cfg(args) -> Dict[str, object]:
             "nms": args.nms,
             "kp_num": 5, "kp_dim": 3,
             "max_boxes": 20,
+            "ai_every": args.ai_every,
             "jpeg_every": args.jpeg_every,
             "full_every": args.full_every,
             "roi_pad": args.roi_pad,
             "roi_min": args.roi_min,
             "roi_max": args.roi_max,
-            "laser_enable": 1, "laser_every": 1,
-            "laser_roi_rad": 12,
-            # USB live 不是 R2 瞄准态：不做受限重捕（只有 R2 代理才打开）
-            "laser_budget_ms": 12, "laser_lead_ms": 50, "laser_ab_alpha": 0.45, "laser_ab_beta": 0.10,
+            # 回传 JPEG 质量与板端性能（见 board/k230_perf.py）；None = 用板端默认
+            # 性能/编码键：没显式指定就不下发，沿用 board/k230_perf.py 的默认值
+            "jpeg_q": args.jpeg_q,
+            "enc_scale": args.enc_scale,
+            "perf_mode": args.perf,
+            "perf_fb": args.perf_fb,
             "reset_on_exit": 1,
             "uart_enable": 1, "uart_id": 3, "uart_tx": 32, "uart_rx": 33,
             "uart_baud": 115200,
         })
+        # None = 没指定；不要让 None 覆盖板端默认值（板端会 int(None) 报错）
+        for _k in ("jpeg_q", "enc_scale", "perf_mode", "perf_fb"):
+            if cfg.get(_k) is None:
+                del cfg[_k]
     return cfg
 
 
@@ -119,6 +126,7 @@ class Live:
         self.last_frame_ts = 0.0
         self.frame_times: Deque[float] = deque(maxlen=30)
         self.total = 0
+        self._last_geo = {}          # 最近一次带 JPEG 的 roi/jpeg 几何
         self.history_saved = 0
         self.last_history = 0.0
         self.last_state = 0.0
@@ -156,16 +164,14 @@ class Live:
         now = time.time()
         st = self.stream
         target = st.detections(self.last_seq) if (st and not self.args.no_ai) else None
+        geo = self._geo(target)
         dets = []
         bull = None
         kpts = None
-        laser = None
         if target:
             names = target.get("labels") or self.labels
             if target.get("bull"):
                 bull = target["bull"]
-            if target.get("laser"):
-                laser = target["laser"]
             kpts = target.get("kp")
             for item in target.get("det") or []:
                 try:
@@ -185,7 +191,7 @@ class Live:
             "seq": self.last_seq,
             "age_ms": round((now - self.last_frame_ts) * 1000.0, 1) if self.last_frame_ts else None,
             "fps": round(self._fps(), 2),
-            "size": [self.args.width, self.args.height],
+            "size": [geo.get("w") or self.args.width, geo.get("h") or self.args.height],
             "jpeg_bytes": None,
             "connected": connected,
             "total_frames": self.total,
@@ -194,15 +200,13 @@ class Live:
             "labels": self.labels,
             "detections": dets,
             "bull": bull,
-            "laser": laser,
             "kpts": kpts,
-            "roi": target.get("roi") if target else None,
-            "jpeg": target.get("jpeg") if target else None,
+            "roi": geo.get("roi"),
+            "jpeg": geo.get("jpeg"),
             "infer_ms": target.get("ms") if target else None,
             "s1_ms": target.get("s1") if target else None,
             "s2_ms": target.get("s2") if target else None,
             "jpg_ms": target.get("jpg") if target else None,
-            "laser_ms": target.get("lms") if target else None,
             "loop_ms": target.get("loop") if target else None,
             "uart_ms": target.get("uart") if target else None,
             "post_ms": target.get("post") if target else None,
@@ -246,6 +250,27 @@ class Live:
                     old.unlink()
                 except OSError:
                     pass
+
+    def _apply_target(self, target) -> None:
+        """实时把板端每帧里的 roi / jpeg 尺寸同步到 state。
+
+        ROI 模式下图像回传是隔帧的（jpeg_every=2），若只在写 latest.json 时从
+        最新目标取，约一半概率拿到"本帧没有 JPEG"的那条 -> roi/jpeg=None ->
+        叠加层按全图缩放，框/靶心会整体错位。这里用最近一次有 JPEG 的目标。
+        """
+        if not isinstance(target, dict):
+            return
+        geo = {k: target.get(k) for k in ("w", "h", "roi", "jpeg")}
+        if geo["roi"] is not None and geo["jpeg"] is not None:
+            self._last_geo = geo
+
+    def _geo(self, target):
+        geo = dict(self._last_geo or {})
+        if isinstance(target, dict):
+            for k in ("w", "h", "roi", "jpeg", "labels", "task"):
+                if target.get(k) is not None:
+                    geo[k] = target.get(k)
+        return geo
 
     def _write(self, connected: bool = True):
         state = self._state(connected)
@@ -300,6 +325,7 @@ class Live:
                     self.total += 1
                     target = (self.stream.detections(idx)
                               if not self.args.no_ai else None)
+                    self._apply_target(target)
                     self._save_frame(jpeg, idx, target)
                     if now - self.last_state >= self.args.json_every:
                         self._write(connected=True)
@@ -429,7 +455,17 @@ def _add_live_args(p):
     p.add_argument("--model", default=None, help="板端 kmodel 路径")
     p.add_argument("--labels", default=None, help="逗号分隔，如 target")
     p.add_argument("--labels-file", default=None, help="标签文件（每行一个或 JSON）")
-    p.add_argument("--input-size", type=int, default=320, help="kmodel 输入尺寸")
+    p.add_argument("--input-size", type=int, default=384, help="kmodel 输入尺寸")
+    p.add_argument("--jpeg-q", type=int, default=None,
+                   help="回传 JPEG 质量（默认沿用板端 --q；图像 ROI 建议 88~92）")
+    p.add_argument("--enc-scale", type=float, default=None,
+                   help="回传图缩放（默认沿用板端 0.80 -> 512x384；1.0 = 原生，帧率减半）")
+    p.add_argument("--perf", choices=("auto", "balanced", "performance"), default=None,
+                   help="板端 CPU 频率档位（默认沿用板端配置，通常 performance）")
+    p.add_argument("--perf-fb", type=int, default=None,
+                   help="相机帧缓冲个数（3 更稳，内存紧张用 0 = 固件默认）")
+    p.add_argument("--ai-every", type=int, default=2,
+                   help="每 N 帧跑一次 Pose 推理（1=每帧，2=隔帧，省一半推理）")
     p.add_argument("--jpeg-every", type=int, default=2,
                    help="每 N 帧回传一张图（结果 JSON 每帧都发）")
     p.add_argument("--full-every", type=int, default=30,

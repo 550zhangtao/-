@@ -96,6 +96,7 @@ def main(argv=None) -> int:
     ap.add_argument("--split", default="test")
     ap.add_argument("--kpt", type=int, default=5)
     ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--imgsz", type=int, default=320)
     ap.add_argument("--gt-data", default=None)
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
@@ -121,7 +122,7 @@ def main(argv=None) -> int:
         if im is None:
             continue
         ih, iw = im.shape[:2]
-        x, s, px, py = letterbox(im, 320)
+        x, s, px, py = letterbox(im, args.imgsz)
         sim.set_input_tensor(0, nncase.RuntimeTensor.from_numpy(x))
         sim.run()
         y = sim.get_output_tensor(0).to_numpy()[0]

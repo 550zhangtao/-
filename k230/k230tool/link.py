@@ -90,9 +90,9 @@ DEFAULT_CFG: Dict[str, object] = {
 # YOLOv8-Pose 板端默认参数（会被写进 yolo_pose.py 顶部 CFG 行）
 POSE_DEFAULT_CFG: Dict[str, object] = {
     "w": 640, "h": 480, "q": 70,
-    "model": "/sdcard/models/pose_v3.kmodel",
+    "model": "/sdcard/models/pose_v3_384.kmodel",
     "labels": ["target"],
-    "in_w": 320, "in_h": 320,
+    "in_w": 384, "in_h": 384,
     "conf": 0.25, "cand_conf": 0.03,
     "far_refine": 0, "far_min": 100, "far_topk": 3, "far_max": 200,
     "low_refine": 1, "low_refine_topk": 2, "low_refine_mult": 7.0,
@@ -100,16 +100,14 @@ POSE_DEFAULT_CFG: Dict[str, object] = {
     "nms": 0.45,
     "kp_num": 5, "kp_dim": 3,     # 4 角点 + 靶心
     "max_boxes": 20,
-    "jpeg_every": 2, "full_every": 9999,
-    "roi_pad": 0.25, "roi_min": 160, "roi_max": 256,
-    # 激光：标定先验 + ±laser_roi_rad 微窗质心（board/laser_aim.py）
-    "laser_enable": 1, "laser_every": 1,
-    "laser_roi_rad": 12, "laser_budget_ms": 12,
-    "laser_lead_ms": 50, "laser_ab_alpha": 0.45, "laser_ab_beta": 0.10,
+    "ai_every": 2, "jpeg_every": 2, "full_every": 9999,
+    "roi_pad": 0.25, "roi_min": 192, "roi_max": 288,
+    "roi_scale": 0.75,          # ROI 回传缩放（信息量 = 回传像素数）
+    # 回传图：编码是板端瓶颈（实测 640x480 q70 = 65~69ms），缩放比降质量更有效
+    "jpeg_q": 92, "enc_scale": 0.80,
     "fps": 0, "stats": 15, "limit": 0,
     "sensor_id": 2,
     "uart_enable": 1, "uart_id": 3, "uart_tx": 32, "uart_rx": 33, "uart_baud": 115200,
-    "uart_laser": 1,
     "reset_on_exit": 1,
 }
 
@@ -356,6 +354,12 @@ def describe_ports() -> str:
 
 
 # ----------------------------------------------------------------- 脚本模板
+# 性能键：模板 CFG 里有就直接覆盖；模型模板里没有就追加（见 board/k230_perf.py）。
+# 这样默认值仍以模板为准，PC 只在显式指定时才改动板端性能配置。
+PERF_KEYS = ("perf_mode", "perf_fb", "perf_fps", "perf_enc_fps",
+             "jpeg_q", "enc_scale")
+
+
 def render_board_script(cfg: Optional[Dict[str, object]] = None,
                         template: Optional[Path] = None,
                         defaults: Optional[Dict[str, object]] = None) -> str:
@@ -363,6 +367,10 @@ def render_board_script(cfg: Optional[Dict[str, object]] = None,
     path = Path(template) if template else BOARD_SCRIPT
     merged = dict(defaults if defaults is not None else DEFAULT_CFG)
     merged.update(cfg or {})
+    # 性能键只在显式给了值时追加，否则沿用模板（board/k230_perf.py）的默认值
+    for k in PERF_KEYS:
+        if (cfg or {}).get(k) is not None and k not in merged:
+            merged[k] = cfg[k]
     src = path.read_text(encoding="utf-8")
     new_src, n = _CFG_LINE_RE.subn("CFG = " + repr(merged), src, count=1)
     if n != 1:
@@ -559,26 +567,6 @@ class K230Link:
                 return t
         return ""
 
-    def _ensure_board_deps(self) -> None:
-        """把板端依赖推到 /sdcard；按 md5 比对，不再只看文件大小。"""
-        deps = [BOARD_DIR / "laser_aim.py"]
-        for local in deps:
-            if not local.exists():
-                continue
-            remote = "/sdcard/" + local.name
-            want = hashlib.md5(local.read_bytes()).hexdigest()
-            cur = self._board_md5(remote)
-            if cur == want:
-                continue
-            from .push_file import push_one
-            if not push_one(self, str(local), remote, verbose=False):
-                raise BoardError("推送依赖失败：%s" % local)
-            got = self._board_md5(remote)
-            if got != want:
-                raise BoardError(
-                    "依赖 md5 校验失败：%s 期望 %s，实际 %s"
-                    % (remote, want, got or "读取失败"))
-
     def start_stream(self, cfg: Optional[Dict[str, object]] = None,
                      timeout: float = 15.0,
                      template: Optional[Path] = None,
@@ -586,7 +574,6 @@ class K230Link:
         """下发板端脚本并确认已经开始工作（不阻塞后续读取）。"""
         assert self.ser is not None
         src = render_board_script(cfg, template, defaults)
-        self._ensure_board_deps()
         self.enter_raw()
         self._upload(src)
         self._buf = bytearray()

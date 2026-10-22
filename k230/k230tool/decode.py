@@ -114,28 +114,13 @@ def draw_detections(frame, target: Optional[Dict], labels: Optional[List[str]] =
 
     # 靶心：只有校验通过才画，失败状态不输出错误坐标
     bull = target.get("bull") or {}
-    bcx = bcy = None
     if bull.get("status") == "ok" and bull.get("x") is not None:
-        bcx, bcy = bull["x"], bull["y"]
-    if bcx is not None:
-        bx, by = mp(bcx, bcy)
+        bx, by = mp(bull["x"], bull["y"])
         cv.drawMarker(frame, (bx, by), (0, 0, 255), cv.MARKER_CROSS, 14, 2)
         cv.circle(frame, (bx, by), 6, (0, 0, 255), 1, cv.LINE_AA)
         txt = "10"
         cv.putText(frame, txt, (bx + 8, by - 8), cv.FONT_HERSHEY_SIMPLEX,
                    0.5, (0, 0, 255), 1, cv.LINE_AA)
-
-    # 激光光斑：青色准星 + 坐标；有靶心时画黄色偏差连线
-    laser = target.get("laser") or {}
-    if laser.get("status") == "ok" and laser.get("x") is not None and laser["x"] >= 0:
-        lx, ly = mp(laser["x"], laser["y"])
-        cv.drawMarker(frame, (lx, ly), (255, 128, 0), cv.MARKER_CROSS, 18, 2)
-        cv.circle(frame, (lx, ly), 9, (255, 128, 0), 1, cv.LINE_AA)
-        if bcx is not None:
-            cv.line(frame, (bx, by), (lx, ly), (0, 255, 255), 1, cv.LINE_AA)
-        cv.putText(frame, "(%.0f,%.0f)" % (laser["x"], laser["y"]),
-                   (lx + 11, ly - 10), cv.FONT_HERSHEY_SIMPLEX,
-                   0.48, (255, 128, 0), 1, cv.LINE_AA)
     return frame
 
 
@@ -187,17 +172,6 @@ def annotate(jpeg: bytes, target: Optional[Dict], labels: Optional[List[str]] = 
         else:
             bt = "bull10  -"
             bcol = (150, 150, 150)
-        lz = t.get("laser") or {}
-        if lz.get("status") == "ok" and float(lz.get("x") or -1) >= 0:
-            lt = "laser  ok  %.0f,%.0f  conf %.2f" % (
-                float(lz["x"]), float(lz["y"]), float(lz.get("conf") or 0))
-            if bull.get("status") == "ok":
-                lt += "  d(%+.0f,%+.0f)" % (float(lz["x"]) - float(bull["x"]),
-                                            float(lz["y"]) - float(bull["y"]))
-            lcol = (255, 255, 0)
-        else:
-            lt = "laser  -"
-            lcol = (120, 120, 120)
         lines = [
             ("K230 Pose  %s  %.1f fps  seq %d" % (view, fps, seq),
              (120, 255, 120)),
@@ -205,7 +179,6 @@ def annotate(jpeg: bytes, target: Optional[Dict], labels: Optional[List[str]] = 
             ("targets %d%s" % (n, "" if infer is None else "   infer %sms" % infer),
              (80, 255, 240) if n else (160, 160, 160)),
             (bt, bcol),
-            (lt, lcol),
         ]
         if extra:
             lines.append((extra, (200, 200, 200)))

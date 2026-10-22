@@ -1,7 +1,0 @@
-https://detail.tmall.com/item.htm?id=620692837143&mi_id=00002ncy-EBZ5XfXjYTIi75ivgqeMw1ygZJP4O0BK_Kqvhk&spm=tbpc.boughtlist.suborder_itemtitle.1.36d02e8dSAehCu
-
-以上：esp32购买链接
-购买型号：原装模组ESP-32 type-c接口+扩展板
-数量：若干
-
-注意这是01板，不是02板（02板为小车自带）

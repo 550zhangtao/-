@@ -77,7 +77,7 @@ http://127.0.0.1:8765/k230/tools/pose_label.html
 /home/khalil/personal_prj/K230/pose_labels.json
 ```
 
-> 预标注来自 `target_v2` 检测框的四角 + 框中心，**只是起点，必须逐个拖到真实角点/靶心**。
+> 预标注（`tools/pose_prefill.js`）只是起点，**必须逐个拖到真实角点/靶心**。
 > 进度存在浏览器 localStorage，刷新不丢；也可“导入 JSON 继续”。
 > 如果按钮无反应，先看页面顶部红色错误条；多数是页面用 `file://` 打开导致图片加载失败。
 

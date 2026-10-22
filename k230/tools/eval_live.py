@@ -9,7 +9,7 @@ eval_live.py —— 板端实时检出率统计
     * 平均置信度、平均帧率、平均推理耗时
 
 用法：
-    python3 tools/eval_live.py --model /sdcard/models/target_v2.kmodel --seconds 30
+    python3 tools/eval_live.py --model /sdcard/models/pose_v3_256.kmodel --seconds 30
     python3 tools/eval_live.py --model ... --conf 0.4 --json out.json
 """
 
@@ -29,7 +29,7 @@ from k230tool.link import K230Stream, find_port  # noqa: E402
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="/sdcard/models/target_v2.kmodel")
+    ap.add_argument("--model", default="/sdcard/models/pose_v3_256.kmodel")
     ap.add_argument("--labels", default="target")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--nms", type=float, default=0.45)

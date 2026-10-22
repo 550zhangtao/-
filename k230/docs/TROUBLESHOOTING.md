@@ -96,7 +96,7 @@ gc.collect()
 
 1. 先看 `live/latest.jpg` 确认画面里真的有标靶、没被遮挡；
 2. 降阈值：`--conf 0.05`；
-3. 检查模型：`python3 -m k230tool models`，换 `v2_std1.kmodel` 试；
+3. 检查模型：`python3 -m k230tool models`，确认板端有 `pose_v3_256.kmodel`；
 4. 标靶太小：靠近，或用更大输入（416/480）重训重编；
 5. 训练数据与现场差异大：重新采集、训练。
 

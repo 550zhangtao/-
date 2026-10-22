@@ -14,13 +14,11 @@ dataset/
 tmp_nncase/
 gmodel_dump_dir/
 
-# 临时/调试
+# 临时/调试（含删除归档）
 .tmp/
 scratch/
 *.log
 
-# v3 派生数据集：用 tools/build_pose_dataset_v3.py + tools/scene_20261021 确定性重建
-# （71 MB，不重复入库；原始数据集和现场帧都已入库）
-recovered/dataset_pose_v3/
-# 训练 run 的原始权重：精简副本在 k230/models/pose_v3.pt
-recovered/runs_v3/*/weights/
+# v3 数据集：最终模型就是用这份训的，**入库**（train 1507 / val 28 / test 57）。
+# 需要重建时：tools/build_pose_dataset_v3.py（父数据集在 k230_target_project/）。
+# （2026-10-22 起不再忽略）

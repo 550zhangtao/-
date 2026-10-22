@@ -10,7 +10,7 @@
 
 用法：
     python3 tools/label_scene_frames.py \
-        --frames /tmp/scene_frames --weights models/spot_v1.pt \
+        --frames /tmp/scene_frames --weights models/pose_v3.pt \
         --imgsz 416 --conf 0.25 --out scene_labels.json --sheet scene_check.jpg
 """
 

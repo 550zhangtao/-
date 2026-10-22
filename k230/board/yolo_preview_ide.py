@@ -1,37 +1,33 @@
 # -*- coding: utf-8 -*-
 """
-yolo_preview_ide.py —— 在 CanMV IDE 里看 YOLOv8n-Pose 标靶 + 激光光斑
-=====================================================================
+yolo_preview_ide.py —— 在 CanMV IDE 里看 YOLOv8n-Pose 标靶
+==========================================================
 
 画面内容：
     * 检测框（只作为特征区域，不要求四角精确）
     * 4 个角点连成的靶纸轮廓
     * 第 5 个关键点：白色 10 号靶心（红十字）
-    * **激光光斑**：蓝色十字 + 圆环 + 坐标标注（`board/laser_aim.py`）
-    * 靶心与光斑之间的黄色连线（有靶心时）
 
 配置：
     MODEL      训练好的 pose kmodel（5 关键点）
-    LASER_*    激光开关与微窗参数（见 board/laser_aim.py）
     VIEW       "full"=固定全图 640×480（默认，画面稳定不跳动）；"center"=固定中心裁剪；"roi"=旧动态ROI
+    DBG_SAVE   每 N 帧把"画好的帧"存到 /sdcard/pose_preview_dbg.jpg（0=关）
 
 说明：
     * 不依赖 libs/PipeLine（板端 libs 可能比固件新）；
     * IDE 预览用 img.compress_for_ide()，不初始化 Display；
-    * 退出自动复位，避免 KPU 析构死锁；
-    * 激光检测在 chn1 的 RGB565 帧上做（坐标即原图坐标，不用反变换），
-      每 LASER_EVERY 帧跑一次。
+    * 退出自动复位，避免 KPU 析构死锁。
 """
 
 # ============================ 用户配置 ============================
-MODEL = "/sdcard/models/pose_v3.kmodel"   # 若 IDE 找不到，改成 /models/pose_v3.kmodel
+MODEL = "/sdcard/models/pose_v3_384.kmodel"   # 384 输入（当前唯一模型，远小靶更准）
 LABELS = ["target"]
-MODEL_IN = [320, 320]
+MODEL_IN = [384, 384]
 CAPTURE_SIZE = [640, 480]
 DISPLAY_MODE = "ide"          # ide=CanMV IDE；hdmi/lcd=本地屏
 VIEW = "full"                 # full=全图固定缩放；center=固定中心裁剪；roi=旧动态ROI
-VIEW_SCALE = 0.55            # full 缩放：0.55 -> 352x264（追求 15~20fps）；1.0 -> 640x480
-IDE_QUALITY = 80              # IDE 预览 JPEG 质量（85 平衡清晰度/帧率；95 更清晰但更慢）
+VIEW_SCALE = 0.45            # full 缩放：0.45 -> 288x216（帧率优先）；0.55 -> 352x264
+IDE_QUALITY = 80              # IDE 预览 JPEG 质量（70 帧率优先；85~90 更清晰）
 CENTER_SIZE = 320             # center 模式的固定裁剪边长
 CONF = 0.25
 # 低置信兜底复筛：远处 30px 小靶/逆光时首轮分数会掉到 0.25 以下。
@@ -47,21 +43,15 @@ KP_DIM = 3                    # x,y,v
 VIEW_PAD = 0.25               # ROI 外扩比例
 AI_EVERY = 2                 # 每 N 帧跑一次 pose（其余帧复用上次结果）
 
-# ---- 激光光斑（标定先验 + ±LASER_ROI_RAD 微窗质心）----
-# 标定文件由 PC `k230/scripts/calib_laser.py` 生成（ON/OFF 主动差分）。
-# 没有标定时激光不显示、`$LS` 发 run=0；先在 PC 标一次，或临时填 LASER_FIXED。
-LASER_ENABLE = 1
-LASER_EVERY = 1               # 每帧做一次微窗（25x25 实测 ~1ms）
-LASER_ROI_RAD = 12            # 微窗半径：12 -> 25x25；丢失后自动放大到 2 倍
-LASER_BUDGET_MS = 12          # 单帧硬预算；超过只打印，不跳帧
-LASER_LEAD_MS = 50            # α-β 前瞻（补偿链路延迟）
-LASER_AB_ALPHA = 0.45         # 位置增益
-LASER_AB_BETA = 0.10          # 速度增益
-LASER_CFG = {}                # 覆盖 board/laser_aim.py 的 CFG
-LASER_LABEL = 0               # 1=在光斑旁画坐标文字（会多一条 deprecation）
-LASER_FIXED = None            # 临时覆盖标定，例如 (408, 278)
-LASER_CALIB_FILE = "/sdcard/laser_calib.json"
-LASER_DBG_SAVE = 120          # 每 N 帧把"画好叠加"的帧存 /sdcard/laser_dbg.jpg（0=关）
+# ---- 板端性能（见 board/k230_perf.py；实测采集 57fps，编码/绘图才是瓶颈）----
+PERF_MODE = "performance"     # auto / balanced / performance
+SENSOR_FPS = 60               # 采集帧率（GC2093 原生 1080p60，降下来不会更快）
+SENSOR_FB = 3                 # 固件不支持时自动跳过
+ENC_SCALE = 0.80              # 预览图缩放：0.80 -> 512x384 更清晰，还比 640x480 快
+
+# ---- 板端绘制自检（AGENTS 要求）----
+# 每 N 帧把"叠加画好"的帧存到 /sdcard，PC 端 `k230tool pull` 拉回核对框/关键点。
+DBG_SAVE = 0                  # 0=关；调试时可改 120
 
 # K230 -> ESP32 云台 UART（UART3: TX=GPIO32, RX=GPIO33）
 UART_ENABLE = 1
@@ -85,7 +75,13 @@ import sys
 import gc
 import time
 
-# 激光检测模块：固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
+try:
+    import k230_perf as perf
+except Exception as _e:
+    perf = None
+    print("k230_perf import failed:", _e)
+
+# 固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
 for _p in ("/sdcard", "/sdcard/board", "/"):
     try:
         if _p in sys.path:
@@ -93,17 +89,9 @@ for _p in ("/sdcard", "/sdcard/board", "/"):
         sys.path.insert(0, _p)
     except Exception:
         pass
-try:
-    import laser_aim
-except Exception as _e:
-    laser_aim = None
-    print("laser_aim import failed:", _e)
-
 W, H = CAPTURE_SIZE
 _sensor = None
 _yolo = None
-_laser = None
-_laser_calib_warned = False
 
 
 def _display_init():
@@ -214,24 +202,6 @@ def _send_uart(seq, res):
         print("uart tx:", e)
 
 
-def _send_uart_laser(seq, laser):
-    """`$LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!`（三态接口，TODO 控制）"""
-    if _uart is None:
-        return
-    try:
-        if laser is not None and float(laser.get("x", -1)) >= 0:
-            # F：src=1 只给本帧实测；fixed/calib/confirm/reacquire 都是 2
-            src = 1 if laser.get("src") == "measured" else 2
-            _uart.write("$LS,%d,1,%d,%d,%d,%d!\n" % (
-                seq, int(laser["x"] * 10), int(laser["y"] * 10),
-                int(float(laser.get("conf", 0)) * 1000), src))
-        else:
-            _uart.write("$LS,%d,0,-1,-1,0,0!\n" % seq)
-        _uart.flush()
-    except Exception as e:
-        print("uart ls:", e)
-
-
 def _bull_of(res):
     """取靶心 (x, y) 或 None。"""
     if not res or not res[0] or not res[3]:
@@ -321,120 +291,21 @@ def _draw(img, res, s=1.0):
     return boxes[0]
 
 
-def _draw_laser(img, laser, s=1.0, bull=None):
-    """画激光光斑：青色十字 + 圆环 + 坐标文字；有靶心时画偏差连线。"""
-    if laser is None:
-        return
-    lx = int(round(laser["x"] * s))
-    ly = int(round(laser["y"] * s))
-    cross = max(8, int(14 * s))
-    th = max(1, int(2 * s))
-    # 画框用**蓝色**：原画面里的红光条/红色物体不会被误认为"光斑"，
-    # 也更容易和青色/黄色的其他叠加区分
-    # 中间留 gap：十字不要压住光斑本身，肉眼才能核对"环是否套住光斑"
-    gap = max(3, int(4 * s))
-    arm = max(6, int(10 * s))
-    for dx0, dy0, dx1, dy1 in ((-gap - arm, 0, -gap, 0),
-                               (gap, 0, gap + arm, 0),
-                               (0, -gap - arm, 0, -gap),
-                               (0, gap, 0, gap + arm)):
-        img.draw_line(lx + dx0, ly + dy0, lx + dx1, ly + dy1,
-                      color=(0, 120, 255), thickness=th)
-    img.draw_circle(lx, ly, max(6, int(18 * s)), color=(0, 120, 255),
-                    thickness=max(1, int(1 * s)))
-    if bull is not None:
-        bx = int(round(bull[0] * s))
-        by = int(round(bull[1] * s))
-        img.draw_line(bx, by, lx, ly, color=(255, 255, 0),
-                      thickness=max(1, int(1 * s)))
-    # 坐标文字默认关闭：本机固件只有 draw_string 可用（draw_string_advanced
-    # 会报 "FreeType init failed, font (null)"），而 draw_string 每次调用都会
-    # 打印一条 "Deprecated function" 警告，走 USB 到 IDE 很慢，会拖低帧率。
-    # 需要看数字时把 LASER_LABEL 改 1。
-    if LASER_LABEL:
-        try:
-            img.draw_string(lx + cross + 2, ly - cross - 12,
-                            "(%.0f,%.0f)" % (laser["x"], laser["y"]),
-                            color=(0, 120, 255), scale=max(1, int(2 * s)))
-        except Exception:
-            pass
-
-
-def _kp_scale(kp):
-    """4 角点平均边长（px）；比框更稳，框抖不会乘进 k·s。"""
-    try:
-        total = 0.0
-        for i in range(4):
-            j = (i + 1) % 4
-            x1 = float(kp[i * 3]); y1 = float(kp[i * 3 + 1])
-            x2 = float(kp[j * 3]); y2 = float(kp[j * 3 + 1])
-            total += ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
-        return total / 4.0
-    except Exception:
-        return 0.0
-
-
-def _scale_of(res):
-    """靶纸表观边长（px），给 c + k·s 距离补偿。优先 4 角点，退回框。"""
-    if not res or not res[0]:
-        return None
-    try:
-        kp = res[3][0] if len(res) > 3 and res[3] else None
-        if kp is not None and len(kp) >= 15:
-            if (float(kp[2]) >= 0.3 and float(kp[5]) >= 0.3
-                    and float(kp[8]) >= 0.3 and float(kp[11]) >= 0.3):
-                sc = _kp_scale(kp)
-                if sc > 1.0:
-                    return sc
-    except Exception:
-        pass
-    try:
-        b = res[0][0]
-        return (abs(float(b[2])) * abs(float(b[3]))) ** 0.5
-    except Exception:
-        return None
-
-
-def _init_laser():
-    global _laser
-    if not LASER_ENABLE:
-        return None
-    if laser_aim is None:
-        print("激光不可用：laser_aim.py 未找到")
-        return None
-    cfg = {"rad": LASER_ROI_RAD, "budget_ms": LASER_BUDGET_MS,
-           "lead_ms": LASER_LEAD_MS, "ab_alpha": LASER_AB_ALPHA,
-           "ab_beta": LASER_AB_BETA}
-    if LASER_CFG:
-        cfg.update(LASER_CFG)
-    _laser = laser_aim.LaserAim(cfg)
-    print("laser: laser_aim v%s" % getattr(laser_aim, "VERSION", "?"))
-    if LASER_FIXED is not None:
-        _laser.set_calib(float(LASER_FIXED[0]), float(LASER_FIXED[1]))
-        print("laser: 固定标定 (%.1f,%.1f) 来自 LASER_FIXED"
-              % (LASER_FIXED[0], LASER_FIXED[1]))
-        return _laser
-    if _laser.load(LASER_CALIB_FILE):
-        c = _laser.calib
-        print("laser: 标定 (%.1f,%.1f) k=(%.4f,%.4f) ref=%.1f"
-              % (c[0], c[1], c[2], c[3], c[4]))
-    else:
-        print("laser: 无 %s —— 先跑 PC k230/scripts/calib_laser.py，"
-              "或在 LASER_FIXED 填 (x,y)" % LASER_CALIB_FILE)
-        _laser = None
-    return _laser
-
-
 def main():
-    global _sensor, _yolo, _laser_calib_warned
-    _sensor = Sensor(id=2)
-    _sensor.reset()
-    _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_1)
-    _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
-    _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_2)
-    _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
-    MediaManager.init()
-    _sensor.run()
+    global _sensor, _yolo
+    if perf is not None:
+        perf.apply_cpu(PERF_MODE)
+        perf.ENC_SCALE = ENC_SCALE
+        _sensor = perf.open_sensor(2, W, H, framebuffers=SENSOR_FB, fps=SENSOR_FPS)
+    else:
+        _sensor = Sensor(id=2)
+        _sensor.reset()
+        _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_1)
+        _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
+        _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_2)
+        _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
+        MediaManager.init()
+        _sensor.run()
     try:
         gc.threshold(96 * 1024)
     except Exception:
@@ -455,14 +326,11 @@ def main():
 
     # 云台链路：必须在主循环前初始化，否则 _send_uart() 静默不发帧
     _init_uart()
-    _init_laser()
 
     n = 0
     t_last = time.ticks_ms()
     fps = 0.0
     last_res = None
-    laser = None
-    laser_ms = 0
     while True:
         # 先拍显示帧，再拍 AI 帧（仅在 AI 帧执行）
         img = _sensor.snapshot(chn=CAM_CHN_ID_1)
@@ -482,43 +350,21 @@ def main():
                     if rb is not None and rb[2] >= CONF:
                         last_res = ([rb[0]], [0], [rb[2]], [rb[1]])
         res = last_res
+
         _send_uart(n, res)
-
-        # 激光：标定先验 + ±LASER_ROI_RAD 微窗质心（25x25 实测 ~1ms）
-        laser = None
-        laser_ms = 0
-        if _laser is not None and (n % LASER_EVERY) == 0:
-            try:
-                t_l = time.ticks_ms()
-                laser = _laser.sample(img, _scale_of(res))
-                laser_ms = time.ticks_diff(time.ticks_ms(), t_l)
-                if (getattr(_laser, "need_recalib", False)
-                        and not _laser_calib_warned):
-                    _laser_calib_warned = True
-                    print("laser: 实测偏离标定 %.0fpx -> 建议重标"
-                          % getattr(_laser, "calib_dev", 0.0))
-            except Exception as e:
-                print("laser:", e)
-                laser = None
-        # 微窗失败/无标定时用标定预测位置上报（src=2）；只上报/绘制，不控云台
-        if laser is None and _laser is not None:
-            _px = _laser.predict(_scale_of(res))
-            if _px is not None and _px[0] > 0:
-                laser = {"x": _px[0], "y": _px[1], "conf": 0,
-                         "mode": "calib", "src": "calib", "status": "calib"}
-        _send_uart_laser(n, laser)
-        bull = _bull_of(res)
-
         if DISPLAY_MODE == "ide":
             if VIEW == "full":
                 # 先缩放到固定尺寸，再画覆盖层：绘制成本降数倍，帧率更稳
-                disp = img.copy(x_scale=VIEW_SCALE, y_scale=VIEW_SCALE)
-                _draw(disp, res, VIEW_SCALE)
-                _draw_laser(disp, laser, VIEW_SCALE, bull)
-                disp.compress_for_ide(quality=IDE_QUALITY)
+                d = perf.enc_dims(W, H, VIEW_SCALE) if perf is not None else None
+                sc = (d[0] / float(W)) if d else VIEW_SCALE
+                disp = img.copy(x_scale=sc, y_scale=sc)
+                _draw(disp, res, sc)
+                if d:
+                    disp.compress_for_ide(x_size=d[0], y_size=d[1], quality=IDE_QUALITY)
+                else:
+                    disp.compress_for_ide(quality=IDE_QUALITY)
             else:
                 _draw(img, res)
-                _draw_laser(img, laser, 1.0, bull)
                 roi = None
                 if res and res[0]:
                     b = res[0][0]
@@ -542,14 +388,14 @@ def main():
             Display.show_image(img)
 
         # 板端绘制路径自检：把"画好"的帧存到 /sdcard 供 k230tool pull 检查
-        if LASER_DBG_SAVE and n and (n % LASER_DBG_SAVE) == 0:
+        if DBG_SAVE and n and (n % DBG_SAVE) == 0:
             try:
                 # VIEW=full 时叠加画在 disp 上；保存 img 会得到一张没有框的
                 # 原图，起不到核对绘制路径的作用。
                 if VIEW == "full" and DISPLAY_MODE == "ide":
-                    disp.save("/sdcard/laser_dbg.jpg")
+                    disp.save("/sdcard/pose_preview_dbg.jpg")
                 else:
-                    img.save("/sdcard/laser_dbg.jpg")
+                    img.save("/sdcard/pose_preview_dbg.jpg")
             except Exception as e:
                 print("save dbg:", e)
 
@@ -559,19 +405,18 @@ def main():
         if dt > 0:
             fps = 0.8 * fps + 0.2 * (1000.0 / dt) if fps else 1000.0 / dt
         if PRINT_EVERY and (n % PRINT_EVERY == 0):
-            ls = "laser -"
-            if laser is not None:
-                ls = "laser (%.1f,%.1f) conf %.2f %s" % (
-                    laser["x"], laser["y"], laser["conf"], laser["mode"])
-                if bull is not None:
-                    ls += " dx %.0f dy %.0f" % (laser["x"] - bull[0],
-                                                laser["y"] - bull[1])
             tg = "target -"
+            bx = by = -1
             if res and res[0]:
                 tg = "target %.2f" % float(res[2][0])
-            nc = 0 if _laser is None else getattr(_laser, "last_px", 0)
-            print("[%d] %.1ffps %s | %s | lms %d cand %d" % (
-                n, fps, tg, ls, laser_ms, nc))
+                try:
+                    kp = res[3][0]
+                    if KP_NUM >= 5 and float(kp[14]) >= 0.3:
+                        bx = int(kp[12])
+                        by = int(kp[13])
+                except Exception:
+                    pass
+            print("[%d] %.1ffps %s bull (%d,%d)" % (n, fps, tg, bx, by))
         if (n & 0x0F) == 0:
             gc.collect()
 

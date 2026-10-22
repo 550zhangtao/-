@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 后台启动实时桥接，日志写 live/live.log
 #
-#   bash scripts/run_live.sh                 # 默认模型（v2_std1.kmodel）
+#   bash scripts/run_live.sh                 # 默认模型（pose_v3_256.kmodel）
 #   bash scripts/run_live.sh --conf 0.05     # 额外参数透传
 #
 set -euo pipefail

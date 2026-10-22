@@ -1,37 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-K230 板端 Pose 标靶识别脚本（关键点 + 20 FPS）
+K230 板端 Pose 标靶识别脚本（关键点 + 高帧率）
 ========================================
 
 流程（每帧）：
-    1. chn2 快照 -> YOLOv8 检测（320 输入，约 28 ms）
-    2. chn1 快照 -> 激光光斑微窗质心（board/laser_aim.py，RGB565 原图坐标）
-    3. 隔帧编码 ROI JPEG（原生分辨率，不降采样）并回传
-    4. 每 N 帧回传一张全图（缩小到 320x240）用于上下文
+    1. chn2 快照 -> YOLOv8-Pose 推理（384 输入，约 38 ms）
+    2. 隔帧编码 ROI JPEG（原生分辨率，不降采样）并回传
+    3. 每 N 帧回传一张全图（缩小到 320x240）用于上下文
 
-回传 JSON 额外字段：
+回传 JSON 字段：
     roi    本次 JPEG 对应的原图区域 [x,y,w,h]
     jpeg   本次 JPEG 的实际尺寸 [w,h]
-    bull   靶心 {x,y,r,conf,status}（坐标为原图 640x480 坐标系）
-    laser  激光光斑 {x,y,conf,mode,status}（标定先验 + ±12px 微窗质心）
-    ms     推理耗时；bs 靶心耗时；lms 光斑耗时
+    bull   靶心 {x,y,conf,status}（坐标为原图 640x480 坐标系）
+    kp     5 个关键点扁平数组 [x,y,v] * 5（TL,TR,BR,BL,靶心）
+    ms     推理耗时；ref_ms 复筛耗时
 
 CFG 必须保持单行，PC 端会用正则整行替换后下发。
 
-激光坐标另外走 UART（与 `$KT` 并列）：
+目标另外走 UART（给 ESP32 云台）：
 
-    $LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!
-        x,y 是 640x480 原图像素（×10）；src: 0=无位置 1=本帧微窗实测 2=标定/预测
-        标定文件 /sdcard/laser_calib.json 由 PC tools 生成（scripts/calib_laser.py）。
-
-三态追踪接口（**本轮只上报数据，不实现控制算法**）：
-    A 靶心丢失 / B 有靶心无激光 / C 两者都有。
-    `$LS` 的 src=2 就是 B 的输入（laser_calib.json 推算位置）；
-    src=1 是 C 的输入。状态判定/云台复位在 ESP32 侧预留（见 .ino 的
-    AIM_* 注释与 `aim` 调试命令），K230 不做状态切换。
+    $KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>!
+        cx,cy = 检测框中心；bx,by = 靶心；run=0 表示本帧无目标。
 """
 
-CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3.kmodel', 'labels': ['target'], 'in_w': 320, 'in_h': 320, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'jpeg_every': 2, 'full_every': 9999, 'roi_pad': 0.25, 'roi_min': 160, 'roi_max': 256, 'laser_enable': 1, 'laser_every': 1, 'laser_roi_rad': 12, 'laser_budget_ms': 12, 'laser_lead_ms': 50, 'laser_ab_alpha': 0.45, 'laser_ab_beta': 0.10, 'fps': 0, 'stats': 15, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200, 'uart_laser': 1}
+CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3_384.kmodel', 'labels': ['target'], 'in_w': 384, 'in_h': 384, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'ai_every': 2, 'jpeg_every': 2, 'full_every': 9999, 'roi_scale': 0.75, 'roi_pad': 0.25, 'roi_min': 192, 'roi_max': 288, 'perf_mode': 'performance', 'perf_fb': 3, 'perf_fps': 0, 'jpeg_q': 92, 'enc_scale': 0.80, 'fps': 0, 'stats': 15, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200}
 
 from media.sensor import *
 from media.media import *
@@ -47,7 +39,6 @@ import binascii
 import ujson
 import math
 
-# 激光模块（PC 下发时会一并推到 /sdcard/laser_aim.py）
 for _p in ("/sdcard", "/sdcard/board", "/"):
     try:
         if _p in sys.path:
@@ -55,15 +46,14 @@ for _p in ("/sdcard", "/sdcard/board", "/"):
         sys.path.insert(0, _p)
     except Exception:
         pass
-try:
-    import laser_aim
-except Exception as _e:
-    laser_aim = None
 
-_laser = None
-laser_ms = 0
+try:
+    import k230_perf as perf
+except Exception as _e:
+    perf = None
+    print("k230_perf 导入失败:", _e)
+
 _lref_skip = 0        # 低置信复筛冷却（剩下几帧内不再复筛）
-_last_scale = None    # 上一帧靶纸表观边长（px），给 c + k·s 距离补偿
 
 MAGIC = b"\xAA\x55K2"
 HDR_LEN = 38
@@ -175,22 +165,6 @@ class _PoseAidemo:
 _YL.aidemo = _PoseAidemo()
 
 
-def _kp_scale(kp):
-    """4 角点平均边长（px）；比检测框 sqrt(w*h) 更稳，框抖不会乘进 k·s。"""
-    try:
-        s = 0.0
-        for i in range(4):
-            j = (i + 1) % 4
-            x1 = float(kp[i * 3])
-            y1 = float(kp[i * 3 + 1])
-            x2 = float(kp[j * 3])
-            y2 = float(kp[j * 3 + 1])
-            s += ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
-        return s / 4.0
-    except Exception:
-        return 0.0
-
-
 def _check_pose(box, kp, kp_dim=3):
     """几何/置信度校验；返回 ok 或失败原因。"""
     if len(kp) < 4 * kp_dim:
@@ -251,14 +225,20 @@ def _check_pose(box, kp, kp_dim=3):
 
 def _open_sensor():
     global _sensor
-    _sensor = Sensor(id=CFG["sensor_id"])
-    _sensor.reset()
-    _sensor.set_framesize(w=CFG["w"], h=CFG["h"], chn=CAM_CHN_ID_1)
-    _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
-    _sensor.set_framesize(w=CFG["w"], h=CFG["h"], chn=CAM_CHN_ID_2)
-    _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
-    MediaManager.init()
-    _sensor.run()
+    if perf is not None:
+        fb = CFG.get("perf_fb", 3)
+        fps = CFG.get("perf_fps", 0) or None
+        _sensor = perf.open_sensor(CFG["sensor_id"], CFG["w"], CFG["h"],
+                                   framebuffers=fb, fps=fps)
+    else:
+        _sensor = Sensor(id=CFG["sensor_id"])
+        _sensor.reset()
+        _sensor.set_framesize(w=CFG["w"], h=CFG["h"], chn=CAM_CHN_ID_1)
+        _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
+        _sensor.set_framesize(w=CFG["w"], h=CFG["h"], chn=CAM_CHN_ID_2)
+        _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
+        MediaManager.init()
+        _sensor.run()
     return _sensor
 
 
@@ -295,21 +275,43 @@ def _clamp(v, lo, hi):
     return v
 
 
+# ---- JPEG 回传：质量/缩放统一走 k230_perf（实测编码是瓶颈，见该文件顶部表）----
+PERF_ENABLE = perf is not None
+
+
+def _jq():
+    return int(CFG.get("jpeg_q", 92))
+
+
+def _escale():
+    return CFG.get("enc_scale", None)
+
+
 def _encode_roi(img, roi, q):
-    """编码 ROI（原生分辨率），返回 (jpeg_bytes, [w,h])。"""
-    x, y, w, h = roi
-    j = img.compress(quality=q, roi=(x, y, w, h))
-    if not isinstance(j, bytes):
-        j = bytes(j)
-    return j, [w, h]
+    """编码 ROI；roi_scale<1 时在编码器内缩放（信息量 = 回传像素数）。"""
+    sc = float(CFG.get("roi_scale", 1.0) or 1.0)
+    if PERF_ENABLE:
+        if sc < 0.999:
+            # 连同缩放一起交给编码器：一次压缩，不额外复制
+            w = max(2, int(round(int(roi[2]) * sc / 2.0)) * 2)
+            h = max(2, int(round(int(roi[3]) * sc / 2.0)) * 2)
+            j = img.compress(quality=q, roi=(int(roi[0]), int(roi[1]),
+                                            int(roi[2]), int(roi[3])),
+                             x_size=w, y_size=h)
+            return (j if isinstance(j, bytes) else bytes(j)), [w, h]
+        j, sz, _ = perf.encode(img, roi=roi, quality=q)
+        return j, sz
+    j = img.compress(quality=q, roi=(roi[0], roi[1], roi[2], roi[3]))
+    return (j if isinstance(j, bytes) else bytes(j)), [int(roi[2]), int(roi[3])]
 
 
 def _encode_full(img, q):
-    """全图缩小一半（320x240）编码，返回 (jpeg_bytes, [w,h], roi)。"""
+    """编码整幅：按 enc_scale 缩放（默认 0.80 -> 512x384）。"""
+    if PERF_ENABLE:
+        return perf.encode(img, scale=_escale(), quality=q)
     j = img.compress(quality=q, x_scale=0.5, y_scale=0.5)
-    if not isinstance(j, bytes):
-        j = bytes(j)
-    return j, [CFG["w"] // 2, CFG["h"] // 2], [0, 0, CFG["w"], CFG["h"]]
+    return (j if isinstance(j, bytes) else bytes(j)), [CFG["w"] // 2, CFG["h"] // 2], \
+           [0, 0, CFG["w"], CFG["h"]]
 
 
 def det_from(boxes, ids, scores):
@@ -460,31 +462,10 @@ def _send_uart(seq, det, bull, has_det):
 
 
 # ---------------------------------------------------------------- 主流程
-def _send_uart_laser(seq, laser):
-    """`$LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!`
-
-    坐标是原图 640x480 像素（×10 传整数）。src 是**三态追踪预留接口**：
-        0 = 无位置；1 = 本帧实拍；2 = 来自 laser_calib.json 的标定位置。
-    旧 ESP32 用 5 字段 sscanf 会忽略第 6 段，保持兼容。
-    """
-    if _uart is None or not CFG.get("uart_laser", 1):
-        return
-    try:
-        if laser is not None and float(laser.get("x", -1)) >= 0:
-            # F：不要用 status（旧 locate 不返回）；src=1 只给本帧实测
-            src = 1 if laser.get("src") == "measured" else 2
-            line = "$LS,%d,1,%d,%d,%d,%d!\n" % (
-                seq, int(laser["x"] * 10), int(laser["y"] * 10),
-                int(float(laser.get("conf", 0)) * 1000), src)
-        else:
-            line = "$LS,%d,0,-1,-1,0,0!\n" % seq
-        _uart.write(line)
-    except Exception as e:
-        log("uart ls: %s" % e)
-
-
 def main():
-    global _yolo, _laser, laser_ms, _lref_skip, _last_scale
+    global _yolo, _lref_skip
+    if perf is not None:
+        perf.apply_cpu(CFG.get("perf_mode"))
     sen = _open_sensor()
     time.sleep_ms(300)
     _yolo = YOLOv8(task_type="pose", mode="image",
@@ -497,48 +478,30 @@ def main():
                    max_boxes_num=CFG["max_boxes"], debug_mode=0)
     _yolo.config_preprocess()
     _init_uart()
-    _lver = "?"
-    if CFG.get("laser_enable", 1) and laser_aim is not None:
-        try:
-            _laser = laser_aim.LaserAim({
-                "rad": int(CFG.get("laser_roi_rad", 12)),
-                "budget_ms": int(CFG.get("laser_budget_ms", 10)),
-                "lead_ms": int(CFG.get("laser_lead_ms", 50)),
-                "ab_alpha": float(CFG.get("laser_ab_alpha", 0.45)),
-                "ab_beta": float(CFG.get("laser_ab_beta", 0.10)),
-            })
-            if _laser.load("/sdcard/laser_calib.json"):
-                _lver = getattr(laser_aim, "VERSION", "?")
-                _c = _laser.calib
-                log("laser calib (%.1f,%.1f) k=(%.4f,%.4f) ref=%.1f"
-                    % (_c[0], _c[1], _c[2], _c[3], _c[4]))
-            else:
-                _laser = None
-                log("无 /sdcard/laser_calib.json，激光上报关闭"
-                    "（先跑 scripts/calib_laser.py）")
-        except Exception as e:
-            _laser = None
-            log("laser init: %s" % e)
-    else:
-        _laser = None
-        if CFG.get("laser_enable", 1) and laser_aim is None:
-            log("laser_aim.py 未找到，激光上报关闭")
 
     try:
         stype = str(sen.get_type())
     except Exception:
         stype = "?"
-    emit(T_HELLO, 0, ("pose w=%d h=%d q=%d model=%s mem=%d sensor=%s version=%s laser=%s"
-                      % (CFG["w"], CFG["h"], CFG["q"], CFG["model"],
-                         gc.mem_free(), stype, sys.version, _lver)).encode())
+    _pstat = perf.status() if perf is not None else \
+        "perf=OFF(需要把 board/k230_perf.py 推到 /sdcard，并重跑 live)"
+    log("perf 模块: %s" % _pstat)
+    emit(T_HELLO, 0, ("pose w=%d h=%d q=%d model=%s mem=%d sensor=%s version=%s %s"
+                      % (CFG["w"], CFG["h"], _jq(), CFG["model"],
+                         gc.mem_free(), stype, sys.version, _pstat)).encode())
     log("pose streaming %dx%d q=%d model=%s" %
-        (CFG["w"], CFG["h"], CFG["q"], CFG["model"]))
+        (CFG["w"], CFG["h"], _jq(), CFG["model"]))
     try:
         gc.threshold(96 * 1024)
     except Exception:
         pass
 
     seq = 0
+    last_res = None
+    last_bull = {"status": "no_target"}
+    last_det = []
+    last_kp_flat = []
+    last_has_det = False
     win_t = time.ticks_ms()
     win_n = 0
     every = CFG["stats"]
@@ -558,121 +521,106 @@ def main():
         img = sen.snapshot(chn=CAM_CHN_ID_1)
         s1_ms = time.ticks_diff(time.ticks_ms(), t_s1)
 
-        # ---- 激光：标定先验 + ±laser_roi_rad 微窗质心（25x25 实测 ~1ms）
-        laser = None
-        laser_ms = 0
-        if (_laser is not None and CFG.get("laser_every", 1)
-              and (seq % CFG["laser_every"]) == 0):
-            try:
-                t_l = time.ticks_ms()
-                laser = _laser.sample(img, _last_scale)
-                laser_ms = time.ticks_diff(time.ticks_ms(), t_l)
-                if laser_ms > int(CFG.get("laser_budget_ms", 6)) * 3:
-                    log("laser %dms 超预算（微窗扫描异常）" % laser_ms)
-            except Exception as e:
-                log("laser: %s" % e)
-                try:
-                    sys.print_exception(e)
-                except Exception:
-                    pass
-                laser = None
-
-        t_s2 = time.ticks_ms()
-        arr = sen.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
-        s2_ms = time.ticks_diff(time.ticks_ms(), t_s2)
-        t_ai = time.ticks_ms()
-        res = _yolo.run(arr)
-        infer_ms = time.ticks_diff(time.ticks_ms(), t_ai)
-        if res and len(res) >= 4:
-            boxes, ids, scores, kpts = res[0], res[1], res[2], res[3]
-        else:
-            boxes, ids, scores, kpts = [], [], [], []
-        has_det = len(boxes) > 0
-
-        # ---- 候选选择 + 远距离裁剪放大复筛
-        kp_flat = []
-        bull = {"status": "no_target"}
-        det = []
-        refine_ms = 0
-        best = None
-        if has_det:
-            for i in range(len(boxes)):
-                st = _check_pose(boxes[i], kpts[i], CFG["kp_dim"])
-                if st == "ok":
-                    if best is None or float(scores[i]) > best[0]:
-                        best = (float(scores[i]), boxes[i], kpts[i], st)
-            top_score = max(float(v) for v in scores) if scores else 0.0
-            small = best is not None and min(float(best[1][2]), float(best[1][3])) < CFG["far_min"]
-            if CFG["far_refine"] and (top_score < CFG["conf"] or small):
-                t_r = time.ticks_ms()
-                rb = None
-                for i in range(min(len(boxes), int(CFG["far_topk"]))):
-                    if max(float(boxes[i][2]), float(boxes[i][3])) > CFG["far_max"]:
-                        continue
-                    r = _refine(img, boxes[i])
-                    if r is not None and r[3] == "ok":
-                        if rb is None or r[0] > rb[0]:
-                            rb = r
-                refine_ms = time.ticks_diff(time.ticks_ms(), t_r)
-                if rb is not None and (best is None or rb[0] > best[0] + 0.03):
-                    best = rb
-
-            # ---- 低置信兜底复筛：小靶/逆光/轻微运动模糊时首轮分数会掉到
-            # 0.25 以下（实测 26x38 靶纸有 4/20 帧 <0.25）。此时对分数最高的
-            # 2 个候选各做一次 7 倍裁剪放大复筛，分数能回到 0.5~0.8；
-            # 负样本实测误检率不变（80 张：1/80 -> 1/80）。
-            if (CFG.get("low_refine", 1) and _lref_skip <= 0
-                    and (best is None or best[0] < CFG["conf"])):
-                t_l = time.ticks_ms()
-                rb2 = None
-                for i in range(min(len(boxes), int(CFG.get("low_refine_topk", 2)))):
-                    # 只复筛小目标（远处靶纸 ≤120px）；大框多半是人/纸箱，
-                    # 放大没意义，还会在小堆内存板上多分配两张 640x480 图。
-                    if max(float(boxes[i][2]), float(boxes[i][3])) > float(CFG.get("low_refine_max", 120)):
-                        continue
-                    r = _refine(img, boxes[i], float(CFG.get("low_refine_mult", 7.0)))
-                    if r is not None and r[3] == "ok":
-                        if rb2 is None or r[0] > rb2[0]:
-                            rb2 = r
-                refine_ms += time.ticks_diff(time.ticks_ms(), t_l)
-                if rb2 is not None and rb2[0] >= CFG["conf"]:
-                    _lref_skip = 0
-                    if best is None or rb2[0] > best[0]:
-                        best = rb2
-                else:
-                    # 没救回来（多半是负样本/空画面）：冷却几帧，避免每帧
-                    # 两次复筛把 13fps 拖到 6fps。
-                    _lref_skip = int(CFG.get("low_refine_cooldown", 3))
-
-            if best is not None and best[0] >= CFG["conf"]:
-                kp = best[2]
-                box = best[1]
-                for i in range(len(kp)):
-                    kp_flat.append(round(float(kp[i]), 2))
-                bull = {"x": round(float(kp[12]), 1), "y": round(float(kp[13]), 1),
-                        "conf": round(float(kp[14]), 3), "status": "ok",
-                        "src": "pose+refine" if refine_ms else "pose"}
-                det = [[int(round(box[0])), int(round(box[1])),
-                        int(round(box[2])), int(round(box[3])),
-                        round(float(best[0]), 3), 0]]
-                has_det = True
-                # 优先 4 角点平均边长；角点不可信时退回框
-                sc = 0.0
-                if len(kp_flat) >= 15:
-                    try:
-                        if (float(kp_flat[2]) >= 0.3 and float(kp_flat[5]) >= 0.3
-                                and float(kp_flat[8]) >= 0.3
-                                and float(kp_flat[11]) >= 0.3):
-                            sc = _kp_scale(kp_flat)
-                    except Exception:
-                        sc = 0.0
-                if sc <= 1.0:
-                    sc = (float(det[0][2]) * float(det[0][3])) ** 0.5
-                _last_scale = sc
+        ai_every = int(CFG.get("ai_every", 1) or 1)
+        ai_run = (last_res is None) or ai_every <= 1 or (seq % ai_every) == 0
+        if ai_run:
+            t_s2 = time.ticks_ms()
+            arr = sen.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
+            s2_ms = time.ticks_diff(time.ticks_ms(), t_s2)
+            t_ai = time.ticks_ms()
+            res = _yolo.run(arr)
+            infer_ms = time.ticks_diff(time.ticks_ms(), t_ai)
+            if res and len(res) >= 4:
+                boxes, ids, scores, kpts = res[0], res[1], res[2], res[3]
             else:
-                bull = {"status": "low_conf"}
-                has_det = False
+                boxes, ids, scores, kpts = [], [], [], []
+            has_det = len(boxes) > 0
 
+            # ---- 候选选择 + 远距离裁剪放大复筛
+            kp_flat = []
+            bull = {"status": "no_target"}
+            det = []
+            refine_ms = 0
+            best = None
+            if has_det:
+                for i in range(len(boxes)):
+                    st = _check_pose(boxes[i], kpts[i], CFG["kp_dim"])
+                    if st == "ok":
+                        if best is None or float(scores[i]) > best[0]:
+                            best = (float(scores[i]), boxes[i], kpts[i], st)
+                top_score = max(float(v) for v in scores) if scores else 0.0
+                small = best is not None and min(float(best[1][2]), float(best[1][3])) < CFG["far_min"]
+                if CFG["far_refine"] and (top_score < CFG["conf"] or small):
+                    t_r = time.ticks_ms()
+                    rb = None
+                    for i in range(min(len(boxes), int(CFG["far_topk"]))):
+                        if max(float(boxes[i][2]), float(boxes[i][3])) > CFG["far_max"]:
+                            continue
+                        r = _refine(img, boxes[i])
+                        if r is not None and r[3] == "ok":
+                            if rb is None or r[0] > rb[0]:
+                                rb = r
+                    refine_ms = time.ticks_diff(time.ticks_ms(), t_r)
+                    if rb is not None and (best is None or rb[0] > best[0] + 0.03):
+                        best = rb
+
+                # ---- 低置信兜底复筛：小靶/逆光/轻微运动模糊时首轮分数会掉到
+                # 0.25 以下（实测 26x38 靶纸有 4/20 帧 <0.25）。此时对分数最高的
+                # 2 个候选各做一次 7 倍裁剪放大复筛，分数能回到 0.5~0.8；
+                # 负样本实测误检率不变（80 张：1/80 -> 1/80）。
+                if (CFG.get("low_refine", 1) and _lref_skip <= 0
+                        and (best is None or best[0] < CFG["conf"])):
+                    t_l = time.ticks_ms()
+                    rb2 = None
+                    for i in range(min(len(boxes), int(CFG.get("low_refine_topk", 2)))):
+                        # 只复筛小目标（远处靶纸 ≤120px）；大框多半是人/纸箱，
+                        # 放大没意义，还会在小堆内存板上多分配两张 640x480 图。
+                        if max(float(boxes[i][2]), float(boxes[i][3])) > float(CFG.get("low_refine_max", 120)):
+                            continue
+                        r = _refine(img, boxes[i], float(CFG.get("low_refine_mult", 7.0)))
+                        if r is not None and r[3] == "ok":
+                            if rb2 is None or r[0] > rb2[0]:
+                                rb2 = r
+                    refine_ms += time.ticks_diff(time.ticks_ms(), t_l)
+                    if rb2 is not None and rb2[0] >= CFG["conf"]:
+                        _lref_skip = 0
+                        if best is None or rb2[0] > best[0]:
+                            best = rb2
+                    else:
+                        # 没救回来（多半是负样本/空画面）：冷却几帧，避免每帧
+                        # 两次复筛把 13fps 拖到 6fps。
+                        _lref_skip = int(CFG.get("low_refine_cooldown", 3))
+
+                if best is not None and best[0] >= CFG["conf"]:
+                    kp = best[2]
+                    box = best[1]
+                    for i in range(len(kp)):
+                        kp_flat.append(round(float(kp[i]), 2))
+                    bull = {"x": round(float(kp[12]), 1), "y": round(float(kp[13]), 1),
+                            "conf": round(float(kp[14]), 3), "status": "ok",
+                            "src": "pose+refine" if refine_ms else "pose"}
+                    det = [[int(round(box[0])), int(round(box[1])),
+                            int(round(box[2])), int(round(box[3])),
+                            round(float(best[0]), 3), 0]]
+                    has_det = True
+                else:
+                    bull = {"status": "low_conf"}
+                    has_det = False
+
+        else:
+            res = last_res
+            infer_ms = 0
+            s2_ms = 0
+            bull = last_bull
+            det = last_det
+            kp_flat = last_kp_flat
+            has_det = last_has_det
+            refine_ms = 0
+        last_res = res
+        last_bull = bull
+        last_det = det
+        last_kp_flat = kp_flat
+        last_has_det = has_det
         # ---- 板端绘制自检（AGENTS 要求）：每 dbg_save 帧把画好的整帧存到
         # /sdcard/pose_dbg.jpg，PC 端 `k230tool pull` 拉回检查框/关键点。
         if CFG.get("dbg_save", 0) and (seq % int(CFG["dbg_save"]) == 0):
@@ -691,12 +639,9 @@ def main():
             except Exception as e:
                 log("dbg save: %s" % e)
 
-        # ---- 图像回传：ROI 原生分辨率；全图每 full_every 帧或丢失目标
-        # 有激光检测时不再"没目标就发全图"（那是 Pose 时代的行为，
-        # 会让 13fps 全在发全图、激光 ROI 永远发不出去）；
-        # 全图只按 full_every 周期性发。无激光时保持旧行为。
-        want_full = (seq % CFG["full_every"] == 0) or \
-            (not has_det and laser is None and not CFG.get("laser_enable", 1))
+        # ---- 图像回传：有目标发检测 ROI（原生分辨率），
+        # 没目标 / full_every 到点发缩小全图（让 PC 看到完整上下文）。
+        want_full = (seq % CFG["full_every"] == 0) or (not has_det)
         want_jpeg = (seq % CFG["jpeg_every"] == 0) or want_full
         jpg = None
         roi = None
@@ -706,61 +651,30 @@ def main():
             t_j = time.ticks_ms()
             if want_full:
                 # 全图优先（full_every 到点 / 没目标）：保证 PC 能看到完整上下文
-                jpg, jsz, roi = _encode_full(img, CFG["q"])
-            elif CFG.get("laser_enable", 1) and laser is not None:
-                # 有光斑：固定回传光斑周围 160x120（原生分辨率）
-                lx = int(laser["x"]) - 80
-                ly = int(laser["y"]) - 60
-                lx = _clamp(lx, 0, CFG["w"] - 160)
-                ly = _clamp(ly, 0, CFG["h"] - 120)
-                roi = [lx, ly, 160, 120]
-                jpg, jsz = _encode_roi(img, roi, CFG["q"])
+                jpg, jsz, roi = _encode_full(img, _jq())
             elif has_det:
-                roi = _roi_around(boxes[0])
-                jpg, jsz = _encode_roi(img, roi, CFG["q"])
+                # 用经过复筛/校验后的 det[0]（boxes[0] 可能是低分候选/负样本框）
+                roi = _roi_around(det[0] if det else boxes[0])
+                jpg, jsz = _encode_roi(img, roi, _jq())
             else:
-                jpg, jsz, roi = _encode_full(img, CFG["q"])
+                jpg, jsz, roi = _encode_full(img, _jq())
             jpg_ms = time.ticks_diff(time.ticks_ms(), t_j)
 
-        if laser is not None:
-            src = laser.get("src", "measured")
-            status = laser.get("status",
-                               "ok" if src == "measured" else "calib")
-            laser_out = {"x": round(laser["x"], 1), "y": round(laser["y"], 1),
-                         "conf": round(laser["conf"], 3), "mode": laser["mode"],
-                         "status": status, "src": src,
-                         "calib_dev": round(getattr(_laser, "calib_dev", 0.0), 1),
-                         "calib_stale": 1 if getattr(_laser, "need_recalib", False) else 0,
-                         "need_recalib": 1 if getattr(_laser, "need_recalib", False) else 0,
-                         "budget": 1 if laser.get("budget") else 0,
-                         "vx": round(float(laser.get("vx", 0.0)), 1),
-                         "vy": round(float(laser.get("vy", 0.0)), 1)}
-        else:
-            # 没有实拍光斑，但有 /sdcard/laser_calib.json -> 直接用标定位置。
-            # 这是三态 B 的**数据接口**：只上报坐标，不在本文件里驱动云台。
-            _px = None
-            if _laser is not None:
-                _px = _laser.predict(_last_scale)
-            if _px is not None and _px[0] > 0:
-                laser_out = {"x": round(_px[0], 1), "y": round(_px[1], 1),
-                             "conf": 0, "mode": "calib", "status": "calib",
-                             "src": "calib"}
-            else:
-                laser_out = {"x": -1, "y": -1, "conf": 0, "status": "none",
-                             "src": "none"}
-
         out = {"seq": seq, "w": CFG["w"], "h": CFG["h"],
-               "ms": infer_ms, "ref_ms": refine_ms, "lms": laser_ms,
+               "ai": 1 if ai_run else 0,
+               "ms": infer_ms, "ref_ms": refine_ms,
                "s1": s1_ms, "s2": s2_ms, "jpg": jpg_ms,
                "loop": prev_loop_ms, "uart": uart_ms, "post": post_ms,
                "det": det, "kp": kp_flat,
                "labels": CFG["labels"], "task": "pose",
-               "roi": roi, "jpeg": jsz, "bull": bull, "laser": laser_out}
+               "roi": roi, "jpeg": jsz, "bull": bull}
         emit(T_TARGET, seq, ujson.dumps(out).encode())
-        t_u = time.ticks_ms()
-        _send_uart(seq, det, bull, has_det)
-        _send_uart_laser(seq, laser)
-        uart_ms = time.ticks_diff(time.ticks_ms(), t_u)
+        if ai_run:
+            t_u = time.ticks_ms()
+            _send_uart(seq, det, bull, has_det)
+            uart_ms = time.ticks_diff(time.ticks_ms(), t_u)
+        else:
+            uart_ms = 0
         if jpg is not None:
             emit(T_FRAME, seq, jpg)
 
@@ -769,15 +683,15 @@ def main():
             now = time.ticks_ms()
             dt = time.ticks_diff(now, win_t)
             fps = 0.0 if dt <= 0 else (win_n * 1000.0 / dt)
-            emit(T_STATS, seq, ("seq=%d fps=%.1f infer_ms=%d jpg_ms=%d s1=%d s2=%d bytes=%d mem=%d bull=%s laser=%s"
+            emit(T_STATS, seq, ("seq=%d fps=%.1f infer_ms=%d jpg_ms=%d s1=%d s2=%d bytes=%d mem=%d bull=%s"
                                 % (seq, fps, infer_ms, jpg_ms, s1_ms, s2_ms,
                                    len(jpg) if jpg else 0, gc.mem_free(),
-                                   bull.get("status"), laser_out["status"])).encode())
+                                   bull.get("status"))).encode())
             win_t = now
             win_n = 0
 
         prev_loop_ms = time.ticks_diff(time.ticks_ms(), t0)
-        post_ms = prev_loop_ms - s1_ms - laser_ms - s2_ms - infer_ms - jpg_ms - refine_ms - uart_ms
+        post_ms = prev_loop_ms - s1_ms - s2_ms - infer_ms - jpg_ms - refine_ms - uart_ms
         if post_ms < 0:
             post_ms = 0
 

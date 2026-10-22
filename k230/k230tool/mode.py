@@ -191,18 +191,10 @@ def _push_replace(link: K230Link, local: Path, remote: str, tmp: str,
 
 
 def _deploy_agent(link: K230Link, local_path: str) -> None:
-    """把本地代理 + 同目录 laser_aim.py 一起推到 /sdcard，md5 校验后替换。"""
+    """把本地代理推到 /sdcard/main.py，md5 校验后替换。"""
     src = Path(local_path).expanduser().resolve()
     if not src.is_file():
         raise BoardError("--agent 文件不存在：%s" % src)
-    dep = src.parent / "laser_aim.py"
-    if not dep.is_file():
-        raise BoardError(
-            "缺少依赖 %s；代理必须和 laser_aim.py 同目录部署（版本统一）"
-            % dep)
-    # 先推依赖：这样 reset 后 main.py 启动时 import 到的就是新版
-    _push_replace(link, dep, "/sdcard/laser_aim.py",
-                  "/sdcard/laser_aim.py.new", "laser_aim.py")
     _push_replace(link, src, MAIN, MAIN_TMP, "main.py")
 
 

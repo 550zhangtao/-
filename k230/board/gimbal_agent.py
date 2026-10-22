@@ -58,16 +58,17 @@ for _p in ("/sdcard",):
         sys.path.insert(0, _p)
     except Exception:
         pass
+
 try:
-    import laser_aim
+    import k230_perf as perf
 except Exception as _e:
-    laser_aim = None
-    print("agent: laser_aim import failed:", _e)
+    perf = None
+    print("agent: k230_perf import failed:", _e)
 
 # ============================ 配置 ============================
-MODEL = "/sdcard/models/pose_v3.kmodel"
+MODEL = "/sdcard/models/pose_v3_384.kmodel"
 LABELS = ["target"]
-MODEL_IN = [320, 320]
+MODEL_IN = [384, 384]
 W, H = 640, 480
 SENSOR_ID = 2
 CONF = 0.25
@@ -77,17 +78,11 @@ KP_NUM = 5
 KP_DIM = 3
 BULL_MIN_V = 0.30
 
-# ---- 激光瞄准参考（$LS，三态追踪接口）----
-# 位置来自 /sdcard/laser_calib.json（PC 端 ON/OFF 差分标定，见 scripts/calib_laser.py）。
-# 运行时只在标定点 ±LASER_ROI_RAD 的微窗里做一次质心（25x25 实测 ~1ms）；
-# 没有标定文件就关闭 $LS，绝不临场做全图搜索。
-LASER_ENABLE = 1
-LASER_ROI_RAD = 12
-LASER_BUDGET_MS = 12
-LASER_LEAD_MS = 50          # α-β 前瞻：补偿相机->UART->ESP32 延迟
-LASER_AB_ALPHA = 0.45       # 位置增益
-LASER_AB_BETA = 0.10        # 速度增益
-LASER_CALIB_FILE = "/sdcard/laser_calib.json"
+# ---- 板端性能（见 board/k230_perf.py）----
+PERF_MODE = "performance"     # 不插 USB 离线运行时尤其重要
+SENSOR_FPS = 60               # 采集帧率（原生 1080p60，不是瓶颈）
+SENSOR_FB = 3                 # 固件不支持时自动跳过
+
 
 UART_ENABLE = 1
 UART_ID = 3                     # 12Pin UART3: TX=GPIO32, RX=GPIO33
@@ -112,16 +107,6 @@ _ready = False
 _running = False
 _rxbuf = ""
 _fail = 0
-_laser = None
-_last_scale = None        # 上一帧靶纸表观边长（px），给 c + k·s 距离补偿
-# 激光耗时统计（只保留 count/sum/max，不做每帧大分配）
-_lms_n = 0
-_lms_sum = 0
-_lms_max = 0
-_lms_src = [0, 0, 0]      # 0=无 1=实测 2=标定
-_lms_budget = 0
-_lms_coast = 0
-_recalib_warned = False
 
 # 工作模式下 REPL 被本脚本占用，不能再靠 Ctrl-C 切模式（实测会把板子
 # 打进 USB 不枚举状态）。ESP32 的 gnone 命令会发 `$E,STOP!`，连续 3 条
@@ -314,14 +299,19 @@ def _open_camera():
     if _cam_open:
         return True
     try:
-        _sensor = Sensor(id=SENSOR_ID)
-        _sensor.reset()
-        _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_1)
-        _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
-        _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_2)
-        _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
-        MediaManager.init()
-        _sensor.run()
+        if perf is not None:
+            perf.apply_cpu(PERF_MODE)
+            _sensor = perf.open_sensor(SENSOR_ID, W, H, framebuffers=SENSOR_FB,
+                                       fps=SENSOR_FPS)
+        else:
+            _sensor = Sensor(id=SENSOR_ID)
+            _sensor.reset()
+            _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_1)
+            _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
+            _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_2)
+            _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
+            MediaManager.init()
+            _sensor.run()
         time.sleep_ms(300)
         _cam_open = True
         print("agent: camera open")
@@ -377,22 +367,6 @@ def _drain_frames():
 
 
 # ---------------- 推理 + 回传 ----------------
-def _kp_scale(kp):
-    """4 角点平均边长（px）；比检测框 sqrt(w*h) 更稳，框抖不会乘进 k·s。"""
-    try:
-        s = 0.0
-        for i in range(4):
-            j = (i + 1) % 4
-            x1 = float(kp[i * 3])
-            y1 = float(kp[i * 3 + 1])
-            x2 = float(kp[j * 3])
-            y2 = float(kp[j * 3 + 1])
-            s += ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
-        return s / 4.0
-    except Exception:
-        return 0.0
-
-
 def _send_frame(seq, boxes, scores, kpts):
     if _uart is None:
         return
@@ -421,13 +395,7 @@ def _send_frame(seq, boxes, scores, kpts):
 
 
 def _log_versions():
-    """启动日志：版本 + 标定状态。"""
-    if laser_aim is None:
-        print("agent: laser_aim MISSING -> $LS 关闭")
-        return False
-    print("agent: laser_aim v%s api=%d"
-          % (getattr(laser_aim, "VERSION", "?"),
-             int(getattr(laser_aim, "API_VERSION", 0))))
+    """启动日志：确认 /sdcard/main.py 已落盘。"""
     try:
         print("agent: main.py size=%d" % os.stat("/sdcard/main.py")[6])
     except Exception:
@@ -435,129 +403,16 @@ def _log_versions():
     return True
 
 
-def _open_laser():
-    """加载标定（PC 端 ON/OFF 差分标定产物）；失败只关闭 $LS，不影响 $KT。"""
-    global _laser
-    if not LASER_ENABLE or laser_aim is None:
-        _laser = None
-        return False
-    try:
-        _laser = laser_aim.LaserAim({"rad": LASER_ROI_RAD,
-                                     "budget_ms": LASER_BUDGET_MS,
-                                     "lead_ms": LASER_LEAD_MS,
-                                     "ab_alpha": LASER_AB_ALPHA,
-                                     "ab_beta": LASER_AB_BETA})
-        if not _laser.load(LASER_CALIB_FILE):
-            _laser = None
-            print("agent: 无 %s -> $LS 关闭（先在 PC 跑 scripts/calib_laser.py）"
-                  % LASER_CALIB_FILE)
-            return False
-        c = _laser.calib
-        print("agent: laser calib (%.1f,%.1f) k=(%.4f,%.4f) ref=%.1f"
-              % (c[0], c[1], c[2], c[3], c[4]))
-        return True
-    except Exception as e:
-        _laser = None
-        print("agent: laser init failed:", e)
-        return False
-
-
-def _send_laser(seq, laser):
-    """`$LS,<seq>,<run>,<x*10>,<y*10>,<conf*1000>,<src>!`
-
-    src: 0=无位置 1=本帧微窗实测 2=标定/预测位置。
-    """
-    global _lms_src
-    if _uart is None:
-        return
-    try:
-        if laser is not None and float(laser.get("x", -1)) >= 0:
-            src = 1 if laser.get("src") == "measured" else 2
-            _lms_src[src] = _lms_src[src] + 1
-            _uart.write("$LS,%d,1,%d,%d,%d,%d!\n" % (
-                seq, int(laser["x"] * 10), int(laser["y"] * 10),
-                int(float(laser.get("conf", 0)) * 1000), src))
-        else:
-            pred = None
-            if _laser is not None:
-                pred = _laser.predict(_last_scale)
-            if pred is not None and pred[0] > 0:
-                _lms_src[2] = _lms_src[2] + 1
-                _uart.write("$LS,%d,1,%d,%d,0,2!\n" %
-                            (seq, int(pred[0] * 10), int(pred[1] * 10)))
-            else:
-                _lms_src[0] = _lms_src[0] + 1
-                _uart.write("$LS,%d,0,-1,-1,0,0!\n" % seq)
-        _uart.flush()
-    except Exception as e:
-        print("agent: laser tx:", e)
-
-
-def _note_laser(ms, budget=0):
-    global _lms_n, _lms_sum, _lms_max, _lms_budget
-    if ms < 0:
-        ms = 0
-    _lms_n += 1
-    if budget:
-        _lms_budget += 1
-    _lms_sum += ms
-    if ms > _lms_max:
-        _lms_max = ms
-
-
-def _laser_stats():
-    if _lms_n <= 0:
-        return "laser n=0"
-    return ("laser avg=%d max=%d n=%d src1=%d src2=%d budget=%d coast=%d"
-            % (_lms_sum // _lms_n, _lms_max, _lms_n,
-               _lms_src[1], _lms_src[2], _lms_budget, _lms_coast))
-
-
 def _stream_frame(seq):
-    global _last_scale, _recalib_warned, _lms_coast
-    img1 = _sensor.snapshot(chn=CAM_CHN_ID_1)           # 显示通道：激光微窗用
-    laser = None
-    if _laser is not None:
-        try:
-            t_l = time.ticks_ms()
-            laser = _laser.sample(img1, _last_scale)
-            lms = time.ticks_diff(time.ticks_ms(), t_l)
-            _note_laser(lms, 1 if (laser and laser.get("budget")) else 0)
-            if laser is not None and laser.get("mode") == "coast":
-                _lms_coast += 1
-            if (getattr(_laser, "need_recalib", False)
-                    and not _recalib_warned):
-                _recalib_warned = True
-                print("agent: laser 实测偏离标定 %.0fpx -> 建议重标"
-                      % getattr(_laser, "calib_dev", 0.0))
-            elif laser is not None and laser.get("src") == "measured":
-                _recalib_warned = False
-        except Exception as e:
-            print("agent: laser:", e)
-            laser = None
+    # chn1 必须持续取帧：不排空会堵死 VICAP 管线（见模块说明）
+    _sensor.snapshot(chn=CAM_CHN_ID_1)
     arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
     res = _yolo.run(arr)
     if res and len(res) >= 4:
         boxes, scores, kpts = res[0], res[2], res[3]
     else:
         boxes, scores, kpts = [], [], []
-    if boxes:
-        b = boxes[0]
-        # 表观边长（px）：优先 4 角点平均边长，角点不可信时退回框
-        sc = 0.0
-        if kpts:
-            kp = kpts[0]
-            try:
-                if (float(kp[2]) >= 0.3 and float(kp[5]) >= 0.3
-                        and float(kp[8]) >= 0.3 and float(kp[11]) >= 0.3):
-                    sc = _kp_scale(kp)
-            except Exception:
-                sc = 0.0
-        if sc <= 1.0:
-            sc = (abs(float(b[2])) * abs(float(b[3]))) ** 0.5
-        _last_scale = sc
     _send_frame(seq, boxes, scores, kpts)
-    _send_laser(seq, laser)
     return len(boxes)
 
 
@@ -618,7 +473,6 @@ def main():
             print("agent: %dms 没收到 START, 自动开跑" % AUTO_START_MS)
         if cmd == "START":
             ok = _open_camera() and _open_model()
-            _open_laser()          # 失败只关闭 $LS，不影响 $KT 推流
             _running = ok
             _reply("START_OK" if ok else "ERR,INIT")
             print("agent: START -> %s" % ("streaming" if ok else "init failed"))
@@ -639,8 +493,7 @@ def main():
                     inst = 1000.0 / dt
                     fps = inst if fps == 0 else (0.8 * fps + 0.2 * inst)
                 if PRINT_EVERY and (spent % PRINT_EVERY) == 0:
-                    print("agent: %d frames, %.1ffps, %s"
-                          % (spent, fps, _laser_stats()))
+                    print("agent: %d frames, %.1ffps" % (spent, fps))
                 if (spent & 0x0F) == 0:
                     gc.collect()
             except Exception as e:

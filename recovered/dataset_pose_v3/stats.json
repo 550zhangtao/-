@@ -1,0 +1,32 @@
+{
+  "pos_src": 248,
+  "neg_src": 80,
+  "spot": 496,
+  "zoom": 248,
+  "zoom_spot": 248,
+  "neg_crops": 160,
+  "scene_train": 10,
+  "scene_val": 16,
+  "scene_test": 34,
+  "scene_neg": 17,
+  "counts": {
+    "train": {
+      "images": 1507,
+      "labels": 1507,
+      "pos": 1250,
+      "neg": 257
+    },
+    "val": {
+      "images": 28,
+      "labels": 28,
+      "pos": 28,
+      "neg": 0
+    },
+    "test": {
+      "images": 57,
+      "labels": 57,
+      "pos": 57,
+      "neg": 0
+    }
+  }
+}

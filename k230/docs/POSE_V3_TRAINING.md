@@ -4,7 +4,9 @@
 
 ## 1. 现象
 
-用户反馈：接入激光光斑后，YOLO 的靶纸/靶心**识别率下降、误检率上升**。
+用户反馈：外场（靶纸上带激光光斑）YOLO 的靶纸/靶心**识别率下降、误检率上升**。
+> 注：数据集里的"激光光斑"是**训练用图像增强**（把白光斑合成到靶心上，
+> 让模型不把光斑当成靶心），与板端激光识别无关 —— 后者已在 2026-10-22 删除。
 
 用 USB 工具（`k230tool grab` / `k230tool live`）抓现场 60 帧实测：
 
@@ -107,7 +109,8 @@ YOLO 的原始输出是 `[cx, cy, w, h]`（中心点 + 宽高），
 
 ## 4. 训练配方
 
-脚本：`tools/train_pose_v3.py`（从 `spot_v1.pt` 微调）
+脚本：`tools/train_pose_v3.py`（最初从 `spot_v1.pt` 微调；
+该权重已随精简删除，现在重训直接以 `models/pose_v3.pt` 为起点）
 
 | 项目 | 值 | 理由 |
 | --- | --- | --- |
@@ -147,10 +150,10 @@ YOLO 的原始输出是 `[cx, cy, w, h]`（中心点 + 宽高），
 残留的 2 帧是连拍开头相机未稳定时的运动模糊；实时 13fps 下由控制器
 的中值/低通滤波兜住。
 
-### 5.3 板端 kmodel 实测（`verify_live.py`，2026-10-21 夜）
+### 5.3 板端 kmodel 实测（2026-10-21 夜，`verify_live.py`；该脚本已随精简删除）
 
 ```
-帧率 13.3 fps   推理 31 ms   激光 11 ms
+帧率 13.3 fps   推理 31 ms
 conf>=0.25: top-1 命中 48/48 = 100.0%   误检 0   漏检 0
 靶心误差 mean 1.5  median 1.5  P95 1.7 px
 ```
@@ -162,18 +165,17 @@ kmodel（nncase Simulator 量化后）：`farneg_B` test 23/23 命中、靶心 3
 
 ```bash
 cd k230
-python3 tools/export_onnx.py --weights models/pose_v3.pt --imgsz 320 --out models/pose_v3.onnx
-python3 tools/compile_kmodel.py --onnx models/pose_v3.onnx --out models/pose_v3.kmodel \
-    --input-size 320 --calib-dir /tmp/calib_v3 --samples 30
-python3 -m k230tool push models/pose_v3.kmodel --dest /sdcard/models/pose_v3.kmodel
-python3 -m k230tool live --duration 20 --conf 0.25      # 默认已经是 pose_v3.kmodel
+python3 tools/export_onnx.py --weights models/pose_v3.pt --imgsz 256 --out models/pose_v3_256.onnx
+python3 tools/compile_kmodel.py --onnx models/pose_v3_256.onnx --out models/pose_v3_256.kmodel \
+    --input-size 256 --calib-dir ../recovered/dataset_pose_v3/images/train --samples 20
+python3 -m k230tool push models/pose_v3_256.kmodel --dest /sdcard/models/pose_v3_256.kmodel
+python3 -m k230tool live --duration 20 --conf 0.25      # 默认已经是 pose_v3_256.kmodel
 ```
 
-**路径说明**：新模型直接叫 `/sdcard/models/pose_v3.kmodel`，不覆盖正在跑的
-`target_pose.kmodel`（板端文件被 KPU 占用时 `os.rename`/写入会报 EBUSY）。
-`k230tool link.py`、`board/yolo_pose.py`、`board/yolo_preview_ide.py`、
-`board/gimbal_agent.py` 的默认 MODEL 已一起改成 `pose_v3.kmodel`；
-旧的 `target_pose.kmodel`（poseB）保留作回退。
+**路径说明**：板端只保留这一份模型 `/sdcard/models/pose_v3_256.kmodel`。
+`k230tool/link.py`、`board/yolo_pose.py`、`board/yolo_preview_ide.py`、
+`board/gimbal_agent.py` 四处默认 MODEL 一致。模型被 KPU 占用时直接覆盖会报
+EBUSY，先 `bash scripts/mode.sh debug` 停跑再推。
 
 板端默认配置：
 
@@ -182,22 +184,19 @@ python3 -m k230tool live --duration 20 --conf 0.25      # 默认已经是 pose_v
 | `in_w/in_h` | 320/320 | 与 kmodel 一致；换 416 要三处一起改并重新编译 |
 | `conf` | 0.25 | v3 在 0.4 下远靶仍 100%，可按现场再提高 |
 | `low_refine` | 1 | 低置信小靶（≤120px）裁 7 倍放大复筛，冷却 3 帧 |
-| `laser_every` | 1 | 标定先验 + 25×25 微窗，实测 1~2ms（见 LASER_AIM.md） |
+| `perf_mode` | `performance` | 板端大核 1600MHz（见 `board/k230_perf.py`，不插 USB 时尤其重要） |
+| `jpeg_q` | 同 `q` | 回传 JPEG 质量，ROI 建议 88~92 |
 | `low_refine_topk` | 2 | 只对前 2 个候选复筛 |
 
-板端必须加载激光标定：`board/yolo_pose.py` / IDE 预览 / 离线代理都读
-`/sdcard/laser_calib.json`（PC 端 `scripts/calib_laser.py` 生成）。
-**没有标定文件时激光上报直接关闭**（`$LS run=0`），不会在板上做任何全图搜索；
-标定一次约 1 分钟，之后运行时只在 ±12px 微窗里做质心（1~2ms）。
-
-## 7. 复现
+板端回传的 JPEG 是**原生像素的检测 ROI**（不是缩小图），所以小靶在
+`latest.jpg` 里也看得清；没有目标时才发一张缩小全图给出上下文。
 
 ## 7. 复现
 
 ```bash
 # 1) 现场帧标注（相机静止时）
 python3 tools/label_scene_frames.py --frames /tmp/scene_frames \
-    --weights models/spot_v1.pt --imgsz 416 --conf 0.25 \
+    --weights models/pose_v3.pt --imgsz 416 --conf 0.25 \
     --out /tmp/scene_ds/scene_labels.json --sheet /tmp/scene_ds/check.png \
     --crop 295,180,400,270 --zoom 5
 
@@ -212,12 +211,11 @@ python3 tools/build_pose_dataset_v3.py \
 
 # 3) 训练
 python3 tools/train_pose_v3.py --data ../recovered/dataset_pose_v3/data.yaml \
-    --weights models/spot_v1.pt --epochs 40 --imgsz 320 --batch 16 --device cpu \
-    --project ../recovered/runs_v3 --name pose_v3
+    --weights models/pose_v3.pt --epochs 40 --imgsz 320 --batch 16 --device cpu \
+    --project ../runs --name pose_v3
 
-# 4) 评测
-python3 tools/bench_pose.py --weights models/poseB_farhead_merged.pt models/spot_v1.pt \
-    ../recovered/runs_v3/pose_v3/weights/best.pt \
+# 4) 评测（--weights 支持多个，历史权重已删除，这里以当年的 pose_v3.pt 为基线）
+python3 tools/bench_pose.py --weights models/pose_v3.pt \
     --data ../recovered/k230_target_project/dataset_pose_farneg_B --splits test \
     --spot-copies 1 --far-copies 2 --far-spot \
     --neg-data ../recovered/k230_target_project/dataset_pose_farneg_B \
