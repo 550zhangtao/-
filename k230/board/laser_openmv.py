@@ -69,13 +69,13 @@ CFG = {
     # 但激光灰度只有 120~160（红通道饱和时 G/B 仍低），白物体灰度 229+。
     # 所以用 (R>red_rmin 且 G<red_gmax) 建 0/255 掩码，再交给 cv_lite 找连通域。
     # 注意必须用 uint8 比较，不能先做 R-G（uint8 相减会溢出回绕）。
-    "red_primary": 1,      # 1=红掩码主检测；0=退回灰度
+    "red_primary": 0,      # 本步验证 ROI 跟随：只走灰度      # 1=红掩码主检测；0=退回灰度
     "red_dg": 60,          # R-G 阈值（相对判据，实测激光≈150，白物≈-10）
     # 比例判据（抗曝光漂移）：R/(R+G+B) > red_ratio 才算法是"饱和红"。
     # 与 red_rmin（绝对亮度）相比，亮度整体升降不影响判定——
     # 木墙 L 从 160 变到 230，R/sum 都稳定在 0.37 < 0.45。
     # 实测：激光红晕 0.545 | 白物 0.324 | 木墙 0.372 | 红袋 0.547
-    "red_ratio": 0.45,
+    "red_ratio": 0.0,      # 颜色门控关闭
     # 孤立性：激光是孤立的点，红袋子是大片红。检查候选 bbox 外圈 band 像素
     # 内仍然"红"的比例，超过 iso_max 就判定它嵌在大片红色里，丢弃。
     "iso_band": 2,
@@ -84,10 +84,24 @@ CFG = {
                            # 调到 200 可把木纹/棕墙排除（实测关键）
     "red_gmax": 110,       # 已不用；保留配置兼容
     "red_min_area": 40,    # 掩码连通域最小面积（像素）
+    # ---- ROI 跟随上一帧（本步核心）----
+    # 每帧 ROI 中心 = 上一帧检测坐标，大小 roi_size；检测失败保持不动，
+    # 连续失败超过 lost_reset 帧才回到画面中心。没有卡尔曼、没有舵机映射。
+    "track": 1,
+    "roi_size": 120,
+    "lost_reset": 30,
+    # 选择规则：跟随模式下"离 ROI 中心最近"比"面积最大"更稳——
+    # 实测同一帧常有 3~4 个尺寸相近的候选，按面积选会在它们之间跳。
+    # 1 = 按距离选（推荐）；0 = 按面积（旧行为）
+    "select_near": 1,
+    # 起始 ROI 中心（默认画面中心）。现场激光不在中心时，先指到它所在处，
+    # 让跟随从正确的位置起步；之后完全由 last_x/last_y 接管。
+    "start_x": 320.0,
+    "start_y": 240.0,
     # 自动获取 ROI：连续 miss 到阈值后，把画面切成 4x3 块逐块建红掩码，
     # 找到"尺寸像激光"的红块就把 ROI 挪过去（单帧行为，不引入状态机）。
     # 只在丢失时跑，一次约 25ms；固定 ROI 够用时设 0 关闭。
-    "auto_roi": 0,
+    "auto_roi": 0,         # 本步关闭（由 track 接管）
     "auto_roi_miss": 2,      # 连续丢失多少帧后触发
     "auto_roi_every": 5,     # 最多每 N 帧触发一次
     "auto_roi_min_area": 60, # 候选红块的最小 bbox 面积
@@ -166,6 +180,11 @@ class LaserSpot:
         self.frame = 0
         self.miss = 0
         self.auto_moves = 0
+        # ROI 跟随状态：初始在画面中心
+        self.last_x = float(self.cfg.get("start_x", 320.0))
+        self.last_y = float(self.cfg.get("start_y", 240.0))
+        self.roi_c = (self.last_x, self.last_y)
+        self.lost_run = 0
 
     # ---- 兼容旧接口：本轮不用先验 ----
     def load(self, path=None):
@@ -270,8 +289,15 @@ class LaserSpot:
         r = self._sample_impl(gray_img, rgb_img)
         if r is None:
             self.miss += 1
+            self.lost_run += 1
+            # 连续丢失超过 lost_reset 帧 -> 回到画面中心重新找
+            if self.lost_run > int(self.cfg.get("lost_reset", 30)):
+                self.last_x = float(self.cfg.get("start_x", 320.0))
+                self.last_y = float(self.cfg.get("start_y", 240.0))
+                self.lost_run = 0
         else:
             self.miss = 0
+            self.lost_run = 0
         return r
 
     def _sample_impl(self, gray_img, rgb_img=None):
@@ -292,6 +318,24 @@ class LaserSpot:
             return None
 
         t0 = _now_ms()
+        # ---- ROI 跟随：中心 = 上一帧检测坐标 ----
+        if int(self.cfg.get("track", 1)):
+            sz = int(self.cfg.get("roi_size", 120))
+            ccx = float(self.last_x)
+            ccy = float(self.last_y)
+            x0 = int(ccx - sz * 0.5)
+            y0 = int(ccy - sz * 0.5)
+            if x0 < 0:
+                x0 = 0
+            if y0 < 0:
+                y0 = 0
+            if x0 + sz > 640:
+                x0 = 640 - sz
+            if y0 + sz > 480:
+                y0 = 480 - sz
+            rw = rh = sz
+            self.roi = (x0, y0, rw, rh)
+            self.roi_c = (x0 + rw * 0.5, y0 + rh * 0.5)
         x0, y0, rw, rh = self.roi
         use_red = (int(self.cfg.get("red_primary", 1)) and rgb_img is not None
                    and _np is not None and cv_lite is not None)
@@ -410,6 +454,12 @@ class LaserSpot:
         ccx, ccy = x0 + rw * 0.5, y0 + rh * 0.5      # ROI 中心（原图坐标）
 
         def _key(g):
+            if int(self.cfg.get("select_near", 0)):
+                dx = g["cx"] - ccx
+                dy = g["cy"] - ccy
+                d = (dx * dx + dy * dy) ** 0.5
+                # 距离为主、面积为次（面积只用来在距离相同时分胜负）
+                return -d + min(float(g["area"]), 2000.0) / 100000.0
             k = float(g["area"])
             if bias > 0.0:
                 dx = g["cx"] - ccx
@@ -514,6 +564,10 @@ class LaserSpot:
         area = best["area"]
         # conf 只是"相对面积"的可读指标，不参与任何逻辑
         conf = _clamp(area / 60.0, 0.10, 1.0)
+        # ---- 跟随状态更新 ----
+        self.last_x = float(cx)
+        self.last_y = float(cy)
+        self.lost_run = 0
         self.last = (cx, cy)
         self.last_px = area
         self.candidates = 1
