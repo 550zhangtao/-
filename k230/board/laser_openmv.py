@@ -69,18 +69,18 @@ CFG = {
     # 但激光灰度只有 120~160（红通道饱和时 G/B 仍低），白物体灰度 229+。
     # 所以用 (R>red_rmin 且 G<red_gmax) 建 0/255 掩码，再交给 cv_lite 找连通域。
     # 注意必须用 uint8 比较，不能先做 R-G（uint8 相减会溢出回绕）。
-    "red_primary": 0,      # 本步验证 ROI 跟随：只走灰度      # 1=红掩码主检测；0=退回灰度
+    "red_primary": 1,      # 本步验证 ROI 跟随：只走灰度      # 1=红掩码主检测；0=退回灰度
     "red_dg": 60,          # R-G 阈值（相对判据，实测激光≈150，白物≈-10）
     # 比例判据（抗曝光漂移）：R/(R+G+B) > red_ratio 才算法是"饱和红"。
     # 与 red_rmin（绝对亮度）相比，亮度整体升降不影响判定——
     # 木墙 L 从 160 变到 230，R/sum 都稳定在 0.37 < 0.45。
     # 实测：激光红晕 0.545 | 白物 0.324 | 木墙 0.372 | 红袋 0.547
-    "red_ratio": 0.0,      # 颜色门控关闭
+    "red_ratio": 0.0,   # 比例判据（float 较慢，实测 R>200 已够）
     # 孤立性：激光是孤立的点，红袋子是大片红。检查候选 bbox 外圈 band 像素
     # 内仍然"红"的比例，超过 iso_max 就判定它嵌在大片红色里，丢弃。
     "iso_band": 2,
     "iso_max": 0.35,
-    "red_rmin": 240,       # 红色亮度下限。木纹墙 R≈160，激光 R≈255 ->
+    "red_rmin": 200,       # 红色亮度下限。木纹墙 R≈160，激光 R≈255 ->
                            # 调到 200 可把木纹/棕墙排除（实测关键）
     "red_gmax": 110,       # 已不用；保留配置兼容
     "red_min_area": 40,    # 掩码连通域最小面积（像素）
@@ -220,10 +220,14 @@ class LaserSpot:
             _full = rgb_img.to_numpy_ref()      # 必须整帧取再切片：
         except Exception:                        # crop() 对 RGBP888 不可靠
             return False
+        _pl = (len(_full.shape) == 3 and _full.shape[0] == 3)
         for ty in range(0, 480, th):
             for tx in range(0, 640, tw):
                 try:
-                    a = _full[:, ty:ty + th, tx:tx + tw]
+                    if _pl:
+                        a = _full[:, ty:ty + th, tx:tx + tw]
+                    else:
+                        a = _full[ty:ty + th, tx:tx + tw, :].transpose(2, 0, 1)
                     dg2 = int(c.get("red_dg", 60))
                     rmin2 = int(c.get("red_rmin", 150))
                     rat2 = float(c.get("red_ratio", 0.0))
@@ -372,13 +376,23 @@ class LaserSpot:
                 # 实测 crop() 出来的 RGBP888 数组内容与切片不一致（对不上画面），
                 # 而整帧 to_numpy_ref() 再切片是可以精确定位的。
                 full = rgb_img.to_numpy_ref()
-                arr = full[:, y0:y0 + rh, x0:x0 + rw]
-                # 相对判据 R-G>red_dg，用 uint8 技巧绕开溢出：
-                # G<=195 时 G+60 不会回绕；G>195 时 R-G>60 不可能成立，
-                # 用 (G<=195) 这一项排掉。
+                # to_numpy_ref() 的布局随来源不同：
+                #   原生 RGBP888 -> (3,H,W) 平面；to_rgb888() 之类 -> (H,W,3) 交错。
+                # 两种都支持，避免 IndexError。
+                _sh = full.shape
+                if len(_sh) == 3 and _sh[0] == 3:
+                    _plane = True
+                    arr = full[:, y0:y0 + rh, x0:x0 + rw]
+                    R = arr[0]
+                    G = arr[1]
+                    B = arr[2]
+                else:
+                    _plane = False
+                    arr = full[y0:y0 + rh, x0:x0 + rw, :]
+                    R = arr[:, :, 0]
+                    G = arr[:, :, 1]
+                    B = arr[:, :, 2]
                 dg = int(self.cfg.get("red_dg", 60))
-                R = arr[0]
-                G = arr[1]
                 # 注意 ulab 没有 int32：整数用 int16 且换算成不溢出的比例式，
                 # 比例判据用 float（无溢出）。
                 rmin = int(self.cfg.get("red_rmin", 200))
@@ -390,12 +404,12 @@ class LaserSpot:
                     if abs(rat - 0.45) < 1e-6:
                         R16 = _np.array(R, dtype=_np.int16)
                         S16 = (R16 + _np.array(G, dtype=_np.int16)
-                               + _np.array(arr[2], dtype=_np.int16))
+                               + _np.array(B, dtype=_np.int16))
                         cond = cond & (R16 * 20 > S16 * 9)
                     else:
                         Rf = _np.array(R, dtype=_np.float)
                         Sf = (Rf + _np.array(G, dtype=_np.float)
-                              + _np.array(arr[2], dtype=_np.float))
+                              + _np.array(B, dtype=_np.float))
                         cond = cond & (Rf > rat * Sf)
                 mask = _np.where(cond, 255, 0)
                 self._cond = cond
@@ -433,12 +447,16 @@ class LaserSpot:
                 self.rejected += 1
                 continue
             # 实测 fill：bbox 内满足灰度阈值的像素数 / bbox 面积
-            lo_t = int(self.cfg["threshold"][0])
-            cnt_px = 0
-            for yy in range(by, by + bh):
-                for xx in range(bx, bx + bw):
-                    if arr[yy, xx] >= lo_t:
-                        cnt_px += 1
+            # 只在灰度模式 + 开启形状门控时计算（红掩码模式下 arr 是三通道，
+            # 按二维索引会越界）。
+            cnt_px = area
+            if (not use_red) and int(self.cfg.get("shape_gate", 0)):
+                lo_t = int(self.cfg["threshold"][0])
+                cnt_px = 0
+                for yy in range(by, by + bh):
+                    for xx in range(bx, bx + bw):
+                        if arr[yy, xx] >= lo_t:
+                            cnt_px += 1
             big_s = bw if bw > bh else bh
             sml_s = bh if bw > bh else bw
             self.blobs.append({"x": bx, "y": by, "w": bw, "h": bh,
@@ -564,7 +582,7 @@ class LaserSpot:
             else:
                 # 保底：形状门控没放行任何候选时，仍按面积选，避免丢锁
                 best = max(groups, key=lambda g: float(g["area"]))
-                sel = "fallback"
+                sel = "fallback" if gate_on else "area"
         self.sel = sel
         if best is None:
             self.status = "no_blob"
