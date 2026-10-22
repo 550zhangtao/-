@@ -54,6 +54,11 @@ CFG = {
     "min_area": 6,        # cv_lite 的 min_area（外接框面积下限）
     "kernel_size": 1,     # 1 = 不做形态学（3 会抹掉 3~4px 的小光斑核心）
     "diag_mode": 0,
+    # 白色物体/白光/白墙 -> 大片均匀高亮。实测：笔电白屏 18x80=1440px，
+    # 白墙整窗可到 120x120。激光只有 8x10≈80px，所以用**上限**把它们挡掉。
+    # （白色圆柱边缘 7x9=63px 与激光同尺寸，尺寸上无法区分，见文档说明）
+    "max_side": 40,
+    "max_area": 600,
     "diag_max_side": 40,  # 诊断时只对这么大的 blob 数真实像素，避免开销
     # 选最大 blob 时，离 ROI 中心越远扣得越多（单帧、无状态）。
     # 0 = 纯按面积；0.35 表示最远处面积打 65 折。实测能压掉 ROI 角落的
@@ -143,6 +148,7 @@ class LaserSpot:
         self.last_ms = 0
         self.raw_blobs = 0
         self.blobs = []
+        self.rejected = 0
         self.candidates = 0
         if cv_lite is None:
             self.mode = "none"
@@ -180,10 +186,19 @@ class LaserSpot:
         self.last_ms = _diff_ms(_now_ms(), t0)      # 只算裁剪 + cv_lite
 
         # ---- 解析 raw -> self.blobs（cv_lite 只给外接框，用 w*h 当面积）----
+        max_side = int(self.cfg.get("max_side", 0) or 0)
+        max_area = int(self.cfg.get("max_area", 0) or 0)
         for i in range(0, len(raw) - 3, 4):
             bx, by, bw, bh = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
+            area = bw * bh
+            if max_side and (bw > max_side or bh > max_side):
+                self.rejected += 1
+                continue                      # 大片白（屏幕/墙/灯）
+            if max_area and area > max_area:
+                self.rejected += 1
+                continue
             self.blobs.append({"x": bx, "y": by, "w": bw, "h": bh,
-                               "area": bw * bh,
+                               "area": area,
                                "cx": bx + bw * 0.5 + x0,
                                "cy": by + bh * 0.5 + y0})
 
