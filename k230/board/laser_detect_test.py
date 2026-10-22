@@ -65,7 +65,7 @@ SENSOR_ID = 2
 FPS = 60                       # 采集帧率上限；GC2093 原生 1080p60
 
 # ★ 主参数：灰度二值区间。激光点几乎饱和（~255），背景通常远低于它。
-THRESHOLD = (240, 255)         # (low, high)；暗背景 200~230，亮背景 240~248
+THRESHOLD = (210, 255)         # (low, high)；见文档"阈值怎么调"
 
 # 面积相关（cv_lite 只有一个 min_area，这里两个都收下、取较大值）
 AREA_THRESHOLD = 6             # 你要的 area_threshold，5~10
@@ -73,11 +73,12 @@ MIN_PIXELS = 6                 # 你要的 pixels_threshold，5~10
 MERGE = True                   # True: 相近光斑合并（间隔 <= MERGE_GAP 就并）
 
 # 光斑"应该是多大"——用来排除灯/墙/手电筒这类大片亮区
-MAX_PIXELS = 400               # 超过这个像素数就不是激光点
-MAX_SIDE = 48                  # 外接矩形最长边上限（px）
+MAX_PIXELS = 150               # 超过这个像素数就不是激光点（实测激光 30~70px）
+MAX_SIDE = 24                  # 外接矩形最长边上限（px，激光点通常 6~16px）
 MIN_FILL = 0.45                # 填充率下限：激光点圆而实，灯/反光是细长条或镂空
 
-KERNEL_SIZE = 3                # 形态学核：3 = 抹掉 1px 级散点（推荐）；1 = 关闭
+KERNEL_SIZE = 1                # 形态学核：1 = 关闭（推荐，激光核心可能只有 3~4px，
+                               #   K=3 的开运算会把它一起抹掉，实测会直接漏检）
 MERGE_GAP = 3                  # 两块之间间隔 <= 这么多像素就合并
 
 # 激光点大致应在的位置（搜索中心，像素）。只影响"多个候选时优先选谁"。
@@ -89,11 +90,20 @@ CORE_Y = H * 0.5
 # 大部分杂散误检。实测数据集上设太小会掉检出率，所以默认关闭、按现场再收紧。
 GATE_R = 0.0
 
+# 时序锁定：激光笔与相机相对固定，光斑不会乱跳。锁定后只在上一帧位置
+# LOCK_R 半径内找，连续 LOCK_LOST 帧找不到才重新全局搜索。
+# 实测：不加锁定时 310 帧里会偶尔跳到别的小亮点（cx 标准差 121px）；
+# 加锁定后一条直线稳住。LOCK_R=0 关闭锁定。
+LOCK_R = 40
+LOCK_LOST = 12
+
 # 打印 / 保存
 PRINT_EVERY = 1                # 每 N 帧打印一次；1 = 每帧都打印
 SAVE_CSV = "/sdcard/laser_detect_log.csv"   # 每帧一行；"" = 不写
 SAVE_HIT = ""                  # 例如 "/sdcard/laser_hit.jpg"：命中时存图（调试用）
 SAVE_HIT_MAX = 1               # 最多存几张（每帧存会明显掉帧）
+SAVE_HIT_RAW = "/sdcard/laser_hit_raw.jpg"   # 同一帧的"未绘制"原图，用于核对
+
 DRAW_ON_IDE = True             # True: 每帧推到 IDE（IDE 里才有画面）
 IDE_QUALITY = 70               # 推 IDE 的 JPEG 质量
 RESET_ON_EXIT = True           # 退出时软复位（KPU/相机析构在板上有死锁风险）
@@ -105,6 +115,8 @@ SECONDS = 0                    # 每轮秒数，0 = 不限
 
 sensor = None                  # 由 _init() 赋值
 _save_n = 0
+_lock = None                   # 上一帧锁定的 (cx, cy)
+_lock_miss = 0                 # 连续没找到的帧数
 
 
 # ---------------------------------------------------------------- 几何工具
@@ -214,11 +226,34 @@ def _merge_close(items, gap):
 
 
 # ---------------------------------------------------------------- 主流程
-def _pick(cands):
-    """在候选里挑激光点：面积/形状达标，优先靠画面中心。
+def _peak(gray, c, n=6):
+    """在候选框里粗采样取峰值亮度（最多 n*n 个点）。
 
-    激光笔和相机的相对位置固定，所以光斑基本落在画面中心附近的固定区域；
-    比"选最大"稳得多（最大块往往是台灯/白纸）。
+    激光是镜面反射，峰值几乎总是画面里最高的；纸/白墙虽然也亮，但峰值低一档。
+    用网格采样而不是逐像素，是为了把成本压在几十微秒级。
+    """
+    x, y, w, h = c["x"], c["y"], c["w"], c["h"]
+    sx = w // n if w >= n else 1
+    sy = h // n if h >= n else 1
+    pk = 0
+    yy = y
+    while yy < y + h:
+        xx = x
+        while xx < x + w:
+            v = gray[yy, xx]
+            if v > pk:
+                pk = v
+            xx += sx
+        yy += sy
+    return pk
+
+
+def _pick(cands, gray=None):
+    """在候选里挑激光点：先比峰值亮度，再看面积与离中心距离。
+
+    教训：只按"离画面中心近"排序会选错——实测一帧里白纸边缘的候选比真正的
+    激光点更靠中心，结果十字画在纸上（偏移 33px）。激光点峰值最高，所以
+    峰值是第一判据，中心距离只用来打破平手。
     """
     best = None
     best_key = None
@@ -239,7 +274,9 @@ def _pick(cands):
         dist = (dx * dx + dy * dy) ** 0.5
         if GATE_R > 0 and dist > GATE_R:
             continue          # 超出允许区域，不当激光点
-        key = (dist, -c["n"])
+        pk = _peak(gray, c) if gray is not None else 0
+        # 峰值降序 -> 面积升序（激光点偏小）-> 离中心近
+        key = (-pk, c["n"], dist)
         if best_key is None or key < best_key:
             best_key = key
             best = c
@@ -248,12 +285,13 @@ def _pick(cands):
 
 def run_round(shape, label="", seconds=0, csv_file=None):
     """跑 seconds 秒（0 = 一直跑），返回 (帧数, 命中数, 平均fps)。可被自动化多次调用。"""
-    global _save_n
+    global _save_n, _lock, _lock_miss
 
     t_start = time.ticks_ms()
     frame = 0
     hits = 0
     t_win = t_start
+    win_n = 0                 # 本窗口内的帧数（不能用累计 frame 算 fps）
     min_area = MIN_PIXELS if MIN_PIXELS > AREA_THRESHOLD else AREA_THRESHOLD
 
     # 先空跑 2 帧：自动曝光稳定前第一帧常整帧偏亮
@@ -271,36 +309,68 @@ def run_round(shape, label="", seconds=0, csv_file=None):
                                            min_area, KERNEL_SIZE)
         cv_ms = time.ticks_diff(time.ticks_ms(), t0)
 
-        # ---- 拆粘连 + 合并 + 尺寸过滤（cv_lite 没给面积/merge）
+        # ---- 候选筛选（cv_lite 只给外接矩形，没有面积/merge）
+        # 关键性能取舍：**不做逐像素拆分**。实测逐个 8 连通泛洪一块 900px 的
+        # 亮斑要 ~7ms，当前场景有 20+ 个亮块时后处理会到 45ms，直接掉到 16fps。
+        # 既然 MAX_PIXELS 已经说明"大块不可能是激光"，干脆把大块整体拒掉。
         cands = []
         for i in range(0, len(raw) - 3, 4):
-            rect = (raw[i], raw[i + 1], raw[i + 2], raw[i + 3])
-            if _blob_side(rect) > MAX_SIDE:
-                continue          # 大片亮区（灯/墙/手电筒反光）直接丢，省掉拆分
-            if rect[2] * rect[3] <= MAX_PIXELS * 2:
-                # 小框：直接用框面积当像素数（亮块实心，误差可接受），不逐像素拆
-                cands.append({"n": rect[2] * rect[3],
-                              "cx": rect[0] + rect[2] * 0.5,
-                              "cy": rect[1] + rect[3] * 0.5,
-                              "x": rect[0], "y": rect[1],
-                              "w": rect[2], "h": rect[3]})
-            else:
-                cands.extend(_split_by_gray(data, shape, rect, THRESHOLD[0]))
+            rw, rh = raw[i + 2], raw[i + 3]
+            bx, by = raw[i], raw[i + 1]
+            side = rw if rw > rh else rh
+            if side > MAX_SIDE:
+                continue                      # 灯 / 白墙 / 手电筒反光
+            box_area = rw * rh
+            if box_area > MAX_PIXELS * 2:
+                continue                      # 太大，不可能是激光点
+            # 用外接框面积当像素数上界（亮块接近实心，实测误差很小）
+            cands.append({"n": box_area,
+                          "cx": bx + rw * 0.5, "cy": by + rh * 0.5,
+                          "x": bx, "y": by, "w": rw, "h": rh})
         cands = _merge_close(cands, MERGE_GAP)
-        best = _pick(cands)
+        # ---- 时序锁定：先在上一帧位置附近找，找不到再全局找
+        best = None
+        if LOCK_R > 0 and _lock is not None:
+            near = []
+            for c in cands:
+                dx = c["cx"] - _lock[0]
+                dy = c["cy"] - _lock[1]
+                if dx * dx + dy * dy <= LOCK_R * LOCK_R:
+                    near.append(c)
+            best = _pick(near, data)
+            if best is None:
+                _lock_miss += 1
+                if _lock_miss >= LOCK_LOST:
+                    _lock = None
+                    _lock_miss = 0
+            else:
+                _lock_miss = 0
+        if best is None:
+            best = _pick(cands, data)
 
         frame += 1
+        _save_this = False
         if best is not None:
+            _lock = (best["cx"], best["cy"])
             hits += 1
             cx, cy, area = int(best["cx"]), int(best["cy"]), best["n"]
             if PRINT_EVERY and (frame % PRINT_EVERY) == 0:
                 print("[%d] BLOB cx=%d cy=%d area=%d (cv %.1fms)"
                       % (frame, cx, cy, area, cv_ms))
-            # 用外接矩形 + 十字标出；圆环帮助肉眼判断是否套住光斑
+            # 存档：先在"还没画"的时候存原图，再画标记，最后存画好的
+            _save_this = bool(SAVE_HIT) and _save_n < SAVE_HIT_MAX
+            if _save_this and SAVE_HIT_RAW:
+                try:
+                    img.save(SAVE_HIT_RAW)
+                    print("saved raw -> %s" % SAVE_HIT_RAW)
+                except Exception as e:
+                    print("save raw:", e)
+            # 灰度图上彩色会被压成暗灰，看不清；激光点本身很亮，
+            # 所以用**黑色**矩形 + 十字，对比度最高（实测比红色清楚得多）。
             img.draw_rectangle(best["x"], best["y"], best["w"], best["h"],
-                               color=(0, 255, 0), thickness=1)
-            img.draw_cross(cx, cy, color=(255, 0, 0), size=10, thickness=2)
-            img.draw_circle(cx, cy, 8, color=(255, 0, 0), thickness=1)
+                               color=(0, 0, 0), thickness=1)
+            img.draw_cross(cx, cy, color=(0, 0, 0), size=12, thickness=2)
+            img.draw_circle(cx, cy, 10, color=(0, 0, 0), thickness=1)
         elif PRINT_EVERY and (frame % PRINT_EVERY) == 0:
             print("[%d] none  (cv %.1fms)" % (frame, cv_ms))
 
@@ -314,7 +384,7 @@ def run_round(shape, label="", seconds=0, csv_file=None):
 
         # 命中存档：只存前 SAVE_HIT_MAX 张。**不要每帧都存**——实测 SD 写入
         # 会把 33fps 拖到 9fps（每次 img.save 数十毫秒）。
-        if SAVE_HIT and best is not None and _save_n < SAVE_HIT_MAX:
+        if best is not None and _save_this:
             _save_n += 1
             try:
                 img.save(SAVE_HIT)
@@ -325,11 +395,13 @@ def run_round(shape, label="", seconds=0, csv_file=None):
         if DRAW_ON_IDE and DISPLAY_MODE == "ide":
             Display.show_image(img)
 
+        win_n += 1
         dt_win = time.ticks_diff(time.ticks_ms(), t_win)
         if dt_win >= 2000:
-            fps = frame * 1000.0 / dt_win
-            print("---- %s frames=%d hit=%d fps=%.1f ----" % (label, frame, hits, fps))
+            print("---- %s frames=%d hit=%d fps=%.1f ----"
+                  % (label, frame, hits, win_n * 1000.0 / dt_win))
             t_win = time.ticks_ms()
+            win_n = 0
 
         if seconds and time.ticks_diff(time.ticks_ms(), t_start) >= seconds * 1000:
             break
