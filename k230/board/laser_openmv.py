@@ -69,7 +69,7 @@ CFG = {
     # 但激光灰度只有 120~160（红通道饱和时 G/B 仍低），白物体灰度 229+。
     # 所以用 (R>red_rmin 且 G<red_gmax) 建 0/255 掩码，再交给 cv_lite 找连通域。
     # 注意必须用 uint8 比较，不能先做 R-G（uint8 相减会溢出回绕）。
-    "red_primary": 1,      # 本步验证 ROI 跟随：只走灰度      # 1=红掩码主检测；0=退回灰度
+    "red_primary": 0,      # 本步验证 ROI 跟随：只走灰度      # 1=红掩码主检测；0=退回灰度
     "red_dg": 60,          # R-G 阈值（相对判据，实测激光≈150，白物≈-10）
     # 比例判据（抗曝光漂移）：R/(R+G+B) > red_ratio 才算法是"饱和红"。
     # 与 red_rmin（绝对亮度）相比，亮度整体升降不影响判定——
@@ -78,6 +78,11 @@ CFG = {
     "red_ratio": 0.0,   # 比例判据（float 较慢，实测 R>200 已够）
     # 孤立性：激光是孤立的点，红袋子是大片红。检查候选 bbox 外圈 band 像素
     # 内仍然"红"的比例，超过 iso_max 就判定它嵌在大片红色里，丢弃。
+    # ---- 跳变抑制（2~3 帧的轻量关联，不是卡尔曼/状态机）----
+    "max_step": 20.0,
+    "step_confirm": 3,
+    "jump_guard": 1,
+    "acquire": 1,   # 启动全图捕获一次
     "iso_band": 2,
     "iso_max": 0.35,
     "red_rmin": 200,       # 红色亮度下限。木纹墙 R≈160，激光 R≈255 ->
@@ -192,7 +197,9 @@ class LaserSpot:
         self.last_x = float(self.cfg.get("start_x", 320.0))
         self.last_y = float(self.cfg.get("start_y", 240.0))
         self.roi_c = (self.last_x, self.last_y)
+        self.acquired = 0
         self.lost_run = 0
+        self.jump_n = 0
 
     # ---- 兼容旧接口：本轮不用先验 ----
     def load(self, path=None):
@@ -209,6 +216,41 @@ class LaserSpot:
         self.mode = "none"
         self.src = "none"
         self.status = "none"
+
+    def _acquire(self, gray_img):
+        """全图扫一次，挑最像激光的块（小、方、孤立）作为跟随起点。"""
+        c = self.cfg
+        full = gray_img.to_numpy_ref()
+        rh, rw = 480, 640
+        raw = cv_lite.grayscale_find_blobs(
+            [rh, rw], full, int(c["threshold"][0]), int(c["threshold"][1]),
+            max(6, int(c.get("min_area", 6))), int(c.get("kernel_size", 1)))
+        mx_side = int(c.get("max_side", 40))
+        mx_area = int(c.get("max_area", 600))
+        best = None
+        best_score = -1e9
+        for i in range(0, len(raw) - 3, 4):
+            bx, by, bw, bh = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
+            if bw <= 0 or bh <= 0 or bw > mx_side or bh > mx_side:
+                continue
+            area = bw * bh
+            if area > mx_area or area < 60:
+                continue
+            big = bw if bw > bh else bh
+            sml = bh if bw > bh else bw
+            asp = float(big) / float(sml) if sml else 99.0
+            if asp > 2.0:
+                continue
+            # 越接近方形、面积适中越像激光
+            score = 100.0 - abs(asp - 1.2) * 20.0 - abs(area - 260) * 0.05
+            if score > best_score:
+                best_score = score
+                best = (bx + bw * 0.5, by + bh * 0.5)
+        if best is not None:
+            self.last_x = float(best[0])
+            self.last_y = float(best[1])
+            self.roi_c = (self.last_x, self.last_y)
+            print("laser: 启动捕获 (%.0f,%.0f)" % best)
 
     def _auto_roi(self, rgb_img, t0):
         """扫 4x3 块，找尺寸像激光的红块，把 ROI 挪过去。返回 True 表示挪了。"""
@@ -330,6 +372,14 @@ class LaserSpot:
             return None
 
         t0 = _now_ms()
+        # ---- 启动自动捕获（只做一次）----
+        if ((not self.acquired) and int(self.cfg.get("acquire", 1))
+                and not int(self.cfg.get("red_primary", 0))):
+            self.acquired = 1
+            try:
+                self._acquire(gray_img)
+            except Exception:
+                pass
         # ---- ROI 跟随：中心 = 上一帧检测坐标 ----
         if int(self.cfg.get("track", 1)):
             lr = int(getattr(self, "lost_run", 0))
@@ -595,6 +645,22 @@ class LaserSpot:
         area = best["area"]
         # conf 只是"相对面积"的可读指标，不参与任何逻辑
         conf = _clamp(area / 60.0, 0.10, 1.0)
+
+        # ---- 跳变抑制：位移过大先按住，连续 N 帧才接受 ----
+        if int(self.cfg.get("jump_guard", 1)) and self.last is not None:
+            ms_px = float(self.cfg.get("max_step", 20.0))
+            ddx = cx - self.last[0]
+            ddy = cy - self.last[1]
+            if ddx * ddx + ddy * ddy > ms_px * ms_px:
+                self.jump_n += 1
+                if self.jump_n < int(self.cfg.get("step_confirm", 3)):
+                    cx = self.last[0]
+                    cy = self.last[1]
+                    sel = "hold"
+                else:
+                    self.jump_n = 0
+            else:
+                self.jump_n = 0
 
         # ---- 跟随状态更新 ----
         self.last_x = float(cx)
