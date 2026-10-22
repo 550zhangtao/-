@@ -22,6 +22,7 @@ import os as _os
 # 本脚本现在位于 k230/scripts/，工具包根就是它的上一级
 TOOLKIT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 SRC_LOCAL = _os.path.join(TOOLKIT, "board", "gimbal_agent.py")
+PK_LOCAL = _os.path.join(TOOLKIT, "board", "point_kalman.py")
 SRC = open(SRC_LOCAL, encoding="utf-8").read()
 WAIT_S = float(sys.argv[1]) if len(sys.argv) > 1 else 900.0
 
@@ -129,8 +130,13 @@ def main():
                             + repl(s, "except Exception as e: print('rm:', e)", 0.4), 1))
     log("   ", last_lines(repl(s, "print('RM_DONE')", 0.4), 1))
 
-    log("[3] push gimbal_agent.py ...")
+    log("[3] push point_kalman.py + gimbal_agent.py ...")
     s.close()
+    r = subprocess.run([sys.executable, "-m", "k230tool", "push", PK_LOCAL,
+                        "--dest", "/sdcard/point_kalman.py"],
+                       cwd=TOOLKIT, capture_output=True, text=True)
+    log("   pk:", (r.stdout or r.returncode).strip()
+        if r.stdout else r.stderr.strip()[-300:])
     r = subprocess.run([sys.executable, "-m", "k230tool", "push", SRC_LOCAL,
                         "--dest", "/sdcard/gimbal_agent.py"],
                        cwd=TOOLKIT, capture_output=True, text=True)

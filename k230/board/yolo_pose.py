@@ -53,6 +53,12 @@ except Exception as _e:
     perf = None
     print("k230_perf 导入失败:", _e)
 
+try:
+    from point_kalman import PointKalman
+except Exception as _e:
+    PointKalman = None
+    print("point_kalman 导入失败，靶心/激光不平滑:", _e)
+
 _lref_skip = 0        # 低置信复筛冷却（剩下几帧内不再复筛）
 
 MAGIC = b"\xAA\x55K2"
@@ -163,6 +169,9 @@ class _PoseAidemo:
 
 
 _YL.aidemo = _PoseAidemo()
+
+# 靶心平滑（缺失时 _bull_kf=None，脚本行为与原来一致）
+_bull_kf = PointKalman() if PointKalman is not None else None
 
 
 def _check_pose(box, kp, kp_dim=3):
@@ -606,6 +615,24 @@ def main():
                 else:
                     bull = {"status": "low_conf"}
                     has_det = False
+
+            # ---- 靶心卡尔曼：有测量 update；短暂丢失 predict 兜底 ----
+            if _bull_kf is not None:
+                _now = time.ticks_ms()
+                if bull.get("status") == "ok" and bull.get("x") is not None:
+                    _s = _bull_kf.update(float(bull["x"]), float(bull["y"]), _now)
+                    if _s is not None:
+                        bull["x"] = round(_s[0], 1)
+                        bull["y"] = round(_s[1], 1)
+                        bull["vx"] = round(_s[2], 1)
+                        bull["vy"] = round(_s[3], 1)
+                else:
+                    _s = _bull_kf.predict(_now)
+                    if _s is not None:
+                        bull = {"x": round(_s[0], 1), "y": round(_s[1], 1),
+                                "conf": round(float(last_bull.get("conf", 0.0) or 0.0), 3),
+                                "status": "ok", "src": "kf_coast",
+                                "vx": round(_s[2], 1), "vy": round(_s[3], 1)}
 
         else:
             res = last_res

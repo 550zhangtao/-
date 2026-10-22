@@ -65,6 +65,12 @@ except Exception as _e:
     perf = None
     print("agent: k230_perf import failed:", _e)
 
+try:
+    from point_kalman import PointKalman
+except Exception as _e:
+    PointKalman = None
+    print("agent: point_kalman import failed:", _e)
+
 # ============================ 配置 ============================
 MODEL = "/sdcard/models/pose_v3_384.kmodel"
 LABELS = ["target"]
@@ -166,6 +172,9 @@ class _PoseAidemo:
 
 
 _YL.aidemo = _PoseAidemo()
+
+# 靶心平滑（缺失时 _bull_kf=None，行为与原来一致）
+_bull_kf = PointKalman() if PointKalman is not None else None
 
 
 # ---------------- UART ----------------
@@ -372,20 +381,38 @@ def _send_frame(seq, boxes, scores, kpts):
         return
     run = 1 if boxes else 0
     conf = 0
+    bx = by = -1
+    now = time.ticks_ms()
     if run:
         b = boxes[0]
         cx = int(b[0] + b[2] * 0.5)
         cy = int(b[1] + b[3] * 0.5)
         kp = kpts[0]
         if len(kp) >= 15 and float(kp[14]) >= BULL_MIN_V:
-            bx, by = int(kp[12]), int(kp[13])
+            _rx, _ry = int(kp[12]), int(kp[13])
+            if _bull_kf is not None:
+                _s = _bull_kf.update(_rx, _ry, now)
+                if _s is not None:
+                    bx, by = int(round(_s[0])), int(round(_s[1]))
+                else:
+                    bx, by = _rx, _ry
+            else:
+                bx, by = _rx, _ry
             # $KT 的 conf 协议上是**靶心置信度**（yolo_pose.py 也这么发）；
             # 旧代理发的是框分数，ESP32 三态接口按 bull conf 判有效会误判。
             conf = int(float(kp[14]) * 1000)
         else:
-            bx = by = -1
+            # 有框但靶心不可信：短暂丢失用预测兜底
+            if _bull_kf is not None:
+                _s = _bull_kf.predict(now)
+                if _s is not None:
+                    bx, by = int(round(_s[0])), int(round(_s[1]))
     else:
-        cx = cy = bx = by = -1
+        cx = cy = -1
+        if _bull_kf is not None:
+            _s = _bull_kf.predict(now)
+            if _s is not None:
+                bx, by = int(round(_s[0])), int(round(_s[1]))
     _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d!\n" %
                 (seq, run, cx, cy, bx, by, conf))
     try:

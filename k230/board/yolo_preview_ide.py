@@ -52,6 +52,7 @@ ENC_SCALE = 0.80              # 预览图缩放：0.80 -> 512x384 更清晰，�
 # ---- 激光检测：移植 zhouzhou-code/elec_vision_k230（见 board/laser_repo.py）----
 # 原版逻辑：固定居中 ROI(320x240) + LAB 阈值(9,100,15,98,-13,77)
 #          + find_blobs(pixels_threshold=1, merge=True) + 取面积最大。
+# 2026-10-23 阈值已收紧为 (80,100,40,127,60,127)：亮 + 正 A(高饱和红) + 偏黄。
 # 这里**未改判据**，只把结果画到预览上。
 LASER_ENABLE = 1
 LASER_CFG = {}          # 可覆盖 laser_repo 的常量，如 {"max_side": 40}
@@ -103,6 +104,12 @@ try:
 except Exception as _e:
     laser_spot_mod = None
     print("laser_repo 不可用，激光检测关闭:", _e)
+
+try:
+    from point_kalman import PointKalman
+except Exception as _e:
+    PointKalman = None
+    print("point_kalman 不可用，靶心/激光平滑关闭:", _e)
 
 # 固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
 for _p in ("/sdcard", "/sdcard/board", "/"):
@@ -168,6 +175,10 @@ class _PoseAidemo:
 
 _YL.aidemo = _PoseAidemo()
 
+# 靶心平滑（PointKalman 缺失时为 None = 不平滑）
+_bull_kf = PointKalman() if PointKalman is not None else None
+_bull_sm = None
+
 _uart = None
 _uart_warned = False
 
@@ -209,16 +220,20 @@ def _send_uart(seq, res):
             # b = [x, y, w, h]（左上角+宽高）→ 协议要求框中心
             cx = int(b[0] + b[2] * 0.5)
             cy = int(b[1] + b[3] * 0.5)
-            kp = res[3][0]
-            if len(kp) >= 15 and float(kp[14]) >= 0.3:
-                bx, by = int(kp[12]), int(kp[13])
-                conf = int(float(kp[14]) * 1000)
-            else:
-                bx = by = -1
-                conf = 0
         else:
-            cx = cy = bx = by = -1
-            conf = 0
+            cx = cy = -1
+        conf = 0
+        bx = by = -1
+        if run and res[3] and len(res[3][0]) >= 15 \
+                and float(res[3][0][14]) >= 0.3:
+            conf = int(float(res[3][0][14]) * 1000)
+        if _bull_sm is not None:
+            bx = int(round(_bull_sm[0]))
+            by = int(round(_bull_sm[1]))
+        elif conf:
+            # point_kalman 缺失时退回原始 kp
+            bx = int(res[3][0][12])
+            by = int(res[3][0][13])
         _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d!\n" % (seq, run, cx, cy, bx, by, conf))
         _uart.flush()
     except Exception as e:
@@ -233,6 +248,24 @@ def _bull_of(res):
     if len(kp) >= 15 and float(kp[14]) >= 0.3:
         return (float(kp[12]), float(kp[13]))
     return None
+
+
+def _update_bull_filter(res, now):
+    """有靶心测量就 update，否则 predict 兜底；结果存 _bull_sm。"""
+    global _bull_sm
+    if _bull_kf is None:
+        _bull_sm = None
+        return
+    bx = by = None
+    if res and len(res) > 3 and res[3] and len(res[3][0]) >= 15:
+        kp = res[3][0]
+        if float(kp[14]) >= 0.3:
+            bx, by = float(kp[12]), float(kp[13])
+    if bx is not None:
+        s = _bull_kf.update(bx, by, now)
+    else:
+        s = _bull_kf.predict(now)
+    _bull_sm = None if s is None else (s[0], s[1])
 
 
 def _refine_pose(img, box, mult=7.0):
@@ -278,8 +311,8 @@ def _refine_pose(img, box, mult=7.0):
         return None
 
 
-def _draw(img, res, s=1.0):
-    """画框、四角轮廓、靶心。"""
+def _draw(img, res, s=1.0, bull_xy=None):
+    """画框、四角轮廓、靶心。bull_xy 给定时用平滑后的靶心坐标覆盖。"""
     if not res or not res[0]:
         return None
     boxes, ids, scores, kpts = res[0], res[1], res[2], res[3]
@@ -297,6 +330,9 @@ def _draw(img, res, s=1.0):
                 pts.append((int(round(px * s)), int(round(py * s))))
             else:
                 pts.append(None)
+        if i == 0 and bull_xy is not None and len(pts) >= 5:
+            pts[4] = (int(round(float(bull_xy[0]) * s)),
+                      int(round(float(bull_xy[1]) * s)))
         quad = [p for p in pts[:4] if p is not None]
         n = len(quad)
         if n >= 2:
@@ -394,14 +430,18 @@ def _draw_laser(dst, spot, sc=1.0, label=True):
     """画原版 ROI 框 + 选中的 blob 框 + 十字 + 坐标（640x480 原图坐标）。"""
     if spot is None:
         return
-    # 选中的 blob 外接框
+    # 选中的 blob 外接框（有 bx/by 就按真实左上角画，长条时不至于偏到一边）
     if spot.get("w") and spot.get("h"):
         try:
             bw = int(spot["w"] * sc)
             bh = int(spot["h"] * sc)
-            dst.draw_rectangle(int(round(spot["cx"] * sc)) - bw // 2,
-                               int(round(spot["cy"] * sc)) - bh // 2,
-                               bw, bh, color=(0, 255, 0), thickness=1)
+            if spot.get("bx") is not None and spot.get("by") is not None:
+                rx = int(round(spot["bx"] * sc))
+                ry = int(round(spot["by"] * sc))
+            else:
+                rx = int(round(spot["cx"] * sc)) - bw // 2
+                ry = int(round(spot["cy"] * sc)) - bh // 2
+            dst.draw_rectangle(rx, ry, bw, bh, color=(0, 255, 0), thickness=1)
         except Exception:
             pass
     cx = int(round(spot["cx"] * sc))
@@ -478,6 +518,7 @@ def main():
                     _laser_spot = {"cx": _ls["x"], "cy": _ls["y"],
                                    "n": _ls.get("n", 0),
                                    "w": _ls.get("w", 0), "h": _ls.get("h", 0),
+                                   "bx": _ls.get("bx"), "by": _ls.get("by"),
                                    "area": _ls.get("area", 0),
                                    "raw": _ls.get("raw", 0)}
                 else:
@@ -500,6 +541,7 @@ def main():
                             rb = r
                     if rb is not None and rb[2] >= CONF:
                         last_res = ([rb[0]], [0], [rb[2]], [rb[1]])
+            _update_bull_filter(last_res, time.ticks_ms())
         res = last_res
 
         _send_uart(n, res)
@@ -509,7 +551,7 @@ def main():
                 d = perf.enc_dims(W, H, VIEW_SCALE) if perf is not None else None
                 sc = (d[0] / float(W)) if d else VIEW_SCALE
                 disp = img.copy(x_scale=sc, y_scale=sc)
-                _draw(disp, res, sc)
+                _draw(disp, res, sc, _bull_sm)
                 _draw_laser(disp, _laser_spot, sc,
                             label=True)
                 if d:
@@ -517,7 +559,7 @@ def main():
                 else:
                     disp.compress_for_ide(quality=IDE_QUALITY)
             else:
-                _draw(img, res)
+                _draw(img, res, 1.0, _bull_sm)
                 _draw_laser(img, _laser_spot, 1.0,
                             label=True)
                 roi = None
@@ -579,7 +621,9 @@ def main():
                     int(_laser_spot.get("w", 0)), int(_laser_spot.get("h", 0)))
             else:
                 lz = "laser -"
-            lz += " | lms %dms raw %d" % (_laser_ms, _nraw)
+            lz += " | lms %dms raw %d%s" % (
+                _laser_ms, _nraw,
+                " core" if getattr(_laser, "core", 0) else "")
             print("[%d] %.1ffps | %s | %s" % (n, fps, lz, tg))
         if (n & 0x0F) == 0:
             gc.collect()
