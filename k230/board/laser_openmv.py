@@ -96,9 +96,12 @@ CFG = {
     # 选择规则：跟随模式下"离 ROI 中心最近"比"面积最大"更稳——
     # 实测同一帧常有 3~4 个尺寸相近的候选，按面积选会在它们之间跳。
     # 1 = 按距离选（推荐）；0 = 按面积（旧行为）
-    # 混合选择：面积主导，面积相近时才用距离
-    "area_dom": 1.5,       # 最大面积 > 次大 * area_dom -> 直接选最大
-    "select_near": 1,      # 1=面积相近时按距离；0=完全按面积（恢复段用）
+    # 形状门控（单帧几何判据）：激光是近似圆形、实心但不过饱和的小块。
+    # cv_lite 只给外接框，所以 fill 用"bbox 内灰度>=阈值的像素数 / bbox 面积"实测。
+    "shape_gate": 0,
+    "aspect_max2": 2.0,    # max(w,h)/min(w,h) <= 2.0
+    "fill_min": 0.40,
+    "fill_max": 0.85,
     # 起始 ROI 中心（默认画面中心）。现场激光不在中心时，先指到它所在处，
     # 让跟随从正确的位置起步；之后完全由 last_x/last_y 接管。
     "start_x": 320.0,
@@ -429,10 +432,22 @@ class LaserSpot:
             if max_area and area > max_area:
                 self.rejected += 1
                 continue
+            # 实测 fill：bbox 内满足灰度阈值的像素数 / bbox 面积
+            lo_t = int(self.cfg["threshold"][0])
+            cnt_px = 0
+            for yy in range(by, by + bh):
+                for xx in range(bx, bx + bw):
+                    if arr[yy, xx] >= lo_t:
+                        cnt_px += 1
+            big_s = bw if bw > bh else bh
+            sml_s = bh if bw > bh else bw
             self.blobs.append({"x": bx, "y": by, "w": bw, "h": bh,
                                "area": area,
                                "cx": bx + bw * 0.5 + x0,
-                               "cy": by + bh * 0.5 + y0})
+                               "cy": by + bh * 0.5 + y0,
+                               "fill": (float(cnt_px) / float(area)) if area else 0.0,
+                               "aspect": (float(big_s) / float(sml_s)) if sml_s else 99.0,
+                               "px": cnt_px})
 
         # ---- 近距离合并（模拟 OpenMV find_blobs 的 merge=True）----
         mg = float(self.cfg.get("merge_px", 0.0) or 0.0)
@@ -452,12 +467,23 @@ class LaserSpot:
                         g["area"] = tot
                         g["w"] = max(g["w"], it["w"])
                         g["h"] = max(g["h"], it["h"])
+                        g["px"] = g.get("px", 0) + int(it.get("px", 0))
                         g["parts"] += 1
                         placed = True
                         break
             if not placed:
                 groups.append({"cx": it["cx"], "cy": it["cy"], "w": it["w"],
-                               "h": it["h"], "area": it["area"], "parts": 1})
+                               "h": it["h"], "area": it["area"], "parts": 1,
+                               "px": int(it.get("px", 0))})
+        # 合并后的 group 必须重新算 aspect/fill（否则形状门控拿不到字段）
+        for g in groups:
+            gw = int(g["w"])
+            gh = int(g["h"])
+            bs = gw if gw > gh else gh
+            ss = gh if gw > gh else gw
+            g["aspect"] = (float(bs) / float(ss)) if ss else 99.0
+            box = gw * gh
+            g["fill"] = (min(1.0, float(g.get("px", 0)) / float(box))) if box else 0.0
         self.groups = groups
 
         bias = float(self.cfg.get("center_bias", 0.0) or 0.0)
@@ -515,52 +541,38 @@ class LaserSpot:
                 kept.append(g)
             groups = kept
 
-        # ---- 选择规则：面积为主、距离为辅（+ 恢复段纯面积）----
-        # 恢复段（连续丢失 16~30 帧）距离已不可靠，改为纯面积。
-        lr_now = int(getattr(self, "lost_run", 0))
-        recover = (lr_now > 15)
+        # ---- 选择规则：先形状门控，通过者取面积最大；全被拒则退回纯面积 ----
+        # 单帧几何判据，不做多帧确认。
         sel = None
         best = None
         if groups:
-            if len(groups) == 1:
-                best = groups[0]
-                sel = "recover" if recover else "area"
+            gate_on = int(self.cfg.get("shape_gate", 0))
+            amax = float(self.cfg.get("aspect_max2", 2.0))
+            fmin = float(self.cfg.get("fill_min", 0.40))
+            fmax = float(self.cfg.get("fill_max", 0.85))
+            passed = []
+            if gate_on:
+                for g in groups:
+                    if (float(g.get("aspect", 99.0)) <= amax
+                            and fmin <= float(g.get("fill", 0.0)) <= fmax):
+                        passed.append(g)
+                    else:
+                        self.rejected += 1
+            if passed:
+                best = max(passed, key=lambda g: float(g["area"]))
+                sel = "shape"
             else:
-                srt = sorted(groups, key=lambda g: -float(g["area"]))
-                a1 = float(srt[0]["area"])
-                a2 = float(srt[1]["area"])
-                dom = float(self.cfg.get("area_dom", 1.5))
-                if recover or (not int(self.cfg.get("select_near", 1))):
-                    best = srt[0]
-                    sel = "recover" if recover else "area"
-                elif a1 > a2 * dom:
-                    best = srt[0]
-                    sel = "area"
-                else:
-                    # 面积相近：在相近候选里选离上一帧位置最近的
-                    lo = a1 / dom
-                    cands = [g for g in srt if float(g["area"]) >= lo]
-                    px = float(self.last_x)
-                    py = float(self.last_y)
-                    best = None
-                    bd = 1e18
-                    for g in cands:
-                        dx = g["cx"] - px
-                        dy = g["cy"] - py
-                        d = dx * dx + dy * dy
-                        if d < bd:
-                            bd = d
-                            best = g
-                    sel = "near"
+                # 保底：形状门控没放行任何候选时，仍按面积选，避免丢锁
+                best = max(groups, key=lambda g: float(g["area"]))
+                sel = "fallback"
         self.sel = sel
-        if best is not None:
-            cx = best["cx"]
-            cy = best["cy"]
-        else:
+        if best is None:
             self.status = "no_blob"
             self.mode = "none"
             self.last = None
             return None
+        cx = best["cx"]
+        cy = best["cy"]
 
         area = best["area"]
         # conf 只是"相对面积"的可读指标，不参与任何逻辑
