@@ -49,15 +49,15 @@ SENSOR_FPS = 60               # 采集帧率（GC2093 原生 1080p60，降下来
 SENSOR_FB = 3                 # 固件不支持时自动跳过
 ENC_SCALE = 0.80              # 预览图缩放：0.80 -> 512x384 更清晰，还比 640x480 快
 
-# ---- 激光点：极简 ROI + cv_lite（见 board/laser_openmv.py）----
-# 只用一路灰度通道 chn0 的「画面中心 120x120」窗口，cv_lite 灰度阈值找最大 blob。
-# 没有先验/评分/多帧确认。实测 ROI 内 cv_lite 0.2ms。
+# ---- 激光检测：移植 zhouzhou-code/elec_vision_k230（见 board/laser_repo.py）----
+# 原版逻辑：固定居中 ROI(320x240) + LAB 阈值(9,100,15,98,-13,77)
+#          + find_blobs(pixels_threshold=1, merge=True) + 取面积最大。
+# 这里**未改判据**，只把结果画到预览上。
 LASER_ENABLE = 1
-LASER_CFG = {}          # 覆盖 laser_openmv.CFG，例如 {"diag_mode": 1}
-LASER_EVERY = 1         # 每 N 帧检测一次（其余帧复用上次结果）
-LASER_LABEL = 1         # 1=画坐标文字（用内置 3x5 点阵，不调用 deprecated API）
-LASER_LABEL_EVERY = 1   # 每 N 帧重画一次文字
-LASER_CROSS_COLOR = (0, 0, 0)   # 黑色压在亮光斑上最清楚
+LASER_CFG = {}          # 可覆盖 laser_repo 的常量，如 {"max_side": 40}
+LASER_EVERY = 1         # 每 N 帧检测一次
+LASER_LABEL = 1         # 1=画坐标文字
+LASER_CROSS_COLOR = (0, 0, 255)
 LASER_LABEL_COLOR = (255, 255, 255)
 
 # ---- 板端绘制自检（AGENTS 要求）----
@@ -99,10 +99,10 @@ except Exception as _e:
     print("cv_lite 不可用:", _e)
 
 try:
-    import laser_openmv as laser_spot_mod
+    import laser_repo as laser_spot_mod
 except Exception as _e:
     laser_spot_mod = None
-    print("laser_openmv 不可用，激光检测关闭:", _e)
+    print("laser_repo 不可用，激光检测关闭:", _e)
 
 # 固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
 for _p in ("/sdcard", "/sdcard/board", "/"):
@@ -324,18 +324,19 @@ _laser_n = 0
 
 
 def _init_laser():
-    """建 LaserSpot（极简版：ROI + cv_lite 灰度阈值，无先验/评分）。"""
+    """建 LaserRepo（LAB + 固定居中 ROI，原仓库逻辑）。"""
     global _laser
     _laser = None
     if not LASER_ENABLE:
         return
     if laser_spot_mod is None:
-        print("激光: laser_openmv.py 缺失，跳过")
+        print("激光: laser_repo.py 缺失，跳过")
         return
     try:
-        _laser = laser_spot_mod.LaserSpot(LASER_CFG or None)
-        print("激光: ROI=%s THR=%s lms<10ms 版本 %s"
-              % (_laser.roi, _laser.threshold,
+        _laser = laser_spot_mod.LaserRepo(**({"roi_scale": LASER_CFG.get("roi_scale", 1.0)})
+                                          if LASER_CFG else {})
+        print("激光: LAB=%s ROI=%s 版本 %s"
+              % (getattr(laser_spot_mod, "RED_LAB", "?"), _laser.roi,
                  getattr(laser_spot_mod, "VERSION", "?")))
     except Exception as e:
         _laser = None
@@ -390,9 +391,28 @@ def _draw_text(dst, x, y, txt, sc=2, color=(255, 255, 255),
 
 
 def _draw_laser(dst, spot, sc=1.0, label=True):
-    """十字 + 圆环 + 坐标文字。坐标是 640x480 原图真实值。"""
+    """画原版 ROI 框 + 选中的 blob 框 + 十字 + 坐标（640x480 原图坐标）。"""
+    # ROI 框（原仓库固定居中 ROI）
+    if _laser is not None and hasattr(_laser, "roi"):
+        try:
+            rx, ry, rw2, rh2 = _laser.roi
+            dst.draw_rectangle(int(rx * sc), int(ry * sc),
+                               int(rw2 * sc), int(rh2 * sc),
+                               color=(255, 0, 0), thickness=1)
+        except Exception:
+            pass
     if spot is None:
         return
+    # 选中的 blob 外接框
+    if spot.get("w") and spot.get("h"):
+        try:
+            bw = int(spot["w"] * sc)
+            bh = int(spot["h"] * sc)
+            dst.draw_rectangle(int(round(spot["cx"] * sc)) - bw // 2,
+                               int(round(spot["cy"] * sc)) - bh // 2,
+                               bw, bh, color=(0, 255, 0), thickness=1)
+        except Exception:
+            pass
     cx = int(round(spot["cx"] * sc))
     cy = int(round(spot["cy"] * sc))
     dst.draw_cross(cx, cy, color=LASER_CROSS_COLOR,
@@ -417,9 +437,8 @@ def main():
     if perf is not None:
         perf.apply_cpu(PERF_MODE)
         perf.ENC_SCALE = ENC_SCALE
-        # gray=True：额外开 chn0 灰度通道专供 cv_lite（实测三通道采集仍 ~57fps）
-        _sensor = perf.open_sensor(2, W, H, framebuffers=SENSOR_FB, fps=SENSOR_FPS,
-                                   gray=(LASER_ENABLE and laser_spot_mod is not None))
+        # 激光直接在 chn1(RGB565) 上做 LAB find_blobs，不需要额外灰度通道
+        _sensor = perf.open_sensor(2, W, H, framebuffers=SENSOR_FB, fps=SENSOR_FPS)
     else:
         _sensor = Sensor(id=2)
         _sensor.reset()
@@ -427,9 +446,6 @@ def main():
         _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
         _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_2)
         _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
-        if LASER_ENABLE and laser_spot_mod is not None:
-            _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_0)
-            _sensor.set_pixformat(Sensor.GRAYSCALE, chn=CAM_CHN_ID_0)
         MediaManager.init()
         _sensor.run()
     try:
@@ -461,29 +477,23 @@ def main():
     while True:
         # 先拍显示帧，再拍 AI 帧（仅在 AI 帧执行）
         img = _sensor.snapshot(chn=CAM_CHN_ID_1)
-        # ---- 激光：chn0 灰度 + ROI + cv_lite（每帧都要取帧，否则堵管线）
+        # ---- 激光：直接在显示帧(RGB565)上做 LAB find_blobs（与移植代码一致）
         global _laser_spot, _laser_ms
-        if LASER_ENABLE and _laser is not None:
-            gimg = _sensor.snapshot(chn=CAM_CHN_ID_0)
-            if (n % LASER_EVERY) == 0:
-                try:
-                    # 传一路 RGB888 给"白物判据"（bbox 内红占优），
-                    # 没有它也能跑，只是无法区分白墙/白纸和激光。
-                    try:
-                        _rgb = _sensor.snapshot(chn=CAM_CHN_ID_2)
-                    except Exception:
-                        _rgb = None
-                    _ls = _laser.sample(gimg, _rgb)
-                    _laser_ms = int(getattr(_laser, "last_ms", 0))
-                    if _ls is not None:
-                        _laser_spot = {"cx": _ls["x"], "cy": _ls["y"],
-                                       "n": _ls.get("n", 0),
-                                       "conf": _ls.get("conf", 0.0)}
-                    else:
-                        _laser_spot = None
-                except Exception as e:
-                    print("laser:", e)
+        if LASER_ENABLE and _laser is not None and (n % LASER_EVERY) == 0:
+            try:
+                _ls = _laser.sample(img)
+                _laser_ms = int(getattr(_laser, "last_ms", 0))
+                if _ls is not None:
+                    _laser_spot = {"cx": _ls["x"], "cy": _ls["y"],
+                                   "n": _ls.get("n", 0),
+                                   "w": _ls.get("w", 0), "h": _ls.get("h", 0),
+                                   "area": _ls.get("area", 0),
+                                   "raw": _ls.get("raw", 0)}
+                else:
                     _laser_spot = None
+            except Exception as e:
+                print("laser:", e)
+                _laser_spot = None
         if last_res is None or (n % AI_EVERY) == 0:
             arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
             last_res = _yolo.run(arr)
@@ -510,7 +520,7 @@ def main():
                 disp = img.copy(x_scale=sc, y_scale=sc)
                 _draw(disp, res, sc)
                 _draw_laser(disp, _laser_spot, sc,
-                            label=(n % LASER_LABEL_EVERY) == 0)
+                            label=True)
                 if d:
                     disp.compress_for_ide(x_size=d[0], y_size=d[1], quality=IDE_QUALITY)
                 else:
@@ -518,7 +528,7 @@ def main():
             else:
                 _draw(img, res)
                 _draw_laser(img, _laser_spot, 1.0,
-                            label=(n % LASER_LABEL_EVERY) == 0)
+                            label=True)
                 roi = None
                 if res and res[0]:
                     b = res[0][0]
@@ -572,9 +582,10 @@ def main():
                     pass
             _nraw = 0 if _laser is None else int(getattr(_laser, "raw_blobs", 0))
             if _laser_spot is not None:
-                lz = "laser (%d,%d) conf %.2f" % (
+                lz = "laser (%d,%d) area %d %dx%d" % (
                     int(_laser_spot["cx"]), int(_laser_spot["cy"]),
-                    float(_laser_spot.get("conf", 0.0)))
+                    int(_laser_spot.get("area", 0)),
+                    int(_laser_spot.get("w", 0)), int(_laser_spot.get("h", 0)))
             else:
                 lz = "laser -"
             lz += " | lms %dms raw %d" % (_laser_ms, _nraw)
