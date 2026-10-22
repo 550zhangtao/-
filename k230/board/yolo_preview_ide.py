@@ -392,15 +392,6 @@ def _draw_text(dst, x, y, txt, sc=2, color=(255, 255, 255),
 
 def _draw_laser(dst, spot, sc=1.0, label=True):
     """画原版 ROI 框 + 选中的 blob 框 + 十字 + 坐标（640x480 原图坐标）。"""
-    # ROI 框（原仓库固定居中 ROI）
-    if _laser is not None and hasattr(_laser, "roi"):
-        try:
-            rx, ry, rw2, rh2 = _laser.roi
-            dst.draw_rectangle(int(rx * sc), int(ry * sc),
-                               int(rw2 * sc), int(rh2 * sc),
-                               color=(255, 0, 0), thickness=1)
-        except Exception:
-            pass
     if spot is None:
         return
     # 选中的 blob 外接框
