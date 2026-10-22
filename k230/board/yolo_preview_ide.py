@@ -49,7 +49,12 @@ SENSOR_FPS = 60               # 采集帧率（GC2093 原生 1080p60，降下来
 SENSOR_FB = 3                 # 固件不支持时自动跳过
 ENC_SCALE = 0.80              # 预览图缩放：0.80 -> 512x384 更清晰，还比 640x480 快
 
-# ---- 激光点检测（cv_lite 灰度）----
+# ---- 激光点检测（board/laser_openmv.py 的 LaserSpot 类）----
+# 诊断模式：True 时该模块会关闭先验门控和全部候选过滤，逐帧打印每个原始 blob。
+# 想开诊断就把 /sdcard/laser_openmv.py 顶部的 DIAG_MODE 改成 True，
+# 或者在这里设 LASER_CFG = {"diag_mode": 1}。
+LASER_CFG = {}                # 传给 LaserSpot 的覆盖参数，例如 {"diag_mode": 1}
+LASER_CALIB = "/sdcard/laser_calib.json"   # 先验文件（可不存在；失效会自动弃用）
 # 单独开一路灰度通道 chn0 专供检测（实测三通道采集仍是 56.7fps，不掉帧），
 # 彩色 chn1 继续做预览，所以"彩色画面 + 激光十字 + 坐标"可以同时看到。
 LASER_ENABLE = 1
@@ -103,7 +108,13 @@ try:
     import cv_lite
 except Exception as _e:
     cv_lite = None
-    print("cv_lite 不可用，激光检测关闭:", _e)
+    print("cv_lite 不可用:", _e)
+
+try:
+    import laser_openmv as laser_spot_mod
+except Exception as _e:
+    laser_spot_mod = None
+    print("laser_openmv 不可用，激光检测关闭:", _e)
 
 # 固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
 for _p in ("/sdcard", "/sdcard/board", "/"):
@@ -316,6 +327,8 @@ def _draw(img, res, s=1.0):
 
 
 # ---------------------------------------------------------------- 激光点
+_laser = None            # LaserSpot 实例
+_laser_ms = 0
 _laser_spot = None       # 最近一次结果 {"cx","cy","n","x","y","w","h"}
 _laser_lock = None       # 锁定的 (cx, cy)
 _laser_miss = 0
@@ -426,15 +439,33 @@ def _draw_laser(dst, spot, sc=1.0, label=True):
     dst.draw_string(tx, ty, txt, color=LASER_LABEL_COLOR, scale=scale)
 
 
+def _init_laser():
+    """建 LaserSpot 实例并加载先验（先验失效时模块会自动弃用）。"""
+    global _laser
+    _laser = None
+    if not LASER_ENABLE:
+        return
+    if laser_spot_mod is None:
+        print("激光: laser_openmv.py 缺失，跳过")
+        return
+    try:
+        _laser = laser_spot_mod.LaserSpot(LASER_CFG or None)
+        if _laser.load(LASER_CALIB):
+            print("激光: 先验 %s（偏离会用自动弃用）" % (_laser.prior,))
+        else:
+            print("激光: 无先验文件 -> 纯阈值检测")
+    except Exception as e:
+        _laser = None
+        print("激光初始化失败:", e)
+
+
 def main():
     global _sensor, _yolo
     if perf is not None:
         perf.apply_cpu(PERF_MODE)
         perf.ENC_SCALE = ENC_SCALE
-        # gray=True 会额外开一路 chn0 灰度给激光检测
-        # （实测三通道采集仍是 ~57fps，不影响帧率）
-        _sensor = perf.open_sensor(2, W, H, framebuffers=SENSOR_FB, fps=SENSOR_FPS,
-                                   gray=(LASER_ENABLE and cv_lite is not None))
+        # LaserSpot 直接用彩色 chn1 做 find_blobs，不需要额外的灰度通道
+        _sensor = perf.open_sensor(2, W, H, framebuffers=SENSOR_FB, fps=SENSOR_FPS)
     else:
         _sensor = Sensor(id=2)
         _sensor.reset()
@@ -442,9 +473,6 @@ def main():
         _sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_1)
         _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_2)
         _sensor.set_pixformat(Sensor.RGBP888, chn=CAM_CHN_ID_2)
-        if LASER_ENABLE and cv_lite is not None:
-            _sensor.set_framesize(w=W, h=H, chn=CAM_CHN_ID_0)
-            _sensor.set_pixformat(Sensor.GRAYSCALE, chn=CAM_CHN_ID_0)
         MediaManager.init()
         _sensor.run()
     try:
@@ -467,6 +495,7 @@ def main():
 
     # 云台链路：必须在主循环前初始化，否则 _send_uart() 静默不发帧
     _init_uart()
+    _init_laser()
 
     n = 0
     t_last = time.ticks_ms()
@@ -475,16 +504,22 @@ def main():
     while True:
         # 先拍显示帧，再拍 AI 帧（仅在 AI 帧执行）
         img = _sensor.snapshot(chn=CAM_CHN_ID_1)
-        # ---- 激光：每帧都取灰度帧（不取会堵管线），按 LASER_EVERY 做检测
-        global _laser_spot, _laser_n
-        if LASER_ENABLE and cv_lite is not None:
-            gimg = _sensor.snapshot(chn=CAM_CHN_ID_0)
-            if (n % LASER_EVERY) == 0:
-                try:
-                    _laser_spot = _laser_detect(gimg.to_numpy_ref())
-                except Exception as e:
-                    print("laser:", e)
+        # ---- 激光：LaserSpot 在彩色 chn1 上做 find_blobs
+        global _laser_spot, _laser_n, _laser_ms
+        if LASER_ENABLE and _laser is not None and (n % LASER_EVERY) == 0:
+            try:
+                _t_l = time.ticks_ms()
+                _ls = _laser.sample(img)
+                _laser_ms = time.ticks_diff(time.ticks_ms(), _t_l)
+                if _ls is not None:
+                    _laser_spot = {"cx": _ls["x"], "cy": _ls["y"],
+                                   "n": _ls.get("n", 0), "conf": _ls.get("conf", 0.0),
+                                   "score": _ls.get("score", 0.0)}
+                else:
                     _laser_spot = None
+            except Exception as e:
+                print("laser:", e)
+                _laser_spot = None
         if last_res is None or (n % AI_EVERY) == 0:
             arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
             last_res = _yolo.run(arr)
@@ -572,11 +607,16 @@ def main():
                 except Exception:
                     pass
             if _laser_spot is not None:
-                lz = "laser (%d,%d) A=%d" % (int(_laser_spot["cx"]),
-                                             int(_laser_spot["cy"]),
-                                             int(_laser_spot["n"]))
+                lz = "laser (%.0f,%.0f) conf %.2f" % (
+                    _laser_spot["cx"], _laser_spot["cy"],
+                    float(_laser_spot.get("conf", 0.0)))
             else:
                 lz = "laser -"
+            _nc = 0 if _laser is None else int(getattr(_laser, "candidates", 0))
+            _npx = 0 if _laser is None else int(getattr(_laser, "last_px", 0))
+            _nraw = 0 if _laser is None else int(getattr(_laser, "raw_blobs", 0))
+            lz += " | lms %d raw %d cand %d npx %d" % (_laser_ms, _nraw,
+                                                      _nc, _npx)
             print("[%d] %.1ffps %s bull (%d,%d) %s" % (n, fps, tg, bx, by, lz))
         if (n & 0x0F) == 0:
             gc.collect()
