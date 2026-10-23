@@ -213,7 +213,7 @@ class _PoseAidemo:
 _YL.aidemo = _PoseAidemo()
 
 # 靶心平滑（PointKalman 缺失时为 None = 不平滑）
-_bull_kf = None   # 用户要求：靶心不再做卡尔曼平滑
+_bull_kf = PointKalman() if PointKalman is not None else None   # 靶心卡尔曼（默认 q=150 r=9）
 _bull_sm = None
 
 _uart = None
