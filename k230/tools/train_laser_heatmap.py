@@ -162,12 +162,16 @@ def make_sample(bg, size, rng, positive):
         canvas = bg.copy()
         style = "red" if rng.random() < 0.5 else "white"
         r = rng.random()
-        if r < 0.30:
-            rad = rng.uniform(1.5, 3.5)      # 远距离：小光斑
-        elif r < 0.75:
-            rad = rng.uniform(3.5, 7.0)
+        if r < 0.22:
+            rad = rng.uniform(1.2, 3.0)      # 远距离：小光斑
+        elif r < 0.55:
+            rad = rng.uniform(3.0, 6.5)      # 中距离
+        elif r < 0.78:
+            rad = rng.uniform(6.5, 11.0)     # 近一点
+        elif r < 0.94:
+            rad = rng.uniform(11.0, 20.0)    # 近距离：大光斑/泛光（2026-10-24 加）
         else:
-            rad = rng.uniform(7.0, 10.0)
+            rad = rng.uniform(20.0, 30.0)    # 极近：整片泛白+红晕
         add_laser(canvas, cx, cy, rad, rng, style)
         px = cx + rng.uniform(-half * 0.35, half * 0.35)
         py = cy + rng.uniform(-half * 0.35, half * 0.35)
