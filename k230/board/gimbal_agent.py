@@ -109,6 +109,10 @@ _uart = None
 _sensor = None
 _yolo = None
 _cam_open = False
+_WDT = None
+# ---- 稳定性（2026-10-23）：硬件看门狗；出错时不做事后析构（会死锁）----
+WDT_TIMEOUT_S = 20
+SAFE_DEINIT = 0
 _ready = False
 _running = False
 _rxbuf = ""
@@ -449,14 +453,17 @@ def _drop_pipeline():
     _fail = 0
     _running = False
     _cam_open = False
-    try:
-        _sensor.stop()
-    except Exception:
-        pass
-    try:
-        MediaManager.deinit()
-    except Exception:
-        pass
+    if SAFE_DEINIT:
+        try:
+            _sensor.stop()
+        except Exception:
+            pass
+        try:
+            MediaManager.deinit()
+        except Exception:
+            pass
+    # 默认不做 stop/deinit：KPU/相机原生对象析构会死锁（AGENTS 已记录），
+    # 连续出错时让上层复位整板更安全。
     print("agent: camera dropped, 等下一次 $E,START!")
 
 
@@ -472,6 +479,13 @@ def main():
 
     _log_versions()
     _init_uart()
+    global _WDT
+    try:
+        _WDT = machine.WDT(1, WDT_TIMEOUT_S)
+        print("agent: wdt %ds 看门狗已启用" % WDT_TIMEOUT_S)
+    except Exception as _e:
+        _WDT = None
+        print("agent: wdt 不可用:", _e)
     _reply("READY")
     print("agent: 常驻就绪（相机按需打开），等 $E,START! / $E,STOP!")
 
@@ -484,6 +498,11 @@ def main():
     auto_done = False
 
     while True:
+        if _WDT is not None:
+            try:
+                _WDT.feed()
+            except Exception:
+                pass
         cmd = _poll_cmd()
         if cmd == "DEBUG":
             # 写 offline_off 后立刻复位；不要先 _drop_pipeline()/gc，

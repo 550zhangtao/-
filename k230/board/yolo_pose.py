@@ -24,6 +24,9 @@ CFG 必须保持单行，PC 端会用正则整行替换后下发。
 """
 
 CFG = {'w': 640, 'h': 480, 'q': 70, 'model': '/sdcard/models/pose_v3_384.kmodel', 'labels': ['target'], 'in_w': 384, 'in_h': 384, 'conf': 0.25, 'cand_conf': 0.03, 'far_refine': 0, 'far_min': 100, 'far_topk': 3, 'far_max': 200, 'low_refine': 1, 'low_refine_topk': 2, 'low_refine_mult': 7.0, 'low_refine_max': 120, 'low_refine_cooldown': 3, 'nms': 0.45, 'kp_num': 5, 'kp_dim': 3, 'max_boxes': 20, 'ai_every': 2, 'jpeg_every': 2, 'full_every': 9999, 'roi_scale': 0.75, 'roi_pad': 0.25, 'roi_min': 192, 'roi_max': 288, 'perf_mode': 'performance', 'perf_fb': 3, 'perf_fps': 0, 'jpeg_q': 92, 'enc_scale': 0.80, 'fps': 0, 'stats': 15, 'limit': 0, 'sensor_id': 2, 'reset_on_exit': 1, 'uart_enable': 1, 'uart_id': 3, 'uart_tx': 32, 'uart_rx': 33, 'uart_baud': 115200}
+# ---- 稳定性（2026-10-23）：硬件看门狗 + 退出时不做危险析构 ----
+WDT_TIMEOUT_S = 20
+SAFE_DEINIT = 0
 
 from media.sensor import *
 from media.media import *
@@ -114,6 +117,7 @@ def log(msg):
 # ---------------------------------------------------------------- 传感器
 _sensor = None
 _yolo = None
+_WDT = None
 
 
 def _pose_postprocess(new_result, active_size, model_size, out_size,
@@ -262,16 +266,20 @@ def _close():
     mod["ai2d"] = getattr(_yolo, "ai2d", None)
     mod["tensors"] = getattr(_yolo, "tensors", None)
     _yolo = None
-    try:
-        if _sensor:
-            _sensor.stop()
-    except Exception as e:
-        log("sensor.stop: %s" % e)
-    _sensor = None
-    try:
-        MediaManager.deinit()
-    except Exception as e:
-        log("media.deinit: %s" % e)
+    if SAFE_DEINIT:
+        try:
+            if _sensor:
+                _sensor.stop()
+        except Exception as e:
+            log("sensor.stop: %s" % e)
+        _sensor = None
+        try:
+            MediaManager.deinit()
+        except Exception as e:
+            log("media.deinit: %s" % e)
+    else:
+        # 实测 stop/deinit 可能死锁（reset 执行不到），直接跳过
+        _sensor = None
     gc.collect()
 
 
@@ -487,6 +495,13 @@ def main():
                    max_boxes_num=CFG["max_boxes"], debug_mode=0)
     _yolo.config_preprocess()
     _init_uart()
+    global _WDT
+    try:
+        _WDT = machine.WDT(1, WDT_TIMEOUT_S)
+        log("wdt: %ds 看门狗已启用" % WDT_TIMEOUT_S)
+    except Exception as e:
+        _WDT = None
+        log("wdt 不可用: %s" % e)
 
     try:
         stype = str(sen.get_type())
@@ -520,6 +535,11 @@ def main():
     post_ms = 0
 
     while True:
+        if _WDT is not None:
+            try:
+                _WDT.feed()
+            except Exception:
+                pass
         t0 = time.ticks_ms()
         seq += 1
         if _lref_skip > 0:
