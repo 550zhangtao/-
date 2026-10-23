@@ -71,6 +71,13 @@ LASER_PRIOR_A = 0.35          # 先验低通系数（只挪 ROI 中心，不改�
 LASER_LOST_SCAN = 1           # 丢失后搜索重捕
 LASER_LOST_MAX = 5            # 连续丢 N 帧后开始搜
 LASER_SCAN_EVERY = 6          # 每 N 帧搜一次（省算力，避免掉帧）
+LASER_MARGIN = 0.02           # 峰值锐度门限（很弱，只做兜底；主判据是红色门控）
+LASER_RED_DOM = 35            # 红色门控：R 比 max(G,B) 高多少才算激光
+LASER_RED_MIN = 80            # 红色门控：窗口 R 均值下限（防暗处噪声）
+LASER_RED_WIN = 5             # 红色门控：采样窗口半径（像素）
+LASER_VEL_GAIN = 1.0          # ROI 速度预测增益（帧）
+LASER_VEL_MAX = 60            # 速度上限 px/帧
+LASER_SCAN_MS = 500           # 两次重捕的最小间隔（ms），防止连续重扫拖垮管线
 LASER_PRIOR = (290, 190)      # 当前相机朝向下的激光先验
 LASER_CFG = {
     "min_area": 6,        # 小于 6px² 的噪点不要
@@ -397,6 +404,10 @@ _heat = None             # LaserHeat 实例（优先）
 _laser_lock = 0          # 连续命中计数（>=LASER_LOCK_N 视为锁定）
 _laser_thr = 0.0         # 本帧实际使用的阈值（日志/调参用）
 _laser_peak = 0.0        # 本帧峰值置信度（日志/调参用）
+_laser_margin = 0.0      # 本帧峰值锐度（日志/调参用）
+_laser_vx = 0.0          # 光斑速度估计（px/帧），用于预测 ROI
+_laser_vy = 0.0
+_laser_scan_ms = 0       # 上次全域重捕时刻
 _laser_prior = LASER_PRIOR
 _laser_ms = 0
 _ai_ms = 0
@@ -409,12 +420,17 @@ _laser_n = 0
 def _init_laser():
     """优先建学习式热图（LaserHeat），失败回退 LaserRepo。"""
     global _laser, _heat, _laser_prior, _laser_lock, _laser_thr, _laser_peak
+    global _laser_margin, _laser_vx, _laser_vy, _laser_scan_ms
     _laser = None
     _heat = None
     _laser_prior = (float(LASER_PRIOR[0]), float(LASER_PRIOR[1]))
     _laser_lock = 0
     _laser_thr = 0.0
     _laser_peak = 0.0
+    _laser_margin = 0.0
+    _laser_vx = 0.0
+    _laser_vy = 0.0
+    _laser_scan_ms = 0
     if not LASER_ENABLE:
         return
     if _LaserHeat is not None:
@@ -486,6 +502,51 @@ def _draw_text(dst, x, y, txt, sc=2, color=(255, 255, 255),
                                            fill=True)
         cur += 4 * sc
     return w, h
+
+
+LASER_DEBUG_HUD = 1   # 1=画面左上角显示 peak/sharp/thr/lock（调参加载，正式可关）
+
+
+def _draw_laser_hud(dst):
+    """把激光检测的现场指标画到画面上：P=峰值 S=锐度 T=阈值 L=锁帧数。"""
+    try:
+        txt = "P%.2f S%.2f T%.2f L%d" % (_laser_peak, _laser_margin, _laser_thr, _laser_lock)
+        _draw_text(dst, 3, 3, txt, 2, (255, 255, 0))
+    except Exception:
+        pass
+
+
+def _laser_red_gate(crop, gx, gy, hx0, hy0):
+    """红色门控：激光是红色小点，白墙/灯板 R≈G≈B 会被拒掉。
+
+    crop 是 128x128x3 的 uint8；gx/gy 是原图坐标，hx0/hy0 是 crop 左上角。
+    """
+    try:
+        lx = int(gx - hx0)
+        ly = int(gy - hy0)
+        ch = crop.shape[0]
+        cw = crop.shape[1]
+        x0 = max(0, lx - LASER_RED_WIN)
+        x1 = min(cw, lx + LASER_RED_WIN + 1)
+        y0 = max(0, ly - LASER_RED_WIN)
+        y1 = min(ch, ly + LASER_RED_WIN + 1)
+        sr = sg = sb = 0
+        n = 0
+        for yy in range(y0, y1):
+            for xx in range(x0, x1):
+                sr += int(crop[yy, xx, 0])
+                sg += int(crop[yy, xx, 1])
+                sb += int(crop[yy, xx, 2])
+                n += 1
+        if n <= 0:
+            return False
+        mr = sr / float(n)
+        mg = sg / float(n)
+        mb = sb / float(n)
+        dom = mr - (mg if mg > mb else mb)
+        return dom >= LASER_RED_DOM and mr >= LASER_RED_MIN
+    except Exception:
+        return True        # 门控异常时放行，避免把检测全废掉
 
 
 def _draw_laser(dst, spot, sc=1.0, label=True):
@@ -582,16 +643,23 @@ def main():
                 pass
         # 先拍显示帧，再拍 AI 帧（仅在 AI 帧执行）
         img = _sensor.snapshot(chn=CAM_CHN_ID_1)
-        # ---- 激光：学习式热图（ROI/阈值调节模式，2026-10-23 优化）
+        # ---- 激光：学习式热图（ROI/阈值调节模式，2026-10-23 优化 v2）
+        # v2：速度预测 ROI + 峰值锐度门控 + 粗搜(1 次推理)+精修(1 次) 重捕
+        #     老的 12/15 格扫描会在光斑移出 ROI 时连环推理，拖住相机管线导致卡死。
         global _laser_spot, _laser_ms, _laser_prior, _laser_miss, _laser_lock
-        global _laser_thr, _laser_peak
+        global _laser_thr, _laser_peak, _laser_margin
+        global _laser_vx, _laser_vy, _laser_scan_ms
         if LASER_ENABLE and _heat is not None and (n % LASER_EVERY) == 0:
             try:
                 locked = _laser_lock >= LASER_LOCK_N
                 thr = LASER_THR_TRK if locked else LASER_THR_ACQ
                 _laser_thr = thr
                 _laser_peak = 0.0
-                lx, ly = _laser_prior
+                # 速度预测：把 ROI 沿光斑运动方向前推，快速移动时不丢
+                lx = _laser_prior[0] + _laser_vx * LASER_VEL_GAIN
+                ly = _laser_prior[1] + _laser_vy * LASER_VEL_GAIN
+                lx = max(0.0, min(float(W - 1), lx))
+                ly = max(0.0, min(float(H - 1), ly))
                 hx0 = max(0, min(W - LASER_ROI, int(lx - LASER_ROI // 2)))
                 hy0 = max(0, min(H - LASER_ROI, int(ly - LASER_ROI // 2)))
                 crop = img.crop(roi=(hx0, hy0, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
@@ -599,9 +667,15 @@ def main():
                 _laser_ms = 1
                 if r is not None:
                     _laser_peak = float(r[2])
-                    _ddx = r[0] - lx
-                    _ddy = r[1] - ly
-                    # 跳变门控：离先验太远的新点，必须达到"进入阈值"才算数
+                    _laser_margin = float(getattr(_heat, "last_margin", 0.0))
+                    # 双门控：锐度（弱）+ 红色（主）
+                    if _laser_margin < LASER_MARGIN:
+                        r = None
+                    elif not _laser_red_gate(crop, r[0], r[1], hx0, hy0):
+                        r = None
+                if r is not None:
+                    _ddx = r[0] - _laser_prior[0]
+                    _ddy = r[1] - _laser_prior[1]
                     if (_ddx * _ddx + _ddy * _ddy) > (LASER_JUMP_PX * LASER_JUMP_PX) \
                             and float(r[2]) < LASER_THR_ACQ:
                         r = None
@@ -609,9 +683,12 @@ def main():
                     gx, gy, conf = r
                     if _laser_lock < 1000:
                         _laser_lock += 1
-                    # 先验低通：只影响下一帧 ROI 中心，画出来的仍是原始检测点
-                    _laser_prior = (lx + (gx - lx) * LASER_PRIOR_A,
-                                    ly + (gy - ly) * LASER_PRIOR_A)
+                    # 速度 EMA（px/帧），只用于下一帧 ROI 预测
+                    _laser_vx = 0.6 * _laser_vx + 0.4 * (gx - _laser_prior[0])
+                    _laser_vy = 0.6 * _laser_vy + 0.4 * (gy - _laser_prior[1])
+                    _laser_vx = max(-LASER_VEL_MAX, min(LASER_VEL_MAX, _laser_vx))
+                    _laser_vy = max(-LASER_VEL_MAX, min(LASER_VEL_MAX, _laser_vy))
+                    _laser_prior = (gx, gy)
                     _laser_miss = 0
                     _laser_spot = {"cx": gx, "cy": gy, "w": 0, "h": 0,
                                    "n": 0, "area": 0, "raw": 0, "conf": conf}
@@ -619,34 +696,39 @@ def main():
                     _laser_spot = None
                     _laser_miss += 1
                     _laser_lock = 0
-                    # 丢失：先做便宜的局部螺旋搜索，仍失败才全域粗扫（降频）
+                    _laser_vx *= 0.7          # 丢失时速度衰减，避免越飘越远
+                    _laser_vy *= 0.7
+                    _now = time.ticks_ms()
                     if (LASER_LOST_SCAN and _laser_miss >= LASER_LOST_MAX
-                            and (_laser_miss % LASER_SCAN_EVERY) == 0):
+                            and time.ticks_diff(_now, _laser_scan_ms) > LASER_SCAN_MS):
+                        _laser_scan_ms = _now
                         best = None
-                        for _dx2, _dy2 in ((0, -64), (0, 64), (-64, 0), (64, 0),
-                                           (-64, -64), (64, -64), (-64, 64), (64, 64),
-                                           (-96, 0), (96, 0), (0, -96), (0, 96)):
-                            _cx2 = max(0, min(W - LASER_ROI, int(lx + _dx2 - LASER_ROI // 2)))
-                            _cy2 = max(0, min(H - LASER_ROI, int(ly + _dy2 - LASER_ROI // 2)))
+                        # 粗搜：整幅缩到 128x128，1 次推理拿到大致位置
+                        try:
+                            small = img.crop(roi=(0, 0, W, H)).copy(
+                                x_scale=128.0 / W, y_scale=128.0 / H
+                            ).to_rgb888().to_numpy_ref()
+                            rc = _heat.detect(small, 0, 0, LASER_THR_ACQ)
+                        except Exception:
+                            rc = None
+                        if rc is not None and float(getattr(_heat, "last_margin", 0.0)) >= LASER_MARGIN:
+                            gx0 = rc[0] * (W / 128.0)
+                            gy0 = rc[1] * (H / 128.0)
+                            cx2 = max(0, min(W - LASER_ROI, int(gx0 - LASER_ROI // 2)))
+                            cy2 = max(0, min(H - LASER_ROI, int(gy0 - LASER_ROI // 2)))
                             try:
-                                _c2 = img.crop(roi=(_cx2, _cy2, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
-                                _r2 = _heat.detect(_c2, _cx2, _cy2, LASER_THR_ACQ)
+                                c2 = img.crop(roi=(cx2, cy2, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
+                                r2 = _heat.detect(c2, cx2, cy2, LASER_THR_ACQ)
                             except Exception:
-                                _r2 = None
-                            if _r2 is not None and (best is None or _r2[2] > best[2]):
-                                best = _r2
-                        if best is None and (_laser_miss % (LASER_SCAN_EVERY * 2)) == 0:
-                            for _sy in range(0, H - LASER_ROI + 1, LASER_ROI):
-                                for _sx in range(0, W - LASER_ROI + 1, LASER_ROI):
-                                    try:
-                                        _c2 = img.crop(roi=(_sx, _sy, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
-                                        _r2 = _heat.detect(_c2, _sx, _sy, LASER_THR_ACQ)
-                                    except Exception:
-                                        _r2 = None
-                                    if _r2 is not None and (best is None or _r2[2] > best[2]):
-                                        best = _r2
+                                r2 = None
+                            if (r2 is not None
+                                    and float(getattr(_heat, "last_margin", 0.0)) >= LASER_MARGIN
+                                    and _laser_red_gate(c2, r2[0], r2[1], cx2, cy2)):
+                                best = r2
                         if best is not None:
                             _laser_prior = (best[0], best[1])
+                            _laser_vx = 0.0
+                            _laser_vy = 0.0
                             _laser_miss = 0
                             _laser_spot = {"cx": best[0], "cy": best[1], "w": 0, "h": 0,
                                            "n": 0, "area": 0, "raw": 0, "conf": best[2]}
@@ -696,6 +778,8 @@ def main():
                 disp = img.copy(x_scale=sc, y_scale=sc)
                 _draw(disp, res, sc, _bull_sm)
                 _draw_laser(disp, _laser_spot, sc, label=True)
+                if LASER_DEBUG_HUD:
+                    _draw_laser_hud(disp)
                 if d:
                     disp.compress(quality=IDE_QUALITY, x_size=d[0], y_size=d[1])
                 else:
@@ -708,6 +792,8 @@ def main():
                 _draw(disp, res, sc, _bull_sm)
                 _draw_laser(disp, _laser_spot, sc,
                             label=True)
+                if LASER_DEBUG_HUD:
+                    _draw_laser_hud(disp)
                 if d:
                     disp.compress_for_ide(x_size=d[0], y_size=d[1], quality=IDE_QUALITY)
                 else:
@@ -778,8 +864,9 @@ def main():
                     int(_laser_spot.get("w", 0)), int(_laser_spot.get("h", 0)))
             else:
                 lz = "laser -"
-            lz += " | lms %dms ai %dms raw %d kept %d thr %.2f lock %d peak %.2f" % (
-                _laser_ms, _ai_ms, _nraw, _nkept, _laser_thr, _laser_lock, _laser_peak)
+            lz += " | lms %dms ai %dms raw %d kept %d thr %.2f lock %d peak %.2f sharp %.2f" % (
+                _laser_ms, _ai_ms, _nraw, _nkept, _laser_thr, _laser_lock,
+                _laser_peak, _laser_margin)
             print("[%d] %.1ffps | %s | %s" % (n, fps, lz, tg))
         if (n & 0x0F) == 0:
             gc.collect()

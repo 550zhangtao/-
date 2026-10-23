@@ -26,6 +26,7 @@ class LaserHeat(AIBase):
         self.ai2d.resize(nn.interp_method.tf_bilinear, nn.interp_mode.half_pixel)
         self.ai2d.build([1, roi, roi, 3], [1, 3, roi, roi])
         self.last = None
+        self.last_margin = 0.0
 
     @staticmethod
     def _sig(v):
@@ -70,6 +71,9 @@ class LaserHeat(AIBase):
         else:
             cx = float(ix)
             cy = float(iy)
+
+        # 锐度 = 峰值 - 3x3 邻域均值：大面积亮区约等于 0，真光斑显著 > 0
+        self.last_margin = peak - (sw / 9.0 if sw > 0 else 0.0)
 
         stride = self.roi / float(n)
         gx = x0 + cx * stride + stride * 0.5
