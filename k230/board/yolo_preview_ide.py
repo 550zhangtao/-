@@ -150,6 +150,34 @@ except Exception as _e:
     print("laser_repo 不可用，激光检测关闭:", _e)
 
 try:
+    import laser_openmv as _laser_gray_mod
+except Exception as _e:
+    _laser_gray_mod = None
+    print("laser_openmv 不可用:", _e)
+
+
+class _GrayLaser:
+    """把 d71fd47 版 LaserSpot（灰度 cv_lite + 全图捕获 + ROI 跟随）
+    包装成 sample(img) -> dict 接口，供预览原有逻辑直接使用。"""
+
+    def __init__(self, cfg=None):
+        self.spot = _laser_gray_mod.LaserSpot(cfg)
+        self.last_ms = 0
+
+    def sample(self, img):
+        try:
+            g = img.to_grayscale()
+        except Exception:
+            g = img
+        r = self.spot.sample(g, None)
+        self.last_ms = int(getattr(self.spot, "last_ms", 0) or 0)
+        if r is None:
+            return None
+        return {"x": r["x"], "y": r["y"], "n": r.get("n", 0),
+                "w": 0, "h": 0, "area": 0, "raw": r.get("raw", 0),
+                "conf": r.get("conf", 0.0)}
+
+try:
     from laser_heatmap import LaserHeat as _LaserHeat
 except Exception as _e:
     _LaserHeat = None
@@ -490,6 +518,22 @@ def _init_laser():
         except Exception as e:
             _laser_coarse = None
             print("全帧粗搜初始化失败:", e)
+    # 2026-10-24：按用户要求，激光检测回退到 d71fd47 版（laser_openmv 灰度
+    # cv_lite + 全图捕获 + ROI 跟随）；热图模型路径保留但不再启用。
+    if _laser_gray_mod is not None and LASER_ENABLE:
+        try:
+            _cfg2 = dict(LASER_CFG or {})
+            _cfg2["red_primary"] = 0          # 灰度主检测
+            _cfg2["acquire"] = 1              # 启动全图捕获，搜索范围=整幅
+            _laser = _GrayLaser(_cfg2)
+            print("激光: laser_openmv %s thr=%s（全图捕获+ROI跟随）"
+                  % (getattr(_laser_gray_mod, "VERSION", "?"),
+                     _laser.spot.cfg.get("threshold")))
+        except Exception as _e:
+            _laser = None
+            print("laser_openmv 初始化失败:", _e)
+    if _laser is not None:
+        return
     if _LaserHeat is not None:
         try:
             _heat = _LaserHeat(LASER_MODEL)
@@ -764,6 +808,9 @@ def main():
                 _ls = _laser.sample(img)
                 _laser_ms = int(getattr(_laser, "last_ms", 0))
                 if _ls is not None:
+                    _laser_peak = float(_ls.get("conf", 0.0) or 0.0)
+                    if _laser_lock < 1000:
+                        _laser_lock += 1
                     _lxk = float(_ls["x"])
                     _lyk = float(_ls["y"])
                     if _laser_kf is not None:
@@ -776,6 +823,7 @@ def main():
                                    "area": _ls.get("area", 0),
                                    "raw": _ls.get("raw", 0)}
                 else:
+                    _laser_lock = 0
                     _laser_spot = None
                     if _laser_kf is not None:
                         _sp = _laser_kf.predict(time.ticks_ms())
