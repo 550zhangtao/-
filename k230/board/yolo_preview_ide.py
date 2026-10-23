@@ -323,12 +323,17 @@ def _send_uart(seq, res):
                 if conf < 300:
                     # ESP32 AIM_BULL_MIN_CONF=300，保底防止被判靶心丢失
                     conf = 300
-            if _bull_sm is not None:
-                bx = int(round(_bull_sm[0]))
-                by = int(round(_bull_sm[1]))
-            elif conf:
-                bx = int(res[3][0][12])
-                by = int(res[3][0][13])
+            _bv = _bull_of(res)
+            if _bv is not None:
+                bx = int(round(_bv[0]))
+                by = int(round(_bv[1]))
+            elif _bull_sm is not None:
+                # 平滑值也做一次框内检查，超界就退回框中心
+                _bb = res[0][0]
+                if (_bb[0] - _bb[2] * 0.25) <= _bull_sm[0] <= (_bb[0] + _bb[2] * 1.25) and \
+                        (_bb[1] - _bb[3] * 0.25) <= _bull_sm[1] <= (_bb[1] + _bb[3] * 1.25):
+                    bx = int(round(_bull_sm[0]))
+                    by = int(round(_bull_sm[1]))
             if _bull_trk is not None:
                 # 运动状态估计：外推到"指令生效时刻"
                 _pp = _bull_trk.predict()
@@ -364,12 +369,19 @@ def _send_uart(seq, res):
 
 
 def _bull_of(res):
-    """取靶心 (x, y) 或 None。"""
+    """取靶心 (x, y) 或 None（必须在靶框内，防止低置信度关键点乱飞）。"""
     if not res or not res[0] or not res[3]:
         return None
     kp = res[3][0]
     if len(kp) >= 15 and float(kp[14]) >= BULL_MIN_KP:
-        return (float(kp[12]), float(kp[13]))
+        bx = float(kp[12])
+        by = float(kp[13])
+        b = res[0][0]
+        mx = float(b[2]) * 0.25
+        my = float(b[3]) * 0.25
+        if (b[0] - mx) <= bx <= (b[0] + b[2] + mx) and \
+                (b[1] - my) <= by <= (b[1] + b[3] + my):
+            return (bx, by)
     return None
 
 
