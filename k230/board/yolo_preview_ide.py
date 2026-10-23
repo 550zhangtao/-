@@ -99,6 +99,8 @@ BULL_PRED_ON = 1               # 靶心延迟外推（运动状态估计）开�
 BULL_PRED_MS = 80.0            # 感知-执行延迟估计（ms），待实测标定
 AIM_LASER_ON_BULL = 1          # 1=把"靶心"平移成激光落点，让激光压在靶心上
 AIM_LASER_MIN_LOCK = 6         # 激光至少连续锁定这么多帧才参与瞄准（防误锁跳点）
+BULL_HOLD_ON = 1               # 靶纸短暂丢失时保持瞄准（不立刻放弃）
+BULL_HOLD_FRAMES = 6           # 最多保持多少帧（18fps 约 0.33s）
 PRINT_EVERY = 30
 RESET_ON_EXIT = 1
 LIMIT = 0                     # >0：跑 N 帧后退出（自动化测试用）
@@ -228,6 +230,8 @@ _YL.aidemo = _PoseAidemo()
 _bull_kf = None   # 用户要求：靶心不做卡尔曼平滑（2026-10-24 改回）
 _bull_sm = None
 _bull_trk = None   # 靶心运动状态估计（laser_track.LaserTracker）
+_last_box = None   # 最近一次有效框中心 (cx, cy)，保持瞄准用
+_miss_frames = 0   # 连续未检出框的帧数
 
 _uart = None
 _uart_warned = False
@@ -265,35 +269,46 @@ def _send_uart(seq, res):
         return
     try:
         run = 1 if (res and res[0]) else 0
+        cx = cy = -1
+        bx = by = -1
+        conf = 0
         if run:
             b = res[0][0]
             # b = [x, y, w, h]（左上角+宽高）→ 协议要求框中心
             cx = int(b[0] + b[2] * 0.5)
             cy = int(b[1] + b[3] * 0.5)
-        else:
-            cx = cy = -1
-        conf = 0
-        bx = by = -1
-        if run and res[3] and len(res[3][0]) >= 15 \
-                and float(res[3][0][14]) >= BULL_MIN_KP:
-            conf = int(float(res[3][0][14]) * 1000)
-            if conf < 300:
-                conf = 300   # ESP32 的 AIM_BULL_MIN_CONF=300，保底防止被判靶心丢失
-        if _bull_sm is not None:
-            bx = int(round(_bull_sm[0]))
-            by = int(round(_bull_sm[1]))
-        elif conf:
-            # point_kalman 缺失时退回原始 kp
-            bx = int(res[3][0][12])
-            by = int(res[3][0][13])
-        if run and _bull_trk is not None:
-            # 运动状态估计：外推到"指令生效时刻"，替代原始坐标送 PID
+            if res[3] and len(res[3][0]) >= 15 \
+                    and float(res[3][0][14]) >= BULL_MIN_KP:
+                conf = int(float(res[3][0][14]) * 1000)
+                if conf < 300:
+                    # ESP32 AIM_BULL_MIN_CONF=300，保底防止被判靶心丢失
+                    conf = 300
+            if _bull_sm is not None:
+                bx = int(round(_bull_sm[0]))
+                by = int(round(_bull_sm[1]))
+            elif conf:
+                bx = int(res[3][0][12])
+                by = int(res[3][0][13])
+            if _bull_trk is not None:
+                # 运动状态估计：外推到"指令生效时刻"
+                _pp = _bull_trk.predict()
+                if _pp is not None:
+                    bx = int(max(0, min(W - 1, _pp[0])))
+                    by = int(max(0, min(H - 1, _pp[1])))
+        elif (BULL_HOLD_ON and _miss_frames <= BULL_HOLD_FRAMES
+                and _last_box is not None and _bull_trk is not None):
+            # 靶纸短暂丢失：用最近框中心 + 外推继续发 run=1，
+            # 避免 ESP32 退回框中心或判定靶心丢失而停摆。
             _pp = _bull_trk.predict()
             if _pp is not None:
+                run = 1
+                cx = int(_last_box[0])
+                cy = int(_last_box[1])
+                conf = 300
                 bx = int(max(0, min(W - 1, _pp[0])))
                 by = int(max(0, min(H - 1, _pp[1])))
-        # 激光打靶心：ESP32 仍按"把收到点居中"控制，这里把靶心平移
-        # (画面中心 - 激光点)，控制收敛时靶心正好落在激光落点上。
+        # 激光压靶心：把上报点平移 (画面中心 - 激光点)，
+        # ESP32 收紧后靶心正好落在激光落点（保持阶段同样生效）。
         if (AIM_LASER_ON_BULL and run and bx >= 0 and by >= 0
                 and _laser_spot is not None and _laser_lock >= AIM_LASER_MIN_LOCK):
             _lx = int(_laser_spot["cx"])
@@ -781,6 +796,14 @@ def main():
                     _bull_trk.update(_b2[0], _b2[1], time.ticks_ms())
             _ai_ms = time.ticks_diff(time.ticks_ms(), _t_ai)
         res = last_res
+
+        global _last_box, _miss_frames
+        if res and res[0]:
+            _miss_frames = 0
+            _b0 = res[0][0]
+            _last_box = (int(_b0[0] + _b0[2] * 0.5), int(_b0[1] + _b0[3] * 0.5))
+        else:
+            _miss_frames += 1
 
         _send_uart(n, res)
         if DISPLAY_MODE == "ide":
