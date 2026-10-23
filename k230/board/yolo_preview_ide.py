@@ -79,6 +79,7 @@ LASER_CFG = {
     "max_aspect": 2.5,    # 红电线/橙绳细长，长宽比 >2.5 拒
 }
 LASER_EVERY = 1         # 每 N 帧检测一次
+LASER_COARSE = 1        # 丢失时做全帧 LAB 粗搜（参考 elec_vision_k230）
 LASER_LABEL = 1         # 1=画坐标文字
 LASER_CROSS_COLOR = (0, 0, 255)
 LASER_LABEL_COLOR = (255, 255, 255)
@@ -398,6 +399,7 @@ _laser_lock = 0          # 连续命中计数（>=LASER_LOCK_N 视为锁定）
 _laser_thr = 0.0         # 本帧实际使用的阈值（日志/调参用）
 _laser_peak = 0.0        # 本帧峰值置信度（日志/调参用）
 _laser_kf = None       # 激光坐标卡尔曼（2026-10-24：按用户要求加回）
+_laser_coarse = None   # 全帧 LAB 粗搜器（LaserRepo，roi=整幅）
 _laser_prior = LASER_PRIOR
 _laser_ms = 0
 _ai_ms = 0
@@ -410,8 +412,10 @@ _laser_n = 0
 def _init_laser():
     """优先建学习式热图（LaserHeat），失败回退 LaserRepo。"""
     global _laser, _heat, _laser_prior, _laser_lock, _laser_thr, _laser_peak, _laser_kf
+    global _laser_coarse
     _laser = None
     _heat = None
+    _laser_coarse = None
     _laser_prior = (float(LASER_PRIOR[0]), float(LASER_PRIOR[1]))
     # 激光坐标卡尔曼：q/r 与旧版一致；max_jump 放宽到 60（跳变门控已经先过滤了）
     _laser_kf = (PointKalman(q=120.0, r=9.0, max_jump=60.0, max_coast=4)
@@ -421,6 +425,16 @@ def _init_laser():
     _laser_peak = 0.0
     if not LASER_ENABLE:
         return
+    # 全帧 LAB 粗搜器：无论热图是否可用都建（用于丢失后的全画面重捕）
+    if laser_spot_mod is not None and LASER_COARSE:
+        try:
+            _cfg2 = dict(LASER_CFG or {})
+            _cfg2["roi"] = (0, 0, W, H)
+            _laser_coarse = laser_spot_mod.LaserRepo(**_cfg2)
+            print("激光全帧粗搜: roi=%s thr=%s" % (_laser_coarse.roi, _laser_coarse.thresholds))
+        except Exception as e:
+            _laser_coarse = None
+            print("全帧粗搜初始化失败:", e)
     if _LaserHeat is not None:
         try:
             _heat = _LaserHeat(LASER_MODEL)
@@ -634,44 +648,51 @@ def main():
                         if _sp is not None:
                             _laser_spot = {"cx": _sp[0], "cy": _sp[1], "w": 0, "h": 0,
                                            "n": 0, "area": 0, "raw": 0, "conf": 0.0}
-                    # 丢失：先做便宜的局部螺旋搜索，仍失败才全域粗扫（降频）
-                    if (LASER_LOST_SCAN and _laser_miss >= LASER_LOST_MAX
-                            and (_laser_miss % LASER_SCAN_EVERY) == 0):
-                        best = None
-                        for _dx2, _dy2 in ((0, -64), (0, 64), (-64, 0), (64, 0),
-                                           (-64, -64), (64, -64), (-64, 64), (64, 64),
-                                           (-96, 0), (96, 0), (0, -96), (0, 96)):
-                            _cx2 = max(0, min(W - LASER_ROI, int(lx + _dx2 - LASER_ROI // 2)))
-                            _cy2 = max(0, min(H - LASER_ROI, int(ly + _dy2 - LASER_ROI // 2)))
+                    # 丢失：先做全帧 LAB 粗搜（参考 elec_vision_k230：一次 find_blobs
+                    # 覆盖整幅 640x480），命中后用热图在候选处复核；
+                    # 仍失败才每 12 帧跑一次热图全域网格兜底。
+                    best = None
+                    if LASER_LOST_SCAN and LASER_COARSE and _laser_coarse is not None:
+                        _lc = None
+                        try:
+                            _lc = _laser_coarse.sample(img)
+                        except Exception:
+                            _lc = None
+                        if _lc is not None:
+                            _gx2 = int(_lc["x"])
+                            _gy2 = int(_lc["y"])
+                            _hx2 = max(0, min(W - LASER_ROI, _gx2 - LASER_ROI // 2))
+                            _hy2 = max(0, min(H - LASER_ROI, _gy2 - LASER_ROI // 2))
                             try:
-                                _c2 = img.crop(roi=(_cx2, _cy2, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
-                                _r2 = _heat.detect(_c2, _cx2, _cy2, LASER_THR_ACQ)
+                                _c2 = img.crop(roi=(_hx2, _hy2, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
+                                _r2 = _heat.detect(_c2, _hx2, _hy2, LASER_THR_ACQ)
                             except Exception:
                                 _r2 = None
-                            if _r2 is not None and (best is None or _r2[2] > best[2]):
+                            if _r2 is not None:
                                 best = _r2
-                        if best is None and (_laser_miss % (LASER_SCAN_EVERY * 2)) == 0:
-                            for _sy in range(0, H - LASER_ROI + 1, LASER_ROI):
-                                for _sx in range(0, W - LASER_ROI + 1, LASER_ROI):
-                                    try:
-                                        _c2 = img.crop(roi=(_sx, _sy, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
-                                        _r2 = _heat.detect(_c2, _sx, _sy, LASER_THR_ACQ)
-                                    except Exception:
-                                        _r2 = None
-                                    if _r2 is not None and (best is None or _r2[2] > best[2]):
-                                        best = _r2
-                        if best is not None:
-                            _laser_prior = (best[0], best[1])
-                            _laser_miss = 0
-                            if _laser_kf is not None:
-                                # 重捕是新位置：先 reset，避免被 max_jump 拦住
-                                _laser_kf.reset()
-                                _st = _laser_kf.update(float(best[0]), float(best[1]),
-                                                       time.ticks_ms())
-                                if _st is not None:
-                                    best = (_st[0], _st[1], best[2])
-                            _laser_spot = {"cx": best[0], "cy": best[1], "w": 0, "h": 0,
-                                           "n": 0, "area": 0, "raw": 0, "conf": best[2]}
+                    if (best is None and LASER_LOST_SCAN and _laser_miss >= LASER_LOST_MAX
+                            and (_laser_miss % (LASER_SCAN_EVERY * 2)) == 0):
+                        for _sy in range(0, H - LASER_ROI + 1, LASER_ROI):
+                            for _sx in range(0, W - LASER_ROI + 1, LASER_ROI):
+                                try:
+                                    _c2 = img.crop(roi=(_sx, _sy, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
+                                    _r2 = _heat.detect(_c2, _sx, _sy, LASER_THR_ACQ)
+                                except Exception:
+                                    _r2 = None
+                                if _r2 is not None and (best is None or _r2[2] > best[2]):
+                                    best = _r2
+                    if best is not None:
+                        _laser_prior = (best[0], best[1])
+                        _laser_miss = 0
+                        if _laser_kf is not None:
+                            # 重捕是新位置：先 reset，避免被 max_jump 拦住
+                            _laser_kf.reset()
+                            _st = _laser_kf.update(float(best[0]), float(best[1]),
+                                                   time.ticks_ms())
+                            if _st is not None:
+                                best = (_st[0], _st[1], best[2])
+                        _laser_spot = {"cx": best[0], "cy": best[1], "w": 0, "h": 0,
+                                       "n": 0, "area": 0, "raw": 0, "conf": best[2]}
             except Exception as e:
                 print("heat:", e)
                 _laser_spot = None
