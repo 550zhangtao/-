@@ -175,3 +175,35 @@ python3 tools/check_env.py
 ```
 
 把这些输出贴出来，基本能定位 90% 的问题。
+
+---
+
+## 2026-10-23 事故：`/sdcard` 只读 + raw REPL 卡死（已复现三条）
+
+表现：`mode.sh work` 部署失败（`OSError 30`）；之后板子 REPL 完全不响应
+（115200 / 921600 / 1500000 都无输出），Ctrl-C/Ctrl-D 无效，只能硬件复位。
+
+三个独立根因（按踩坑顺序）：
+
+1. **`push_file` 12 KB 分块推 18 KB 文件会把 raw REPL 拖挂**。
+   AGENTS 里记过">32KB 有概率写坏"，实测 12 KB 也会，且卡死后板子只能复位。
+   → 现在用 `tools/recover_deploy.py` 的 **2 KB 分块 + 板上 md5 校验**；
+2. **`/data/main.py` 这个文件名会把整块板子卡死**（`open(...,'wb')` 一执行就无响应，
+   已复现两次，疑似固件 watcher 在 exec 半截文件）。**不要往 `/data` 写 `main.py`**；
+3. **`/sdcard` 变只读**（`OSError 30`），`os.umount` 报 EINVAL、`os.mount` 报 ENODEV，
+   软件层无法恢复。断电重上电仍是只读 → 需要重插 TF 卡；仍不行就备份后格 FAT32。
+
+### 最小恢复（`/sdcard` 只读时也能用）
+
+```bash
+cd k230 && bash scripts/recover.sh          # 等板子 -> 写 /data/boot_agent.py -> 启动代理
+bash scripts/recover.sh --status            # 只看状态
+```
+
+原理：板上 `/sdcard/gimbal_agent.py` 本来就在（只读也能读），只在 `/data` 写一个
+50 字节引导文件 `exec(open('/sdcard/gimbal_agent.py').read())` 再执行。
+**不写 `/sdcard`、不传大文件**，所以不会再拖挂 REPL。
+实测代理起来后 `agent: 60 frames, 25.0fps` / `120 frames, 25.7fps`。
+
+局限：这种方式**不持久**（复位后要再跑一次 `recover.sh`）。要让板上电自启，
+必须修好 `/sdcard` 再执行 `bash scripts/mode.sh work --agent board/gimbal_agent.py`。
