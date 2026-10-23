@@ -131,7 +131,7 @@ try:
     from point_kalman import PointKalman
 except Exception as _e:
     PointKalman = None
-    print("point_kalman 不可用，靶心/激光平滑关闭:", _e)
+    print("point_kalman 不可用，靶心平滑关闭:", _e)
 
 # 固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
 for _p in ("/sdcard", "/sdcard/board", "/"):
@@ -378,7 +378,7 @@ def _draw(img, res, s=1.0, bull_xy=None):
 # ---------------------------------------------------------------- 激光点
 _laser = None            # LaserRepo 实例（回退）
 _heat = None             # LaserHeat 实例（优先）
-_laser_kf = None         # 激光点卡尔曼
+# 2026-10-23：激光点不再做卡尔曼平滑，检测到哪就是哪（原 _laser_kf 已删除）
 _laser_prior = LASER_PRIOR
 _laser_ms = 0
 _ai_ms = 0
@@ -390,11 +390,10 @@ _laser_n = 0
 
 def _init_laser():
     """优先建学习式热图（LaserHeat），失败回退 LaserRepo。"""
-    global _laser, _heat, _laser_prior, _laser_kf
+    global _laser, _heat, _laser_prior
     _laser = None
     _heat = None
     _laser_prior = (float(LASER_PRIOR[0]), float(LASER_PRIOR[1]))
-    _laser_kf = PointKalman(q=120.0, r=9.0, max_jump=40.0, max_coast=8) if PointKalman is not None else None
     if not LASER_ENABLE:
         return
     if _LaserHeat is not None:
@@ -557,10 +556,7 @@ def main():
                 r = _heat.detect(crop, hx0, hy0, LASER_THR)
                 _laser_ms = 1
                 if r is not None:
-                    if _laser_kf is not None:
-                        _sk = _laser_kf.update(r[0], r[1], time.ticks_ms())
-                        if _sk is not None:
-                            r = (_sk[0], _sk[1], r[2])
+                    # 不做卡尔曼平滑：检测到哪就是哪
                     _laser_prior = (r[0], r[1])
                     _laser_miss = 0
                     _laser_spot = {"cx": r[0], "cy": r[1], "w": 0, "h": 0,
@@ -568,10 +564,7 @@ def main():
                 else:
                     _laser_spot = None
                     _laser_miss += 1
-                    if _laser_kf is not None:
-                        _sk = _laser_kf.predict(time.ticks_ms())
-                        if _sk is not None:
-                            _laser_prior = (_sk[0], _sk[1])
+                    # 丢失时不外推：ROI 停在最后一次看到的位置
                     if LASER_LOST_SCAN and _laser_miss >= LASER_LOST_MAX and (_laser_miss % 4) == 0:
                         best = None
                         for _sy in range(0, H - LASER_ROI + 1, LASER_ROI):
