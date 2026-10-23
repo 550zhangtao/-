@@ -69,6 +69,17 @@
 3. `k230/scripts/free_serial.sh [--kill]`：查看/清理残留 `k230tool` 进程；
 4. 别再 `kill -9` 后台 live：优先 `k230tool reset` 或让它自己到 `--duration`。
 
+### 2.1.1 `/sdcard` 根目录与 `/data` 的两个硬坑（2026-10-23）
+
+- **`OSError 30` 先怀疑根目录满**：`/sdcard` 是 FAT，根目录条目数有限（本项目实测 232 条就满），
+  满了以后 `statvfs` 仍报几百 MB 空闲但写不进任何文件。调试图/临时脚本别堆在 `/sdcard` 根目录，
+  用 `/sdcard/tmp/`。`fsck.vfat` 会明确打印 `Root directory is full.`。
+- **不要往 `/data` 已存在的文件写**：本固件 `open('/data/xxx.log','w')` 会卡死整板
+  （`/data/main.py` 必卡）。需要日志就写到内存 Sink 或 `/sdcard`，或每次用新文件名。
+- **`main.py` 必须屏蔽 stdout/stderr**：代理每 60 帧 print 一次，PC 不读 USB CDC 时写缓冲
+  填满，板端 print 永久阻塞 → 整 VM 卡死。`/sdcard/main.py` 里先换 Sink 再 exec 代理，
+  见 `docs/TROUBLESHOOTING.md`。
+
 ### 2.2 调试/工作模式切换
 
 ```bash

@@ -207,3 +207,38 @@ bash scripts/recover.sh --status            # 只看状态
 
 局限：这种方式**不持久**（复位后要再跑一次 `recover.sh`）。要让板上电自启，
 必须修好 `/sdcard` 再执行 `bash scripts/mode.sh work --agent board/gimbal_agent.py`。
+
+### 追加（2026-10-23 22:40）：三个真正的根因
+
+1. **`OSError 30` = `/sdcard` 根目录满了**，不是只读！
+   `fsck.vfat` 输出 `Root directory is full.`：FAT 根目录 232 条被调试图/临时脚本占满，
+   板上 `statvfs` 仍显示 435MB 空闲，但一个新文件都建不出来。
+   处理：卡插 PC → 备份 → 删到 19 条（`libs/ models/ tmp/` + 核心脚本 + models）。
+2. **`/data` 里已存在的文件，`open(...,'w')` 会把整板卡死**
+   （`/data/main.py` 必卡，`/data/agent.log` 也卡）。新建文件正常。
+   处理：`main.py` **不要做任何 /data 文件 IO**。
+3. **代理周期性 `print` 到 USB，没人读 → 写缓冲满 → VM 卡死**。
+   处理：`main.py` 在 exec 前把 stdout/stderr 换成内存 Sink（丢弃）。
+
+最终 `main.py`（224 字节，卡上已部署）：
+
+```python
+import sys
+class Sink:
+    def write(self, *a):
+        return 0
+    def flush(self):
+        pass
+try:
+    sys.stdout = Sink()
+    sys.stderr = Sink()
+except Exception:
+    pass
+exec(open('/sdcard/gimbal_agent.py').read())
+```
+
+实测：冷启动 → `gtrack` → 约 5s 后 `$KT` 开始流入，**+110 帧/4s ≈ 27fps**（无目标时）。
+需要看代理日志时，手动在 IDE/REPL 里 `exec(open('/sdcard/gimbal_agent.py').read())`，
+此时输出走 USB，注意保持有进程在读串口。
+
+工具：`python3 -m tools.fix_autostart --verify` 可随时验证「自启 + 推流」。
