@@ -213,7 +213,7 @@ class _PoseAidemo:
 _YL.aidemo = _PoseAidemo()
 
 # 靶心平滑（PointKalman 缺失时为 None = 不平滑）
-_bull_kf = PointKalman() if PointKalman is not None else None   # 靶心卡尔曼（默认 q=150 r=9）
+_bull_kf = None   # 用户要求：靶心不做卡尔曼平滑（2026-10-24 改回）
 _bull_sm = None
 
 _uart = None
@@ -393,10 +393,11 @@ def _draw(img, res, s=1.0, bull_xy=None):
 # ---------------------------------------------------------------- 激光点
 _laser = None            # LaserRepo 实例（回退）
 _heat = None             # LaserHeat 实例（优先）
-# 2026-10-23：激光点不再做卡尔曼平滑，检测到哪就是哪（原 _laser_kf 已删除）
+# 2026-10-24：按用户要求，激光坐标重新加卡尔曼（见 _laser_kf）
 _laser_lock = 0          # 连续命中计数（>=LASER_LOCK_N 视为锁定）
 _laser_thr = 0.0         # 本帧实际使用的阈值（日志/调参用）
 _laser_peak = 0.0        # 本帧峰值置信度（日志/调参用）
+_laser_kf = None       # 激光坐标卡尔曼（2026-10-24：按用户要求加回）
 _laser_prior = LASER_PRIOR
 _laser_ms = 0
 _ai_ms = 0
@@ -408,10 +409,13 @@ _laser_n = 0
 
 def _init_laser():
     """优先建学习式热图（LaserHeat），失败回退 LaserRepo。"""
-    global _laser, _heat, _laser_prior, _laser_lock, _laser_thr, _laser_peak
+    global _laser, _heat, _laser_prior, _laser_lock, _laser_thr, _laser_peak, _laser_kf
     _laser = None
     _heat = None
     _laser_prior = (float(LASER_PRIOR[0]), float(LASER_PRIOR[1]))
+    # 激光坐标卡尔曼：q/r 与旧版一致；max_jump 放宽到 60（跳变门控已经先过滤了）
+    _laser_kf = (PointKalman(q=120.0, r=9.0, max_jump=60.0, max_coast=4)
+                 if PointKalman is not None else None)
     _laser_lock = 0
     _laser_thr = 0.0
     _laser_peak = 0.0
@@ -607,18 +611,29 @@ def main():
                         r = None
                 if r is not None:
                     gx, gy, conf = r
+                    # 激光坐标卡尔曼：画出来的坐标用平滑值
+                    if _laser_kf is not None:
+                        _st = _laser_kf.update(float(gx), float(gy), time.ticks_ms())
+                        if _st is not None:
+                            gx, gy = _st[0], _st[1]
                     if _laser_lock < 1000:
                         _laser_lock += 1
-                    # 先验低通：只影响下一帧 ROI 中心，画出来的仍是原始检测点
+                    # 先验低通：只影响下一帧 ROI 中心
                     _laser_prior = (lx + (gx - lx) * LASER_PRIOR_A,
                                     ly + (gy - ly) * LASER_PRIOR_A)
                     _laser_miss = 0
                     _laser_spot = {"cx": gx, "cy": gy, "w": 0, "h": 0,
                                    "n": 0, "area": 0, "raw": 0, "conf": conf}
                 else:
-                    _laser_spot = None
                     _laser_miss += 1
                     _laser_lock = 0
+                    _laser_spot = None
+                    # 短暂丢失：卡尔曼外推兜底（最多 max_coast 帧）
+                    if _laser_kf is not None:
+                        _sp = _laser_kf.predict(time.ticks_ms())
+                        if _sp is not None:
+                            _laser_spot = {"cx": _sp[0], "cy": _sp[1], "w": 0, "h": 0,
+                                           "n": 0, "area": 0, "raw": 0, "conf": 0.0}
                     # 丢失：先做便宜的局部螺旋搜索，仍失败才全域粗扫（降频）
                     if (LASER_LOST_SCAN and _laser_miss >= LASER_LOST_MAX
                             and (_laser_miss % LASER_SCAN_EVERY) == 0):
@@ -648,6 +663,13 @@ def main():
                         if best is not None:
                             _laser_prior = (best[0], best[1])
                             _laser_miss = 0
+                            if _laser_kf is not None:
+                                # 重捕是新位置：先 reset，避免被 max_jump 拦住
+                                _laser_kf.reset()
+                                _st = _laser_kf.update(float(best[0]), float(best[1]),
+                                                       time.ticks_ms())
+                                if _st is not None:
+                                    best = (_st[0], _st[1], best[2])
                             _laser_spot = {"cx": best[0], "cy": best[1], "w": 0, "h": 0,
                                            "n": 0, "area": 0, "raw": 0, "conf": best[2]}
             except Exception as e:
@@ -658,13 +680,24 @@ def main():
                 _ls = _laser.sample(img)
                 _laser_ms = int(getattr(_laser, "last_ms", 0))
                 if _ls is not None:
-                    _laser_spot = {"cx": _ls["x"], "cy": _ls["y"],
+                    _lxk = float(_ls["x"])
+                    _lyk = float(_ls["y"])
+                    if _laser_kf is not None:
+                        _st = _laser_kf.update(_lxk, _lyk, time.ticks_ms())
+                        if _st is not None:
+                            _lxk, _lyk = _st[0], _st[1]
+                    _laser_spot = {"cx": _lxk, "cy": _lyk,
                                    "n": _ls.get("n", 0),
                                    "w": _ls.get("w", 0), "h": _ls.get("h", 0),
                                    "area": _ls.get("area", 0),
                                    "raw": _ls.get("raw", 0)}
                 else:
                     _laser_spot = None
+                    if _laser_kf is not None:
+                        _sp = _laser_kf.predict(time.ticks_ms())
+                        if _sp is not None:
+                            _laser_spot = {"cx": _sp[0], "cy": _sp[1], "n": 0,
+                                           "w": 0, "h": 0, "area": 0, "raw": 0}
             except Exception as e:
                 print("laser:", e)
                 _laser_spot = None
