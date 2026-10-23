@@ -1,0 +1,9 @@
+{
+    "python.analysis.extraPaths": [
+        "/home/khalil/.kendryte/k230_canmv_stubs/0ec86ce68d74b28ba549b9e2435f4d397555d2e9"
+    ],
+    "python.analysis.stubPath": "/home/khalil/.kendryte/k230_canmv_pylance/d499b8d67cb7cae3/typings",
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingModuleSource": "none"
+    }
+}

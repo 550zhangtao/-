@@ -72,6 +72,12 @@ UART_RX = 33
 UART_BAUD = 115200
 PRINT_EVERY = 30
 RESET_ON_EXIT = 1
+# ---- 稳定性（2026-10-23）----
+# 1) 硬件看门狗：VM 卡死（相机/KPU 析构死锁）时自动复位，不再需要拔电
+# 2) SAFE_DEINIT=0：退出时不调 sensor.stop()/MediaManager.deinit()
+#    实测这两步可能死锁，导致 machine.reset() 永远执行不到 -> 整板假死
+WDT_TIMEOUT_S = 20
+SAFE_DEINIT = 0
 # =================================================================
 
 from media.sensor import *
@@ -115,6 +121,7 @@ for _p in ("/sdcard", "/sdcard/board", "/"):
 W, H = CAPTURE_SIZE
 _sensor = None
 _yolo = None
+_WDT = None
 
 
 def _display_init():
@@ -436,6 +443,14 @@ def main():
         gc.threshold(96 * 1024)
     except Exception:
         pass
+    # 硬件看门狗：卡死自动复位（相机初始化完成后再启动，避免误触发）
+    global _WDT
+    try:
+        _WDT = machine.WDT(1, WDT_TIMEOUT_S)
+        print("wdt: %ds 看门狗已启用" % WDT_TIMEOUT_S)
+    except Exception as _e:
+        _WDT = None
+        print("wdt 不可用:", _e)
     time.sleep_ms(300)
 
     _display_init()
@@ -459,6 +474,11 @@ def main():
     fps = 0.0
     last_res = None
     while True:
+        if _WDT is not None:
+            try:
+                _WDT.feed()
+            except Exception:
+                pass
         # 先拍显示帧，再拍 AI 帧（仅在 AI 帧执行）
         img = _sensor.snapshot(chn=CAM_CHN_ID_1)
         # ---- 激光：chn0 灰度 + ROI + cv_lite（每帧都要取帧，否则堵管线）
@@ -599,16 +619,21 @@ def _cleanup():
             Display.deinit()
         except Exception as e:
             print("display.deinit:", e)
-    try:
-        if _sensor:
-            _sensor.stop()
-    except Exception as e:
-        print("sensor.stop:", e)
-    _sensor = None
-    try:
-        MediaManager.deinit()
-    except Exception as e:
-        print("media.deinit:", e)
+    if SAFE_DEINIT:
+        try:
+            if _sensor:
+                _sensor.stop()
+        except Exception as e:
+            print("sensor.stop:", e)
+        _sensor = None
+        try:
+            MediaManager.deinit()
+        except Exception as e:
+            print("media.deinit:", e)
+    else:
+        # 实测 stop/deinit 会触发 KPU/相机析构死锁（之后 reset 都执行不到），
+        # 所以直接跳过，交给 machine.reset() 整体重启（keepalive 防 GC 析构）。
+        _sensor = None
     gc.collect()
 
 
