@@ -60,9 +60,18 @@ LASER_ENABLE = 1
 # ---- E 路线：学习式 ROI 热图小模型（优先；失败回退 laser_repo）----
 LASER_MODEL = "/sdcard/models/laser_heatmap.kmodel"
 LASER_ROI = 128
-LASER_THR = 0.55
-LASER_LOST_SCAN = 1           # 丢失后全图网格扫描重捕
-LASER_LOST_MAX = 5            # 连续丢 N 帧后开始扫
+# ---- ROI/阈值「调节模式」（2026-10-23 优化）----
+# 进入用高阈值防误锁；锁定后用低阈值防丢失；远处跳变必须高置信度才算数；
+# 丢失时先做便宜的局部螺旋搜索，仍找不到才全域粗扫（且降低扫描频率）。
+LASER_THR_ACQ = 0.70          # 未锁定/重捕：进入阈值
+LASER_THR_TRK = 0.45          # 已锁定：保持阈值
+LASER_LOCK_N = 2              # 连续命中 N 帧视为锁定
+LASER_JUMP_PX = 40            # 相邻帧位移门限（像素）
+LASER_PRIOR_A = 0.35          # 先验低通系数（只挪 ROI 中心，不改变画出的点）
+LASER_LOST_SCAN = 1           # 丢失后搜索重捕
+LASER_LOST_MAX = 5            # 连续丢 N 帧后开始搜
+LASER_SCAN_EVERY = 6          # 每 N 帧搜一次（省算力，避免掉帧）
+LASER_TUNE = 0                # 1=打印峰值/阈值/锁定状态（调参用，默认开）
 LASER_PRIOR = (290, 190)      # 当前相机朝向下的激光先验
 LASER_CFG = {
     "min_area": 6,        # 小于 6px² 的噪点不要
@@ -379,6 +388,9 @@ def _draw(img, res, s=1.0, bull_xy=None):
 _laser = None            # LaserRepo 实例（回退）
 _heat = None             # LaserHeat 实例（优先）
 # 2026-10-23：激光点不再做卡尔曼平滑，检测到哪就是哪（原 _laser_kf 已删除）
+_laser_lock = 0          # 连续命中计数（>=LASER_LOCK_N 视为锁定）
+_laser_thr = 0.0         # 本帧实际使用的阈值（日志/调参用）
+_laser_peak = 0.0        # 本帧峰值置信度（日志/调参用）
 _laser_prior = LASER_PRIOR
 _laser_ms = 0
 _ai_ms = 0
@@ -390,17 +402,20 @@ _laser_n = 0
 
 def _init_laser():
     """优先建学习式热图（LaserHeat），失败回退 LaserRepo。"""
-    global _laser, _heat, _laser_prior
+    global _laser, _heat, _laser_prior, _laser_lock, _laser_thr, _laser_peak
     _laser = None
     _heat = None
     _laser_prior = (float(LASER_PRIOR[0]), float(LASER_PRIOR[1]))
+    _laser_lock = 0
+    _laser_thr = 0.0
+    _laser_peak = 0.0
     if not LASER_ENABLE:
         return
     if _LaserHeat is not None:
         try:
             _heat = _LaserHeat(LASER_MODEL)
-            print("激光热图: model=%s roi=%d thr=%.2f prior=(%d,%d)"
-                  % (LASER_MODEL, LASER_ROI, LASER_THR,
+            print("激光热图: model=%s roi=%d thr=%.2f/%.2f(acq/trk) prior=(%d,%d)"
+                  % (LASER_MODEL, LASER_ROI, LASER_THR_ACQ, LASER_THR_TRK,
                      LASER_PRIOR[0], LASER_PRIOR[1]))
             return
         except Exception as e:
@@ -545,37 +560,69 @@ def main():
     while True:
         # 先拍显示帧，再拍 AI 帧（仅在 AI 帧执行）
         img = _sensor.snapshot(chn=CAM_CHN_ID_1)
-        # ---- 激光：优先学习式热图（ROI 跟随上一帧），失败回退 find_blobs
-        global _laser_spot, _laser_ms, _laser_prior, _laser_miss
+        # ---- 激光：学习式热图（ROI/阈值调节模式，2026-10-23 优化）
+        global _laser_spot, _laser_ms, _laser_prior, _laser_miss, _laser_lock
+        global _laser_thr, _laser_peak
         if LASER_ENABLE and _heat is not None and (n % LASER_EVERY) == 0:
             try:
+                locked = _laser_lock >= LASER_LOCK_N
+                thr = LASER_THR_TRK if locked else LASER_THR_ACQ
+                _laser_thr = thr
+                _laser_peak = 0.0
                 lx, ly = _laser_prior
                 hx0 = max(0, min(W - LASER_ROI, int(lx - LASER_ROI // 2)))
                 hy0 = max(0, min(H - LASER_ROI, int(ly - LASER_ROI // 2)))
                 crop = img.crop(roi=(hx0, hy0, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
-                r = _heat.detect(crop, hx0, hy0, LASER_THR)
+                r = _heat.detect(crop, hx0, hy0, thr)
                 _laser_ms = 1
                 if r is not None:
-                    # 不做卡尔曼平滑：检测到哪就是哪
-                    _laser_prior = (r[0], r[1])
+                    _laser_peak = float(r[2])
+                    _ddx = r[0] - lx
+                    _ddy = r[1] - ly
+                    # 跳变门控：离先验太远的新点，必须达到"进入阈值"才算数
+                    if (_ddx * _ddx + _ddy * _ddy) > (LASER_JUMP_PX * LASER_JUMP_PX) \
+                            and float(r[2]) < LASER_THR_ACQ:
+                        r = None
+                if r is not None:
+                    gx, gy, conf = r
+                    if _laser_lock < 1000:
+                        _laser_lock += 1
+                    # 先验低通：只影响下一帧 ROI 中心，画出来的仍是原始检测点
+                    _laser_prior = (lx + (gx - lx) * LASER_PRIOR_A,
+                                    ly + (gy - ly) * LASER_PRIOR_A)
                     _laser_miss = 0
-                    _laser_spot = {"cx": r[0], "cy": r[1], "w": 0, "h": 0,
-                                   "n": 0, "area": 0, "raw": 0, "conf": r[2]}
+                    _laser_spot = {"cx": gx, "cy": gy, "w": 0, "h": 0,
+                                   "n": 0, "area": 0, "raw": 0, "conf": conf}
                 else:
                     _laser_spot = None
                     _laser_miss += 1
-                    # 丢失时不外推：ROI 停在最后一次看到的位置
-                    if LASER_LOST_SCAN and _laser_miss >= LASER_LOST_MAX and (_laser_miss % 4) == 0:
+                    _laser_lock = 0
+                    # 丢失：先做便宜的局部螺旋搜索，仍失败才全域粗扫（降频）
+                    if (LASER_LOST_SCAN and _laser_miss >= LASER_LOST_MAX
+                            and (_laser_miss % LASER_SCAN_EVERY) == 0):
                         best = None
-                        for _sy in range(0, H - LASER_ROI + 1, LASER_ROI):
-                            for _sx in range(0, W - LASER_ROI + 1, LASER_ROI):
-                                try:
-                                    _c2 = img.crop(roi=(_sx, _sy, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
-                                    _r2 = _heat.detect(_c2, _sx, _sy, LASER_THR)
+                        for _dx2, _dy2 in ((0, -64), (0, 64), (-64, 0), (64, 0),
+                                           (-64, -64), (64, -64), (-64, 64), (64, 64),
+                                           (-96, 0), (96, 0), (0, -96), (0, 96)):
+                            _cx2 = max(0, min(W - LASER_ROI, int(lx + _dx2 - LASER_ROI // 2)))
+                            _cy2 = max(0, min(H - LASER_ROI, int(ly + _dy2 - LASER_ROI // 2)))
+                            try:
+                                _c2 = img.crop(roi=(_cx2, _cy2, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
+                                _r2 = _heat.detect(_c2, _cx2, _cy2, LASER_THR_ACQ)
+                            except Exception:
+                                _r2 = None
+                            if _r2 is not None and (best is None or _r2[2] > best[2]):
+                                best = _r2
+                        if best is None and (_laser_miss % (LASER_SCAN_EVERY * 2)) == 0:
+                            for _sy in range(0, H - LASER_ROI + 1, LASER_ROI):
+                                for _sx in range(0, W - LASER_ROI + 1, LASER_ROI):
+                                    try:
+                                        _c2 = img.crop(roi=(_sx, _sy, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
+                                        _r2 = _heat.detect(_c2, _sx, _sy, LASER_THR_ACQ)
+                                    except Exception:
+                                        _r2 = None
                                     if _r2 is not None and (best is None or _r2[2] > best[2]):
                                         best = _r2
-                                except Exception:
-                                    pass
                         if best is not None:
                             _laser_prior = (best[0], best[1])
                             _laser_miss = 0
@@ -709,7 +756,8 @@ def main():
                     int(_laser_spot.get("w", 0)), int(_laser_spot.get("h", 0)))
             else:
                 lz = "laser -"
-            lz += " | lms %dms ai %dms raw %d kept %d" % (_laser_ms, _ai_ms, _nraw, _nkept)
+            lz += " | lms %dms ai %dms raw %d kept %d thr %.2f lock %d peak %.2f" % (
+                _laser_ms, _ai_ms, _nraw, _nkept, _laser_thr, _laser_lock, _laser_peak)
             print("[%d] %.1ffps | %s | %s" % (n, fps, lz, tg))
         if (n & 0x0F) == 0:
             gc.collect()
