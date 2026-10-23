@@ -300,8 +300,15 @@ def _init_uart():
         print("uart init failed:", e)
 
 
+# 三态瞄准模式（按用户要求）：
+#   0 = 无目标：target 和激光都没有 -> run=0，云台保持不动
+#   1 = 只有靶心：靶心居中追踪（不加激光偏移）
+#   2 = 激光 + 靶心：把上报点平移成"激光落点"，让激光压在靶心上
+_aim_mode = 0
+
+
 def _send_uart(seq, res):
-    global _uart_warned
+    global _uart_warned, _aim_mode
     if _uart is None:
         if not _uart_warned:
             _uart_warned = True
@@ -312,38 +319,53 @@ def _send_uart(seq, res):
         cx = cy = -1
         bx = by = -1
         conf = 0
+        mode = 0
+
         if run:
             b = res[0][0]
-            # b = [x, y, w, h]（左上角+宽高）→ 协议要求框中心
             cx = int(b[0] + b[2] * 0.5)
             cy = int(b[1] + b[3] * 0.5)
             if res[3] and len(res[3][0]) >= 15 \
                     and float(res[3][0][14]) >= BULL_MIN_KP:
                 conf = int(float(res[3][0][14]) * 1000)
                 if conf < 300:
-                    # ESP32 AIM_BULL_MIN_CONF=300，保底防止被判靶心丢失
-                    conf = 300
+                    conf = 300   # ESP32 AIM_BULL_MIN_CONF=300，防被判靶心丢失
+
+            # ---- 取靶心：优先关键点（必须在框内），否则退回框中心 ----
             _bv = _bull_of(res)
             if _bv is not None:
                 bx = int(round(_bv[0]))
                 by = int(round(_bv[1]))
             elif _bull_sm is not None:
-                # 平滑值也做一次框内检查，超界就退回框中心
                 _bb = res[0][0]
                 if (_bb[0] - _bb[2] * 0.25) <= _bull_sm[0] <= (_bb[0] + _bb[2] * 1.25) and \
                         (_bb[1] - _bb[3] * 0.25) <= _bull_sm[1] <= (_bb[1] + _bb[3] * 1.25):
                     bx = int(round(_bull_sm[0]))
                     by = int(round(_bull_sm[1]))
+            if bx < 0 or by < 0:
+                bx, by = cx, cy          # 关键点不可信 -> 用框中心
+                conf = 300
+
+            # ---- 靶心预测：外推到"指令生效时刻" ----
             if _bull_trk is not None:
-                # 运动状态估计：外推到"指令生效时刻"
                 _pp = _bull_trk.predict()
                 if _pp is not None:
                     bx = int(max(0, min(W - 1, _pp[0])))
                     by = int(max(0, min(H - 1, _pp[1])))
+
+            mode = 1
+            # ---- 激光可用 -> 模式 2：把靶心平移到激光落点 ----
+            _aim_ok = (_laser_aim is not None and
+                       time.ticks_diff(time.ticks_ms(), _laser_aim_ms) <= LASER_AIM_HOLD_MS)
+            if AIM_LASER_ON_BULL and _aim_ok:
+                _lx = int(_laser_aim[0])
+                _ly = int(_laser_aim[1])
+                bx = max(-1000, min(2000, bx + (W // 2 - _lx)))
+                by = max(-1000, min(2000, by + (H // 2 - _ly)))
+                mode = 2
         elif (BULL_HOLD_ON and _miss_frames <= BULL_HOLD_FRAMES
                 and _last_box is not None and _bull_trk is not None):
-            # 靶纸短暂丢失：用最近框中心 + 外推继续发 run=1，
-            # 避免 ESP32 退回框中心或判定靶心丢失而停摆。
+            # ---- 短暂丢失：保持上一状态继续发 ----
             _pp = _bull_trk.predict()
             if _pp is not None:
                 run = 1
@@ -352,16 +374,23 @@ def _send_uart(seq, res):
                 conf = 300
                 bx = int(max(0, min(W - 1, _pp[0])))
                 by = int(max(0, min(H - 1, _pp[1])))
-        # 激光压靶心：把上报点平移 (画面中心 - 激光点)，
-        # ESP32 收紧后靶心正好落在激光落点（保持阶段同样生效）。
-        _aim_ok = False
-        if _laser_aim is not None:
-            _aim_ok = time.ticks_diff(time.ticks_ms(), _laser_aim_ms) <= LASER_AIM_HOLD_MS
-        if AIM_LASER_ON_BULL and run and bx >= 0 and by >= 0 and _aim_ok:
-            _lx = int(_laser_aim[0])
-            _ly = int(_laser_aim[1])
-            bx = max(-1000, min(2000, bx + (W // 2 - _lx)))
-            by = max(-1000, min(2000, by + (H // 2 - _ly)))
+                mode = _aim_mode if _aim_mode else 1
+                _aim_ok = (_laser_aim is not None and
+                           time.ticks_diff(time.ticks_ms(), _laser_aim_ms) <= LASER_AIM_HOLD_MS)
+                if mode == 2 and _aim_ok:
+                    bx = max(-1000, min(2000, bx + (W // 2 - int(_laser_aim[0]))))
+                    by = max(-1000, min(2000, by + (H // 2 - int(_laser_aim[1]))))
+
+        # ---- 模式变化时打印一次，方便现场确认走的是哪条逻辑 ----
+        if mode != _aim_mode:
+            _aim_mode = mode
+            if mode == 2:
+                print("AIM: 激光+靶心 -> 激光压靶心")
+            elif mode == 1:
+                print("AIM: 只有靶心 -> 追靶心")
+            else:
+                print("AIM: 无目标 -> 不追踪")
+
         _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d!\n" % (seq, run, cx, cy, bx, by, conf))
         _uart.flush()
     except Exception as e:
