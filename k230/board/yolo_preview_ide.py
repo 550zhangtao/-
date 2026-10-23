@@ -101,6 +101,11 @@ AIM_LASER_ON_BULL = 1          # 1=把"靶心"平移成激光落点，让激光�
 AIM_LASER_MIN_LOCK = 6         # 激光至少连续锁定这么多帧才参与瞄准（防误锁跳点）
 BULL_HOLD_ON = 1               # 靶纸短暂丢失时保持瞄准（不立刻放弃）
 BULL_HOLD_FRAMES = 6           # 最多保持多少帧（18fps 约 0.33s）
+LASER_AIM_JUMP = 40            # 激光瞄准点跳变门限（px），超过要连续确认
+LASER_AIM_HOLD_MS = 3000       # 激光丢失后仍沿用记忆瞄准点的时间
+DBG_RAW = 1                    # 1=DBG_SAVE 时保存原始帧（不带叠加），给训练用
+DBG_RAW_DIR = "/sdcard/rot"    # 原始帧目录
+DBG_RAW_MAX = 240              # 最多存多少张
 PRINT_EVERY = 30
 RESET_ON_EXIT = 1
 LIMIT = 0                     # >0：跑 N 帧后退出（自动化测试用）
@@ -122,6 +127,7 @@ from libs.YOLO import YOLOv8
 from ulab import numpy as _np
 
 import sys
+import os
 import gc
 import time
 
@@ -231,6 +237,10 @@ _bull_kf = None   # 用户要求：靶心不做卡尔曼平滑（2026-10-24 改�
 _bull_sm = None
 _bull_trk = None   # 靶心运动状态估计（laser_track.LaserTracker）
 _last_box = None   # 最近一次有效框中心 (cx, cy)，保持瞄准用
+_laser_aim = None  # 锁定的激光瞄准点 (x, y)，抗激光检测抖动
+_laser_aim_ms = 0
+_laser_aim_bad = 0
+_dbg_raw_n = 0
 _miss_frames = 0   # 连续未检出框的帧数
 
 _uart = None
@@ -309,10 +319,12 @@ def _send_uart(seq, res):
                 by = int(max(0, min(H - 1, _pp[1])))
         # 激光压靶心：把上报点平移 (画面中心 - 激光点)，
         # ESP32 收紧后靶心正好落在激光落点（保持阶段同样生效）。
-        if (AIM_LASER_ON_BULL and run and bx >= 0 and by >= 0
-                and _laser_spot is not None and _laser_lock >= AIM_LASER_MIN_LOCK):
-            _lx = int(_laser_spot["cx"])
-            _ly = int(_laser_spot["cy"])
+        _aim_ok = False
+        if _laser_aim is not None:
+            _aim_ok = time.ticks_diff(time.ticks_ms(), _laser_aim_ms) <= LASER_AIM_HOLD_MS
+        if AIM_LASER_ON_BULL and run and bx >= 0 and by >= 0 and _aim_ok:
+            _lx = int(_laser_aim[0])
+            _ly = int(_laser_aim[1])
             bx = max(-1000, min(2000, bx + (W // 2 - _lx)))
             by = max(-1000, min(2000, by + (H // 2 - _ly)))
         _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d!\n" % (seq, run, cx, cy, bx, by, conf))
@@ -805,6 +817,33 @@ def main():
         else:
             _miss_frames += 1
 
+        # 激光瞄准点锁定：位置基本固定，用 EMA 缓慢跟随 + 大跳变确认，
+        # 这样激光偶尔丢帧也不会让瞄准点在"激光/画面中心"之间来回跳。
+        global _laser_aim, _laser_aim_ms, _laser_aim_bad
+        if (_laser_spot is not None
+                and _laser_lock >= AIM_LASER_MIN_LOCK):
+            _ax = int(_laser_spot["cx"])
+            _ay = int(_laser_spot["cy"])
+            _now2 = time.ticks_ms()
+            if _laser_aim is None:
+                _laser_aim = (float(_ax), float(_ay))
+                _laser_aim_ms = _now2
+                _laser_aim_bad = 0
+            else:
+                _dx3 = _ax - _laser_aim[0]
+                _dy3 = _ay - _laser_aim[1]
+                if _dx3 * _dx3 + _dy3 * _dy3 <= LASER_AIM_JUMP * LASER_AIM_JUMP:
+                    _laser_aim = (_laser_aim[0] + _dx3 * 0.2,
+                                  _laser_aim[1] + _dy3 * 0.2)
+                    _laser_aim_ms = _now2
+                    _laser_aim_bad = 0
+                else:
+                    _laser_aim_bad += 1
+                    if _laser_aim_bad >= 3:
+                        _laser_aim = (float(_ax), float(_ay))
+                        _laser_aim_ms = _now2
+                        _laser_aim_bad = 0
+
         _send_uart(n, res)
         if DISPLAY_MODE == "ide":
             if HEADLESS:
@@ -856,7 +895,19 @@ def main():
             Display.show_image(img)
 
         # 板端绘制路径自检：把"画好"的帧存到 /sdcard 供 k230tool pull 检查
-        if DBG_SAVE and n and (n % DBG_SAVE) == 0:
+        if DBG_SAVE and DBG_RAW and n and (n % DBG_SAVE) == 0:
+            try:
+                global _dbg_raw_n
+                if _dbg_raw_n < DBG_RAW_MAX:
+                    try:
+                        os.mkdir(DBG_RAW_DIR)
+                    except Exception:
+                        pass
+                    img.save(DBG_RAW_DIR + "/rot_%04d.jpg" % _dbg_raw_n)
+                    _dbg_raw_n += 1
+            except Exception as e:
+                print("save raw:", e)
+        elif DBG_SAVE and n and (n % DBG_SAVE) == 0:
             try:
                 # VIEW=full 时叠加画在 disp 上；保存 img 会得到一张没有框的
                 # 原图，起不到核对绘制路径的作用。
