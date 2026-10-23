@@ -71,7 +71,6 @@ LASER_PRIOR_A = 0.35          # 先验低通系数（只挪 ROI 中心，不改�
 LASER_LOST_SCAN = 1           # 丢失后搜索重捕
 LASER_LOST_MAX = 5            # 连续丢 N 帧后开始搜
 LASER_SCAN_EVERY = 6          # 每 N 帧搜一次（省算力，避免掉帧）
-LASER_TUNE = 0                # 1=打印峰值/阈值/锁定状态（调参用，默认开）
 LASER_PRIOR = (290, 190)      # 当前相机朝向下的激光先验
 LASER_CFG = {
     "min_area": 6,        # 小于 6px² 的噪点不要
