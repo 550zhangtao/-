@@ -20,14 +20,14 @@ yolo_preview_ide.py —— 在 CanMV IDE 里看 YOLOv8n-Pose 标靶
 """
 
 # ============================ 用户配置 ============================
-MODEL = "/sdcard/models/pose_v3_384.kmodel"   # 384 输入（当前唯一模型，远小靶更准）
+MODEL = "/sdcard/models/pose_v3_256.kmodel"   # 256 输入（更快；精度与 384 相当）
 LABELS = ["target"]
-MODEL_IN = [384, 384]
+MODEL_IN = [256, 256]
 CAPTURE_SIZE = [640, 480]
 DISPLAY_MODE = "ide"          # ide=CanMV IDE；hdmi/lcd=本地屏
 VIEW = "full"                 # full=全图固定缩放；center=固定中心裁剪；roi=旧动态ROI
-VIEW_SCALE = 0.45            # full 缩放：0.45 -> 288x216（帧率优先）；0.55 -> 352x264
-IDE_QUALITY = 80              # IDE 预览 JPEG 质量（70 帧率优先；85~90 更清晰）
+VIEW_SCALE = 0.60            # 0.60 -> 384x288（Pose/2 实测 17.8-18.1fps）
+IDE_QUALITY = 85              # 384x288 q85：编码约 35ms
 CENTER_SIZE = 320             # center 模式的固定裁剪边长
 CONF = 0.25
 # 低置信兜底复筛：远处 30px 小靶/逆光时首轮分数会掉到 0.25 以下。
@@ -41,7 +41,7 @@ MAX_BOXES = 20
 KP_NUM = 5                    # 4 角点 + 靶心
 KP_DIM = 3                    # x,y,v
 VIEW_PAD = 0.25               # ROI 外扩比例
-AI_EVERY = 2                 # 每 N 帧跑一次 pose（其余帧复用上次结果）
+AI_EVERY = 2                 # 每 2 帧跑 pose（384x288 q85 实测 17.8-18.1fps）
 
 # ---- 板端性能（见 board/k230_perf.py；实测采集 57fps，编码/绘图才是瓶颈）----
 PERF_MODE = "performance"     # auto / balanced / performance
@@ -52,10 +52,24 @@ ENC_SCALE = 0.80              # 预览图缩放：0.80 -> 512x384 更清晰，�
 # ---- 激光检测：移植 zhouzhou-code/elec_vision_k230（见 board/laser_repo.py）----
 # 原版逻辑：固定居中 ROI(320x240) + LAB 阈值(9,100,15,98,-13,77)
 #          + find_blobs(pixels_threshold=1, merge=True) + 取面积最大。
-# 2026-10-23 阈值已收紧为 (80,100,40,127,60,127)：亮 + 正 A(高饱和红) + 偏黄。
-# 这里**未改判据**，只把结果画到预览上。
+# 2026-10-23 修：原版"直接取最大"会锁红袋子/红电线/手。laser_repo.py 现在
+# 支持门限，这里的 LASER_CFG 会被真正传进 LaserRepo（以前是空操作）。
+# 门限含义：min_area/max_area=bbox 面积，max_side=单边，max_aspect=长宽比，
+#          min_fill=pixels/(w*h)。置 0 即关闭。
 LASER_ENABLE = 1
-LASER_CFG = {}          # 可覆盖 laser_repo 的常量，如 {"max_side": 40}
+# ---- E 路线：学习式 ROI 热图小模型（优先；失败回退 laser_repo）----
+LASER_MODEL = "/sdcard/models/laser_heatmap.kmodel"
+LASER_ROI = 128
+LASER_THR = 0.55
+LASER_LOST_SCAN = 1           # 丢失后全图网格扫描重捕
+LASER_LOST_MAX = 5            # 连续丢 N 帧后开始扫
+LASER_PRIOR = (290, 190)      # 当前相机朝向下的激光先验
+LASER_CFG = {
+    "min_area": 6,        # 小于 6px² 的噪点不要
+    "max_area": 400,      # 红袋子/大片红 >400px² 直接拒（激光约 80px²）
+    "max_side": 24,       # 手/白屏/大块红 单边都 >24
+    "max_aspect": 2.5,    # 红电线/橙绳细长，长宽比 >2.5 拒
+}
 LASER_EVERY = 1         # 每 N 帧检测一次
 LASER_LABEL = 1         # 1=画坐标文字
 LASER_CROSS_COLOR = (0, 0, 255)
@@ -73,6 +87,8 @@ UART_RX = 33
 UART_BAUD = 115200
 PRINT_EVERY = 30
 RESET_ON_EXIT = 1
+LIMIT = 0                     # >0：跑 N 帧后退出（自动化测试用）
+HEADLESS = 0                  # 1：不开 IDE，用 img.compress 模拟预览（量 FPS）
 # =================================================================
 
 from media.sensor import *
@@ -104,6 +120,12 @@ try:
 except Exception as _e:
     laser_spot_mod = None
     print("laser_repo 不可用，激光检测关闭:", _e)
+
+try:
+    from laser_heatmap import LaserHeat as _LaserHeat
+except Exception as _e:
+    _LaserHeat = None
+    print("laser_heatmap 不可用，回退 laser_repo:", _e)
 
 try:
     from point_kalman import PointKalman
@@ -176,7 +198,7 @@ class _PoseAidemo:
 _YL.aidemo = _PoseAidemo()
 
 # 靶心平滑（PointKalman 缺失时为 None = 不平滑）
-_bull_kf = PointKalman() if PointKalman is not None else None
+_bull_kf = None   # 用户要求：靶心不再做卡尔曼平滑
 _bull_sm = None
 
 _uart = None
@@ -331,8 +353,11 @@ def _draw(img, res, s=1.0, bull_xy=None):
             else:
                 pts.append(None)
         if i == 0 and bull_xy is not None and len(pts) >= 5:
-            pts[4] = (int(round(float(bull_xy[0]) * s)),
-                      int(round(float(bull_xy[1]) * s)))
+            bxv = bull_xy[0]
+            byv = bull_xy[1]
+            if (-1e6 < bxv < 1e6) and (-1e6 < byv < 1e6):
+                pts[4] = (int(round(float(bxv) * s)),
+                          int(round(float(byv) * s)))
         quad = [p for p in pts[:4] if p is not None]
         n = len(quad)
         if n >= 2:
@@ -351,8 +376,12 @@ def _draw(img, res, s=1.0, bull_xy=None):
 
 
 # ---------------------------------------------------------------- 激光点
-_laser = None            # LaserSpot 实例
+_laser = None            # LaserRepo 实例（回退）
+_heat = None             # LaserHeat 实例（优先）
+_laser_kf = None         # 激光点卡尔曼
+_laser_prior = LASER_PRIOR
 _laser_ms = 0
+_ai_ms = 0
 _laser_spot = None       # 最近一次结果 {"cx","cy","n","x","y","w","h"}
 _laser_lock = None       # 锁定的 (cx, cy)
 _laser_miss = 0
@@ -360,19 +389,32 @@ _laser_n = 0
 
 
 def _init_laser():
-    """建 LaserRepo（LAB + 固定居中 ROI，原仓库逻辑）。"""
-    global _laser
+    """优先建学习式热图（LaserHeat），失败回退 LaserRepo。"""
+    global _laser, _heat, _laser_prior, _laser_kf
     _laser = None
+    _heat = None
+    _laser_prior = (float(LASER_PRIOR[0]), float(LASER_PRIOR[1]))
+    _laser_kf = PointKalman(q=120.0, r=9.0, max_jump=40.0, max_coast=8) if PointKalman is not None else None
     if not LASER_ENABLE:
         return
+    if _LaserHeat is not None:
+        try:
+            _heat = _LaserHeat(LASER_MODEL)
+            print("激光热图: model=%s roi=%d thr=%.2f prior=(%d,%d)"
+                  % (LASER_MODEL, LASER_ROI, LASER_THR,
+                     LASER_PRIOR[0], LASER_PRIOR[1]))
+            return
+        except Exception as e:
+            _heat = None
+            print("激光热图初始化失败，回退 laser_repo:", e)
     if laser_spot_mod is None:
         print("激光: laser_repo.py 缺失，跳过")
         return
     try:
-        _laser = laser_spot_mod.LaserRepo(**({"roi_scale": LASER_CFG.get("roi_scale", 1.0)})
-                                          if LASER_CFG else {})
-        print("激光: LAB=%s ROI=%s 版本 %s"
-              % (getattr(laser_spot_mod, "RED_LAB", "?"), _laser.roi,
+        _laser = laser_spot_mod.LaserRepo(**(LASER_CFG or {}))
+        print("激光: thr=%s ROI=%s 门限(area %s~%s, side<=%s, aspect<=%s) 版本 %s"
+              % (_laser.thresholds, _laser.roi, _laser.min_area, _laser.max_area,
+                 _laser.max_side, _laser.max_aspect,
                  getattr(laser_spot_mod, "VERSION", "?")))
     except Exception as e:
         _laser = None
@@ -430,18 +472,14 @@ def _draw_laser(dst, spot, sc=1.0, label=True):
     """画原版 ROI 框 + 选中的 blob 框 + 十字 + 坐标（640x480 原图坐标）。"""
     if spot is None:
         return
-    # 选中的 blob 外接框（有 bx/by 就按真实左上角画，长条时不至于偏到一边）
+    # 选中的 blob 外接框
     if spot.get("w") and spot.get("h"):
         try:
             bw = int(spot["w"] * sc)
             bh = int(spot["h"] * sc)
-            if spot.get("bx") is not None and spot.get("by") is not None:
-                rx = int(round(spot["bx"] * sc))
-                ry = int(round(spot["by"] * sc))
-            else:
-                rx = int(round(spot["cx"] * sc)) - bw // 2
-                ry = int(round(spot["cy"] * sc)) - bh // 2
-            dst.draw_rectangle(rx, ry, bw, bh, color=(0, 255, 0), thickness=1)
+            dst.draw_rectangle(int(round(spot["cx"] * sc)) - bw // 2,
+                               int(round(spot["cy"] * sc)) - bh // 2,
+                               bw, bh, color=(0, 255, 0), thickness=1)
         except Exception:
             pass
     cx = int(round(spot["cx"] * sc))
@@ -508,9 +546,52 @@ def main():
     while True:
         # 先拍显示帧，再拍 AI 帧（仅在 AI 帧执行）
         img = _sensor.snapshot(chn=CAM_CHN_ID_1)
-        # ---- 激光：直接在显示帧(RGB565)上做 LAB find_blobs（与移植代码一致）
-        global _laser_spot, _laser_ms
-        if LASER_ENABLE and _laser is not None and (n % LASER_EVERY) == 0:
+        # ---- 激光：优先学习式热图（ROI 跟随上一帧），失败回退 find_blobs
+        global _laser_spot, _laser_ms, _laser_prior, _laser_miss
+        if LASER_ENABLE and _heat is not None and (n % LASER_EVERY) == 0:
+            try:
+                lx, ly = _laser_prior
+                hx0 = max(0, min(W - LASER_ROI, int(lx - LASER_ROI // 2)))
+                hy0 = max(0, min(H - LASER_ROI, int(ly - LASER_ROI // 2)))
+                crop = img.crop(roi=(hx0, hy0, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
+                r = _heat.detect(crop, hx0, hy0, LASER_THR)
+                _laser_ms = 1
+                if r is not None:
+                    if _laser_kf is not None:
+                        _sk = _laser_kf.update(r[0], r[1], time.ticks_ms())
+                        if _sk is not None:
+                            r = (_sk[0], _sk[1], r[2])
+                    _laser_prior = (r[0], r[1])
+                    _laser_miss = 0
+                    _laser_spot = {"cx": r[0], "cy": r[1], "w": 0, "h": 0,
+                                   "n": 0, "area": 0, "raw": 0, "conf": r[2]}
+                else:
+                    _laser_spot = None
+                    _laser_miss += 1
+                    if _laser_kf is not None:
+                        _sk = _laser_kf.predict(time.ticks_ms())
+                        if _sk is not None:
+                            _laser_prior = (_sk[0], _sk[1])
+                    if LASER_LOST_SCAN and _laser_miss >= LASER_LOST_MAX and (_laser_miss % 4) == 0:
+                        best = None
+                        for _sy in range(0, H - LASER_ROI + 1, LASER_ROI):
+                            for _sx in range(0, W - LASER_ROI + 1, LASER_ROI):
+                                try:
+                                    _c2 = img.crop(roi=(_sx, _sy, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
+                                    _r2 = _heat.detect(_c2, _sx, _sy, LASER_THR)
+                                    if _r2 is not None and (best is None or _r2[2] > best[2]):
+                                        best = _r2
+                                except Exception:
+                                    pass
+                        if best is not None:
+                            _laser_prior = (best[0], best[1])
+                            _laser_miss = 0
+                            _laser_spot = {"cx": best[0], "cy": best[1], "w": 0, "h": 0,
+                                           "n": 0, "area": 0, "raw": 0, "conf": best[2]}
+            except Exception as e:
+                print("heat:", e)
+                _laser_spot = None
+        elif LASER_ENABLE and _laser is not None and (n % LASER_EVERY) == 0:
             try:
                 _ls = _laser.sample(img)
                 _laser_ms = int(getattr(_laser, "last_ms", 0))
@@ -518,7 +599,6 @@ def main():
                     _laser_spot = {"cx": _ls["x"], "cy": _ls["y"],
                                    "n": _ls.get("n", 0),
                                    "w": _ls.get("w", 0), "h": _ls.get("h", 0),
-                                   "bx": _ls.get("bx"), "by": _ls.get("by"),
                                    "area": _ls.get("area", 0),
                                    "raw": _ls.get("raw", 0)}
                 else:
@@ -527,6 +607,7 @@ def main():
                 print("laser:", e)
                 _laser_spot = None
         if last_res is None or (n % AI_EVERY) == 0:
+            _t_ai = time.ticks_ms()
             arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
             last_res = _yolo.run(arr)
             # ---- 低置信兜底复筛（与 board/yolo_pose.py 的策略一致）
@@ -542,11 +623,22 @@ def main():
                     if rb is not None and rb[2] >= CONF:
                         last_res = ([rb[0]], [0], [rb[2]], [rb[1]])
             _update_bull_filter(last_res, time.ticks_ms())
+            _ai_ms = time.ticks_diff(time.ticks_ms(), _t_ai)
         res = last_res
 
         _send_uart(n, res)
         if DISPLAY_MODE == "ide":
-            if VIEW == "full":
+            if HEADLESS:
+                d = perf.enc_dims(W, H, VIEW_SCALE) if perf is not None else None
+                sc = (d[0] / float(W)) if d else VIEW_SCALE
+                disp = img.copy(x_scale=sc, y_scale=sc)
+                _draw(disp, res, sc, _bull_sm)
+                _draw_laser(disp, _laser_spot, sc, label=True)
+                if d:
+                    disp.compress(quality=IDE_QUALITY, x_size=d[0], y_size=d[1])
+                else:
+                    disp.compress(quality=IDE_QUALITY)
+            elif VIEW == "full":
                 # 先缩放到固定尺寸，再画覆盖层：绘制成本降数倍，帧率更稳
                 d = perf.enc_dims(W, H, VIEW_SCALE) if perf is not None else None
                 sc = (d[0] / float(W)) if d else VIEW_SCALE
@@ -597,6 +689,8 @@ def main():
                 print("save dbg:", e)
 
         n += 1
+        if LIMIT and n >= LIMIT:
+            break
         dt = time.ticks_diff(time.ticks_ms(), t_last)
         t_last = time.ticks_ms()
         if dt > 0:
@@ -614,6 +708,7 @@ def main():
                 except Exception:
                     pass
             _nraw = 0 if _laser is None else int(getattr(_laser, "raw_blobs", 0))
+            _nkept = 0 if _laser is None else int(getattr(_laser, "nblob", 0))
             if _laser_spot is not None:
                 lz = "laser (%d,%d) area %d %dx%d" % (
                     int(_laser_spot["cx"]), int(_laser_spot["cy"]),
@@ -621,9 +716,7 @@ def main():
                     int(_laser_spot.get("w", 0)), int(_laser_spot.get("h", 0)))
             else:
                 lz = "laser -"
-            lz += " | lms %dms raw %d%s" % (
-                _laser_ms, _nraw,
-                " core" if getattr(_laser, "core", 0) else "")
+            lz += " | lms %dms ai %dms raw %d kept %d" % (_laser_ms, _ai_ms, _nraw, _nkept)
             print("[%d] %.1ffps | %s | %s" % (n, fps, lz, tg))
         if (n & 0x0F) == 0:
             gc.collect()

@@ -73,11 +73,35 @@ class PointKalman:
             s = 1e-9
         k0 = c[0] / s
         k1 = c[1] / s
-        p01 = 0.5 * ((1.0 - k0) * c[1] + (c[1] - k1 * c[0]))
-        return p + k0 * y, v + k1 * y, [(1.0 - k0) * c[0], p01, c[2] - k1 * c[1]]
+        # Joseph 形式：P=(I-KH)P(I-KH)^T+K R K^T，保证协方差正定，
+        # 避免长跑后简单形式 (I-KH)P 因舍入变负、再滚成 inf/NaN。
+        p00 = (1.0 - k0) * (1.0 - k0) * c[0] + k0 * k0 * self.r
+        p01 = (1.0 - k0) * (c[1] - k1 * c[0]) + k0 * k1 * self.r
+        p11 = c[2] - 2.0 * k1 * c[1] + k1 * k1 * (c[0] + self.r)
+        if p00 != p00 or p01 != p01 or p11 != p11:
+            # 数值异常：重建协方差
+            p00 = self.r
+            p01 = 0.0
+            p11 = 400.0
+        else:
+            if p00 < 1e-6:
+                p00 = 1e-6
+            if p11 < 1e-6:
+                p11 = 1e-6
+            lim = (p00 * p11) ** 0.5
+            if p01 > lim:
+                p01 = lim
+            elif p01 < -lim:
+                p01 = -lim
+        return p + k0 * y, v + k1 * y, [p00, p01, p11]
 
     def update(self, x, y, t):
         """喂一个有效测量；返回 (x, y, vx, vy) 或 None。"""
+        if x != x or y != y:
+            return None
+        if self.ok and (self.px != self.px or self.py != self.py
+                        or self.vx != self.vx or self.vy != self.vy):
+            self.reset()
         if not self.ok:
             self.ok = True
             self.px = float(x)
@@ -111,6 +135,9 @@ class PointKalman:
     def predict(self, t):
         """没测量时外推；连续丢失超过 max_coast 帧则 reset 并返回 None。"""
         if not self.ok:
+            return None
+        if self.px != self.px or self.py != self.py:
+            self.reset()
             return None
         d = self._dt(t)
         self.t = t

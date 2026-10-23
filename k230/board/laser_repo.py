@@ -1,255 +1,151 @@
 # -*- coding: utf-8 -*-
 """
-laser_repo.py —— 移植 zhouzhou-code/elec_vision_k230 的激光检测逻辑
-====================================================================
+laser_repo.py —— 照搬 zhouzhou-code/elec_vision_k230 的激光检测，
+                 并补上可配置的尺寸/面积门限。
 
 来源：https://github.com/zhouzhou-code/elec_vision_k230  (main.py)
 
-原仓库相关代码（逐行对应）：
+原版逻辑（判据未改）：
 
-    threshold_list = [30000, 80,240, 5000, 1, 9,100, 15,98, -13,77, 1]
-    default_red_thres_list = (9, 100,    # Lmin, Lmax
-                              15, 98,    # Amin, Amax
-                              -13, 77)   # Bmin, Bmax 红色激光
-    roi_w = 640 // 2 ; roi_h = 480 // 2
-    roi_x = (640 - roi_w)//2 ; roi_y = (480 - roi_h)//2
-    new_roi = (roi_x, roi_y, roi_w, roi_h)
-
-    red_blobs = img.find_blobs([default_red_thres_list], False, roi=new_roi,
+    red_blobs = img.find_blobs([default_red_thres_list], False, roi=...,
                                x_stride=2, y_stride=2, pixels_threshold=1,
                                merge=True, margin=True)
     if red_blobs:
         max_red = max(red_blobs, key=lambda b: (b.area(), -b.y()))
-        red_coords = (max_red.cx(), max_red.cy())
 
-本文件在原逻辑上加了：
+原版的问题：直接"取面积最大"，红袋子 / 红电线 / 橙色绳 / 手 都比
+8×10 的激光点大，于是必然锁到杂物上；而且 `merge=True` 还会把
+"红杂物 + 激光"并成一个大块。
 
-1. **形状自适应（方案 2）**：倾斜反光面把光斑拉成亮带时，整条带的面积质心
-   不是入射点。先用 blob.elongation() / 外接框长宽比判断“是不是亮带”；是的话
-   沿长轴采样找最亮端，再在最亮端 ±r 小窗做 V² 加权质心。
-2. **PointKalman 平滑**：有测量 update、短暂丢失 predict 兜底、MAX_JUMP 限幅。
+本版（VERSION = repo-port-2-gated）只做两件事：
+  1) 阈值 / 门限 / ROI 全部做成可传参（`LASER_CFG` 不再失效）；
+  2) 在"取最大"之前先过滤掉明显不可能是激光的块
+     （最小/最大面积、单边上限、长宽比、可选填充率）。
 
-安全加固：所有形状/像素 API（elongation / major_axis_line / get_pixel）都做了
-try/except；任一不可用就**回退到 b.cx()/b.cy()**，不会因为某个方法缺失而漏检。
-
-关于 LAB 取值范围（CanMV image.find_blobs，RGB565 图；官方示例
-examples/11-Feature-Detection/find_blobs.py 与
-examples/09-Color-Tracking/single_color_code_tracking.py 均如此）：
-    L: 0~100        （不是 0~255）
-    A: -128~127     （+A = 红，-A = 绿）
-    B: -128~127     （+B = 黄，-B = 蓝）
+判据本身仍是原版"红色 + 面积最大"，**没有**引入颜色掩码 / 多帧 / 卡尔曼。
+所有门限默认关闭（0），因此 `LaserRepo()` 无参调用 = 原版行为，
+scripts/accept_laser_static.py 等旧调用不受影响。
 """
 
 import time
 
-try:
-    from point_kalman import PointKalman
-except Exception:
-    PointKalman = None
-
-VERSION = "repo-port-4"
-
-# 原仓库阈值（红色激光）：L 9~100 / A 15~98 / B -13~77
-RED_LAB = (9, 100, 15, 98, -13, 77)
-
-# ---- 形状自适应（方案 2）----
-LONG_ELONG = 2.0        # blob.elongation() >= 此值 -> 视为亮带
-LONG_AR = 2.5           # 外接框 长/宽 >= 此值 -> 视为亮带
-AXIS_STEP = 6.0         # 沿长轴每 ~6px 采样一次
-AXIS_MIN = 7            # 最少采样点
-AXIS_MAX = 25           # 最多采样点
-CORE_REFINE_R = 2       # 最亮端 ±r 小窗做 V² 加权质心（r=2 -> 5x5）
-CORE_TIE_RATIO = 0.90    # 亮度 >= 90% 最亮的候选里，取离上一帧最近的
-
-# 激光点更小、更容易被单个噪点带偏，MAX_JUMP 收得比靶心紧一点
-LASER_MAX_JUMP = 30.0
+VERSION = "repo-port-2-gated"
 
 # 原仓库常量
+RED_LAB = (9, 100, 15, 98, -13, 77)
 LCD_W, LCD_H = 640, 480
 
-
-def _pix_bright(img, x, y):
-    """取像素亮度（0~255）。失败返回 -1（调用方会回退到 cx/cy）。"""
-    try:
-        v = img.get_pixel(x, y, rgbtuple=True)
-    except Exception:
-        try:
-            v = img.get_pixel(x, y)
-        except Exception:
-            return -1
-    if v is None:
-        return -1
-    try:
-        r, g, b = v
-        return (r * 299 + g * 587 + b * 114) // 1000
-    except Exception:
-        try:
-            return int(v)
-        except Exception:
-            return -1
+# 默认参数；全部可通过 LaserRepo(**kw) / yolo_preview_ide.py 的 LASER_CFG 覆盖。
+# 门限为 0 表示关闭（保持原版"取面积最大"的行为）。
+DEFAULTS = {
+    "roi_scale": 1.0,
+    "roi": None,             # (x, y, w, h)；None -> 以画面中心 * roi_scale
+    "threshold": None,       # None -> RED_LAB；也可传 [(lo...), (lo...)] 多区间
+    "x_stride": 2,
+    "y_stride": 2,
+    "pixels_threshold": 1,
+    "merge": True,
+    "margin": 1,
+    # ---- 门限（0 / 0.0 = 关闭）----
+    "min_area": 0,           # bbox 面积下限（w*h）
+    "max_area": 0,           # bbox 面积上限
+    "max_side": 0,           # 单边上限
+    "max_aspect": 0.0,       # 长宽比上限（max(w,h)/min(w,h)）
+    "min_fill": 0.0,         # 填充率下限（pixels/(w*h)），排细长/稀疏块
+}
 
 
-def _weighted_centroid(img, cx, cy, r=CORE_REFINE_R):
-    """在 (cx,cy) ±r 窗口内按亮度平方加权求质心。"""
-    x0 = cx - r
-    if x0 < 0:
-        x0 = 0
-    y0 = cy - r
-    if y0 < 0:
-        y0 = 0
-    x1 = cx + r
-    if x1 > img.width() - 1:
-        x1 = img.width() - 1
-    y1 = cy + r
-    if y1 > img.height() - 1:
-        y1 = img.height() - 1
-    sx = sy = sw = 0.0
-    for y in range(y0, y1 + 1):
-        for x in range(x0, x1 + 1):
-            v = _pix_bright(img, x, y)
-            if v <= 0:
-                continue
-            w = float(v) * float(v)
-            sx += x * w
-            sy += y * w
-            sw += w
-    if sw <= 0.0:
-        return float(cx), float(cy)
-    return sx / sw, sy / sw
-
-
-def _axis_line(blob):
-    """blob 长轴；major_axis_line 不可用时用外接框长边兜底。"""
-    try:
-        return blob.major_axis_line()
-    except Exception:
-        x, y, w, h = int(blob.x()), int(blob.y()), int(blob.w()), int(blob.h())
-        cx = x + w // 2
-        cy = y + h // 2
-        if h >= w:
-            return (cx, y, cx, y + h)
-        return (x, cy, x + w, cy)
-
-
-def _core_on_axis(img, blob, last):
-    """亮带：沿长轴找最亮端，返回 (x, y) 或 None（None 表示调用方回退）。"""
-    try:
-        x1, y1, x2, y2 = _axis_line(blob)
-    except Exception:
-        return None
-    n = int(((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)) ** 0.5 / AXIS_STEP) + 3
-    if n < AXIS_MIN:
-        n = AXIS_MIN
-    if n > AXIS_MAX:
-        n = AXIS_MAX
-    wmax = img.width() - 1
-    hmax = img.height() - 1
-    cands = []
-    max_v = -1
-    for i in range(n):
-        t = float(i) / float(n - 1)
-        x = int(round(x1 + (x2 - x1) * t))
-        y = int(round(y1 + (y2 - y1) * t))
-        if x < 0:
-            x = 0
-        elif x > wmax:
-            x = wmax
-        if y < 0:
-            y = 0
-        elif y > hmax:
-            y = hmax
-        v = _pix_bright(img, x, y)
-        cands.append((x, y, v))
-        if v > max_v:
-            max_v = v
-    if max_v <= 0:
-        return None
-    # 亮度接近最亮时，优先离上一帧最近的（整条都饱和时抑制乱跳）
-    if last is None:
-        best = None
-        for x, y, v in cands:
-            if v == max_v:
-                best = (x, y)
-                break
-        if best is None:
-            best = (cands[0][0], cands[0][1])
-    else:
-        lx, ly = last
-        thr = max_v * CORE_TIE_RATIO
-        best = None
-        bd = 1e18
-        for x, y, v in cands:
-            if v < thr:
-                continue
-            d = (x - lx) * (x - lx) + (y - ly) * (y - ly)
-            if d < bd:
-                bd = d
-                best = (x, y)
-        if best is None:
-            best = (cands[0][0], cands[0][1])
-    return _weighted_centroid(img, best[0], best[1], CORE_REFINE_R)
+def _as_threshold_list(thr):
+    """find_blobs 要的是 [(lo..hi), ...]；兼容用户传单个 tuple。"""
+    if thr is None:
+        thr = RED_LAB
+    if isinstance(thr, (list, tuple)) and thr and isinstance(thr[0], (list, tuple)):
+        return list(thr)
+    return [thr]
 
 
 class LaserRepo:
-    def __init__(self, roi_scale=1.0):
-        c_x, c_y = LCD_W // 2, LCD_H // 2
-        w = int(LCD_W // 2 * roi_scale)
-        h = int(LCD_H // 2 * roi_scale)
-        self.roi = (c_x - w // 2, c_y - h // 2, w, h)
-        self.kf = (PointKalman(max_jump=LASER_MAX_JUMP)
-                   if PointKalman is not None else None)
+    def __init__(self, **kw):
+        cfg = dict(DEFAULTS)
+        cfg.update(kw or {})
+        self.cfg = cfg
+        self.thresholds = _as_threshold_list(cfg.get("threshold"))
+        self.x_stride = int(cfg["x_stride"])
+        self.y_stride = int(cfg["y_stride"])
+        self.pixels_threshold = int(cfg["pixels_threshold"])
+        self.merge = bool(cfg["merge"])
+        self.margin = int(cfg["margin"])
+        self.min_area = int(cfg["min_area"] or 0)
+        self.max_area = int(cfg["max_area"] or 0)
+        self.max_side = int(cfg["max_side"] or 0)
+        self.max_aspect = float(cfg["max_aspect"] or 0.0)
+        self.min_fill = float(cfg["min_fill"] or 0.0)
+        self.roi = self._make_roi(cfg)
         self.last = None
         self.last_ms = 0
-        self.nblob = 0
+        self.nblob = 0          # 通过门限的候选数
+        self.raw_blobs = 0      # find_blobs 原始候选数
         self.blobs = []
-        self.core = 0
+
+    def _make_roi(self, cfg):
+        r = cfg.get("roi")
+        if r:
+            return tuple(int(v) for v in r)
+        sc = float(cfg.get("roi_scale", 1.0) or 1.0)
+        c_x, c_y = LCD_W // 2, LCD_H // 2
+        w = int(LCD_W // 2 * sc)
+        h = int(LCD_H // 2 * sc)
+        return (c_x - w // 2, c_y - h // 2, w, h)
+
+    def _passes(self, b):
+        """尺寸/面积/形状门限；返回 True 表示可能是激光。"""
+        try:
+            w, h = int(b.w()), int(b.h())
+        except Exception:
+            return False
+        area = w * h
+        if self.min_area and area < self.min_area:
+            return False
+        if self.max_area and area > self.max_area:
+            return False
+        if self.max_side and max(w, h) > self.max_side:
+            return False
+        if self.max_aspect:
+            short = min(w, h)
+            if short <= 0 or (max(w, h) / float(short)) > self.max_aspect:
+                return False
+        if self.min_fill:
+            try:
+                fill = float(b.pixels()) / float(area) if area else 0.0
+            except Exception:
+                fill = 0.0
+            if fill < self.min_fill:
+                return False
+        return True
 
     def sample(self, img):
         t0 = time.ticks_ms()
         try:
-            blobs = img.find_blobs([RED_LAB], False, roi=self.roi,
-                                   x_stride=2, y_stride=2,
-                                   pixels_threshold=1, merge=True, margin=True)
+            blobs = img.find_blobs(self.thresholds, False, roi=self.roi,
+                                   x_stride=self.x_stride,
+                                   y_stride=self.y_stride,
+                                   pixels_threshold=self.pixels_threshold,
+                                   merge=self.merge, margin=self.margin)
         except Exception:
             blobs = None
         self.last_ms = time.ticks_diff(time.ticks_ms(), t0)
         self.blobs = blobs or []
-        self.nblob = len(self.blobs)
-        now = time.ticks_ms()
-        if not self.blobs:
+        self.raw_blobs = len(self.blobs)
+
+        kept = [b for b in self.blobs if self._passes(b)]
+        self.nblob = len(kept)
+        if not kept:
             self.last = None
-            # 短暂丢失：用卡尔曼预测兜底（最多 PointKalman.max_coast 帧）
-            if self.kf is not None:
-                s = self.kf.predict(now)
-                if s is not None:
-                    self.last = (s[0], s[1])
-                    return {"x": round(s[0], 1), "y": round(s[1], 1),
-                            "area": 0, "w": 0, "h": 0, "n": 0,
-                            "raw": 0, "coast": 1, "ms": self.last_ms}
             return None
-        b = max(self.blobs, key=lambda z: (z.area(), -z.y()))
-        # 默认就用原始质心（所有 API 失败时也安全）
-        rx, ry = b.cx(), b.cy()
-        # ---- 方案 2：形状自适应（整段可回退，绝不漏检）----
-        self.core = 0
-        try:
-            elong = float(b.elongation())
-        except Exception:
-            elong = 1.0
-        bw, bh = int(b.w()), int(b.h())
-        ar = float(max(bw, bh)) / float(max(1, min(bw, bh)))
-        if elong >= LONG_ELONG or ar >= LONG_AR:
-            core = _core_on_axis(img, b, self.last)
-            if core is not None:
-                rx, ry = core
-                self.core = 1
-        # ---- 卡尔曼平滑 ----
-        if self.kf is not None:
-            s = self.kf.update(rx, ry, now)
-            if s is not None:
-                rx, ry = s[0], s[1]
-        self.last = (rx, ry)
-        return {"x": round(rx, 1), "y": round(ry, 1), "area": b.area(),
-                "w": bw, "h": bh, "n": b.pixels(),
-                "bx": int(b.x()), "by": int(b.y()),
-                "raw": self.nblob, "core": self.core, "ms": self.last_ms}
+
+        b = max(kept, key=lambda z: (z.area(), -z.y()))
+        self.last = (b.cx(), b.cy())
+        return {"x": b.cx(), "y": b.cy(), "area": b.area(),
+                "w": b.w(), "h": b.h(), "n": b.pixels(),
+                "raw": self.raw_blobs, "kept": self.nblob,
+                "ms": self.last_ms}
