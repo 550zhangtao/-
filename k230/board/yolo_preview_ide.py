@@ -63,6 +63,12 @@ LASER_ROI = 128
 LASER_THR = 0.55
 LASER_LOST_SCAN = 1           # 丢失后全图网格扫描重捕
 LASER_LOST_MAX = 5            # 连续丢 N 帧后开始扫
+# ---- 激光 -> 靶心 闭环（aim 点经 $KT 交给 ESP32 PID 居中）----
+LASER_AIM_ENABLE = 1
+LASER_AIM_GAIN = 1.0
+LASER_AIM_SIGN_X = 1
+LASER_AIM_SIGN_Y = 1
+LASER_AIM_MAX = 180
 LASER_PRIOR = (290, 190)      # 当前相机朝向下的激光先验
 LASER_CFG = {
     "min_area": 6,        # 小于 6px² 的噪点不要
@@ -102,6 +108,7 @@ from ulab import numpy as _np
 import sys
 import gc
 import time
+import math
 
 try:
     import k230_perf as perf
@@ -128,13 +135,19 @@ except Exception as _e:
     print("laser_heatmap 不可用，回退 laser_repo:", _e)
 
 try:
+    from laser_aim import LaserAim as _LaserAim
+except Exception as _e:
+    _LaserAim = None
+    print("laser_aim 不可用:", _e)
+
+try:
     from point_kalman import PointKalman
 except Exception as _e:
     PointKalman = None
     print("point_kalman 不可用，靶心/激光平滑关闭:", _e)
 
 # 固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
-for _p in ("/sdcard", "/sdcard/board", "/"):
+for _p in ("/sdcard", "/sdcard/tmp", "/sdcard/board", "/"):
     try:
         if _p in sys.path:
             sys.path.remove(_p)
@@ -228,6 +241,55 @@ def _init_uart():
         print("uart init failed:", e)
 
 
+def _check_pose(box, kp, kp_dim=3):
+    """几何校验：四角凸性/边长比/在画面内/靶心在框内。返回 'ok' 或原因。"""
+    if len(kp) < 4 * kp_dim:
+        return "no_corners"
+    pts = []
+    for k in range(4):
+        x = float(kp[k * kp_dim]); y = float(kp[k * kp_dim + 1]); v = float(kp[k * kp_dim + 2])
+        if v < 0.3:
+            return "corner_low_conf"
+        pts.append((x, y))
+    signs = []
+    for i in range(4):
+        ax, ay = pts[i]; bx, by = pts[(i + 1) % 4]; cx, cy = pts[(i + 2) % 4]
+        cr = (bx - ax) * (cy - by) - (by - ay) * (cx - bx)
+        if abs(cr) < 1e-3:
+            return "not_convex"
+        signs.append(1 if cr > 0 else -1)
+    if len(set(signs)) != 1:
+        return "not_convex"
+    sides = []
+    for i in range(4):
+        ax, ay = pts[i]; bx, by = pts[(i + 1) % 4]
+        sides.append(math.sqrt((bx - ax) ** 2 + (by - ay) ** 2))
+    if min(sides) < 8:
+        return "bad_geometry"
+    r1 = max(sides[0], sides[2]) / max(1e-6, min(sides[0], sides[2]))
+    r2 = max(sides[1], sides[3]) / max(1e-6, min(sides[1], sides[3]))
+    if r1 > 2.5 or r2 > 2.5:
+        return "bad_geometry"
+    out = 0
+    for x, y in pts:
+        if x < 0 or x >= 640 or y < 0 or y >= 480:
+            out += 1
+    if out > 1:
+        return "corners_out"
+    if len(kp) < 5 * kp_dim:
+        return "no_bullseye"
+    bx, by, bv = float(kp[12]), float(kp[13]), float(kp[14])
+    if bv < 0.3:
+        return "bull_low_conf"
+    x1 = min(p[0] for p in pts); x2 = max(p[0] for p in pts)
+    y1 = min(p[1] for p in pts); y2 = max(p[1] for p in pts)
+    mx = (x2 - x1) * 0.05 + 4
+    my = (y2 - y1) * 0.05 + 4
+    if not (x1 - mx <= bx <= x2 + mx and y1 - my <= by <= y2 + my):
+        return "bull_outside"
+    return "ok"
+
+
 def _send_uart(seq, res):
     global _uart_warned
     if _uart is None:
@@ -256,6 +318,13 @@ def _send_uart(seq, res):
             # point_kalman 缺失时退回原始 kp
             bx = int(res[3][0][12])
             by = int(res[3][0][13])
+        # ---- 激光 -> 靶心闭环：用修正后的 aim 点替代靶心 ----
+        if LASER_AIM_ENABLE and conf and bx >= 0 and _laser_spot is not None:
+            try:
+                bx, by, _ex, _ey = _laser_aim.aim(
+                    (_laser_spot["cx"], _laser_spot["cy"]), (bx, by))
+            except Exception:
+                pass
         _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d!\n" % (seq, run, cx, cy, bx, by, conf))
         _uart.flush()
     except Exception as e:
@@ -390,11 +459,14 @@ _laser_n = 0
 
 def _init_laser():
     """优先建学习式热图（LaserHeat），失败回退 LaserRepo。"""
-    global _laser, _heat, _laser_prior, _laser_kf
+    global _laser, _heat, _laser_prior, _laser_kf, _laser_aim
     _laser = None
     _heat = None
     _laser_prior = (float(LASER_PRIOR[0]), float(LASER_PRIOR[1]))
     _laser_kf = PointKalman(q=120.0, r=9.0, max_jump=40.0, max_coast=8) if PointKalman is not None else None
+    _laser_aim = _LaserAim(gain=LASER_AIM_GAIN, sign_x=LASER_AIM_SIGN_X,
+                           sign_y=LASER_AIM_SIGN_Y, max_off=LASER_AIM_MAX) \
+        if (_LaserAim is not None and LASER_AIM_ENABLE) else None
     if not LASER_ENABLE:
         return
     if _LaserHeat is not None:
@@ -622,6 +694,9 @@ def main():
                             rb = r
                     if rb is not None and rb[2] >= CONF:
                         last_res = ([rb[0]], [0], [rb[2]], [rb[1]])
+            if last_res and last_res[0] and last_res[3] and len(last_res[3][0]) >= 15:
+                if _check_pose(last_res[0][0], last_res[3][0]) != "ok":
+                    last_res = ([], [], [], [])
             _update_bull_filter(last_res, time.ticks_ms())
             _ai_ms = time.ticks_diff(time.ticks_ms(), _t_ai)
         res = last_res
