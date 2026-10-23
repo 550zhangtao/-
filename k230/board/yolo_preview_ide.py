@@ -94,6 +94,10 @@ UART_ID = 3
 UART_TX = 32
 UART_RX = 33
 UART_BAUD = 115200
+BULL_PRED_ON = 1               # 靶心延迟外推（运动状态估计）开关
+BULL_PRED_MS = 80.0            # 感知-执行延迟估计（ms），待实测标定
+AIM_LASER_ON_BULL = 1          # 1=把"靶心"平移成激光落点，让激光压在靶心上
+AIM_LASER_MIN_LOCK = 6         # 激光至少连续锁定这么多帧才参与瞄准（防误锁跳点）
 PRINT_EVERY = 30
 RESET_ON_EXIT = 1
 LIMIT = 0                     # >0：跑 N 帧后退出（自动化测试用）
@@ -147,6 +151,12 @@ try:
 except Exception as _e:
     PointKalman = None
     print("point_kalman 不可用，靶心平滑关闭:", _e)
+
+try:
+    from laser_track import LaserTracker
+except Exception as _e:
+    LaserTracker = None
+    print("laser_track 不可用，靶心预测关闭:", _e)
 
 # 固定从 /sdcard 加载（版本统一；避免旧副本抢先）。
 for _p in ("/sdcard", "/sdcard/board", "/"):
@@ -216,6 +226,7 @@ _YL.aidemo = _PoseAidemo()
 # 靶心平滑（PointKalman 缺失时为 None = 不平滑）
 _bull_kf = None   # 用户要求：靶心不做卡尔曼平滑（2026-10-24 改回）
 _bull_sm = None
+_bull_trk = None   # 靶心运动状态估计（laser_track.LaserTracker）
 
 _uart = None
 _uart_warned = False
@@ -272,6 +283,20 @@ def _send_uart(seq, res):
             # point_kalman 缺失时退回原始 kp
             bx = int(res[3][0][12])
             by = int(res[3][0][13])
+        if run and _bull_trk is not None:
+            # 运动状态估计：外推到"指令生效时刻"，替代原始坐标送 PID
+            _pp = _bull_trk.predict()
+            if _pp is not None:
+                bx = int(max(0, min(W - 1, _pp[0])))
+                by = int(max(0, min(H - 1, _pp[1])))
+        # 激光打靶心：ESP32 仍按"把收到点居中"控制，这里把靶心平移
+        # (画面中心 - 激光点)，控制收敛时靶心正好落在激光落点上。
+        if (AIM_LASER_ON_BULL and run and bx >= 0 and by >= 0
+                and _laser_spot is not None and _laser_lock >= AIM_LASER_MIN_LOCK):
+            _lx = int(_laser_spot["cx"])
+            _ly = int(_laser_spot["cy"])
+            bx = max(-1000, min(2000, bx + (W // 2 - _lx)))
+            by = max(-1000, min(2000, by + (H // 2 - _ly)))
         _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d!\n" % (seq, run, cx, cy, bx, by, conf))
         _uart.flush()
     except Exception as e:
@@ -587,6 +612,14 @@ def main():
     # 云台链路：必须在主循环前初始化，否则 _send_uart() 静默不发帧
     _init_uart()
     _init_laser()
+    global _bull_trk
+    if BULL_PRED_ON and LaserTracker is not None:
+        try:
+            _bull_trk = LaserTracker(delay_ms=BULL_PRED_MS, q=4000.0, r=9.0)
+            print("靶心预测: delay=%.0fms slope_n=%d" % (BULL_PRED_MS, _bull_trk.slope_n))
+        except Exception as _e:
+            _bull_trk = None
+            print("靶心预测初始化失败:", _e)
 
     n = 0
     t_last = time.ticks_ms()
@@ -739,6 +772,10 @@ def main():
                     if rb is not None and rb[2] >= CONF:
                         last_res = ([rb[0]], [0], [rb[2]], [rb[1]])
             _update_bull_filter(last_res, time.ticks_ms())
+            if _bull_trk is not None:
+                _b2 = _bull_of(last_res)
+                if _b2 is not None:
+                    _bull_trk.update(_b2[0], _b2[1], time.ticks_ms())
             _ai_ms = time.ticks_diff(time.ticks_ms(), _t_ai)
         res = last_res
 
