@@ -30,6 +30,7 @@ VIEW_SCALE = 0.60            # 0.60 -> 384x288（Pose/2 实测 17.8-18.1fps）
 IDE_QUALITY = 85              # 384x288 q85：编码约 35ms
 CENTER_SIZE = 320             # center 模式的固定裁剪边长
 CONF = 0.25
+BULL_MIN_KP = 0.20           # 靶心关键点置信度门限（2026-10-24 从 0.3 放宽，提高可用率）
 # 低置信兜底复筛：远处 30px 小靶/逆光时首轮分数会掉到 0.25 以下。
 # 对分数最高的 2 个候选各做一次 7 倍裁剪放大复筛（实测 0.02~0.20 -> 0.5~0.8，
 # 负样本误检率不变），只对候选各多跑一次 320 推理。
@@ -274,8 +275,10 @@ def _send_uart(seq, res):
         conf = 0
         bx = by = -1
         if run and res[3] and len(res[3][0]) >= 15 \
-                and float(res[3][0][14]) >= 0.3:
+                and float(res[3][0][14]) >= BULL_MIN_KP:
             conf = int(float(res[3][0][14]) * 1000)
+            if conf < 300:
+                conf = 300   # ESP32 的 AIM_BULL_MIN_CONF=300，保底防止被判靶心丢失
         if _bull_sm is not None:
             bx = int(round(_bull_sm[0]))
             by = int(round(_bull_sm[1]))
@@ -308,7 +311,7 @@ def _bull_of(res):
     if not res or not res[0] or not res[3]:
         return None
     kp = res[3][0]
-    if len(kp) >= 15 and float(kp[14]) >= 0.3:
+    if len(kp) >= 15 and float(kp[14]) >= BULL_MIN_KP:
         return (float(kp[12]), float(kp[13]))
     return None
 
@@ -322,7 +325,7 @@ def _update_bull_filter(res, now):
     bx = by = None
     if res and len(res) > 3 and res[3] and len(res[3][0]) >= 15:
         kp = res[3][0]
-        if float(kp[14]) >= 0.3:
+        if float(kp[14]) >= BULL_MIN_KP:
             bx, by = float(kp[12]), float(kp[13])
     if bx is not None:
         s = _bull_kf.update(bx, by, now)
@@ -855,7 +858,7 @@ def main():
                 tg = "target %.2f" % float(res[2][0])
                 try:
                     kp = res[3][0]
-                    if KP_NUM >= 5 and float(kp[14]) >= 0.3:
+                    if KP_NUM >= 5 and float(kp[14]) >= BULL_MIN_KP:
                         bx = int(kp[12])
                         by = int(kp[13])
                 except Exception:
