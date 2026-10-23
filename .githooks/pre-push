@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# pre-push —— 只有用户审批过的提交才能进入 origin/main。
+#
+# 规则：推往 main 时，本次新增的每个提交都必须在 .git/approval 的"已审批提交"
+#       列表里；否则拒绝。审批记录由用户运行 `bash scripts/approve.sh` 生成，
+#       只覆盖审批那一刻的 HEAD——之后新 commit 会自动重新变回未审批。
+#
+# 启用：bash scripts/approve.sh install   （即 git config core.hooksPath .githooks）
+# 绕过：git push --no-verify …            （仅限确知自己在做什么）
+set -u
+
+remote="$1"
+
+# 从 stdin 读取 refspec：<local ref> <local sha> <remote ref> <remote sha>
+main_shas=""
+remote_main_sha=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+        refs/heads/main)
+            main_shas="$main_shas $local_sha"
+            remote_main_sha="$remote_sha"
+            ;;
+    esac
+done
+
+if [ -z "${main_shas// /}" ]; then
+    exit 0   # 不是推 main，放行
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+APPROVAL="$ROOT/.git/approval"
+
+if [ ! -f "$APPROVAL" ]; then
+    cat >&2 <<'EOF'
+[pre-push] 拒绝推送 origin/main：没有审批记录。
+  本仓库约定"此后需要有用户运行才能改动"。
+  请由用户执行：  bash scripts/approve.sh
+  然后：          git push origin main
+EOF
+    exit 1
+fi
+
+# 本次要推上去的提交集合（不含远端已存在的部分）
+range="HEAD"
+if [ -n "$remote_main_sha" ] && git cat-file -e "$remote_main_sha^{commit}" 2>/dev/null \
+        && [ "$remote_main_sha" != "0000000000000000000000000000000000000000" ]; then
+    range="$remote_main_sha..HEAD"
+fi
+commits="$(git rev-list $range)"
+if [ -z "$commits" ]; then
+    echo "[pre-push] 没有新提交，放行"
+    exit 0
+fi
+
+bad=""
+for sha in $commits; do
+    if ! grep -qx "approved $sha" "$APPROVAL"; then
+        bad="$bad $sha"
+    fi
+done
+
+if [ -n "$bad" ]; then
+    echo "[pre-push] 拒绝推送 origin/main：以下提交未获用户审批" >&2
+    for sha in $bad; do
+        printf '  %s %s\n' "$(git rev-parse --short=12 "$sha")" \
+            "$(git log -1 --format=%s "$sha")" >&2
+    done
+    echo "  已审批的 HEAD: $(sed -n 's/^head=//p' "$APPROVAL" | head -1)" >&2
+    echo "  需要用户执行：bash scripts/approve.sh  （审批当前 HEAD 后再推送）" >&2
+    exit 1
+fi
+
+echo "[pre-push] 审批通过：$(echo "$commits" | wc -l) 个提交 -> ${remote}/main"
+exit 0
