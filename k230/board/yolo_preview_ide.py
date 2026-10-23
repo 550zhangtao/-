@@ -73,6 +73,7 @@ LASER_LOST_SCAN = 1           # 丢失后搜索重捕
 LASER_LOST_MAX = 5            # 连续丢 N 帧后开始搜
 LASER_SCAN_EVERY = 6          # 每 N 帧搜一次（省算力，避免掉帧）
 LASER_SCAN_THR = 0.45          # 重捕复核阈值（比进入阈值低）
+LASER_GRAY_EVERY = 3           # 灰度全帧搜索降频（to_grayscale 每帧分配内存，易拖垮堆）
 LASER_PRIOR = (290, 190)      # 当前相机朝向下的激光先验
 LASER_CFG = {
     "min_area": 6,        # 小于 6px² 的噪点不要
@@ -761,7 +762,8 @@ def main():
                     # 仍失败才每 12 帧跑一次热图全域网格兜底。
                     best = None
                     # 1) 灰度全帧候选（d71fd47 逻辑，1~2ms，覆盖整幅）→ 热图复核
-                    if LASER_LOST_SCAN and _laser_gray is not None:
+                    if (LASER_LOST_SCAN and _laser_gray is not None
+                            and (_laser_miss % LASER_GRAY_EVERY) == 0):
                         _ls2 = None
                         try:
                             _ls2 = _laser_gray.sample(img)
