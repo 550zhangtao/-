@@ -503,7 +503,10 @@ def _draw_laser(dst, spot, sc=1.0, label=True):
                     thickness=2)
     if not (label and LASER_LABEL):
         return
-    txt = "(%d,%d)" % (int(spot["cx"]), int(spot["cy"]))
+    # 标签带上调节状态：T=已锁定(低阈值) / A=进入中(高阈值)，后面是峰值置信度
+    _tag = "T" if _laser_lock >= LASER_LOCK_N else "A"
+    txt = "(%d,%d)%s%.2f" % (int(spot["cx"]), int(spot["cy"]), _tag,
+                             float(spot.get("conf", 0.0) or 0.0))
     tsc = 2 if sc > 0.5 else 1
     tx = cx + int(18 * sc)
     ty = cy - 5 * tsc - int(6 * sc)
