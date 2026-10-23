@@ -100,11 +100,15 @@ POSE_DEFAULT_CFG: Dict[str, object] = {
     "nms": 0.45,
     "kp_num": 5, "kp_dim": 3,     # 4 角点 + 靶心
     "max_boxes": 20,
-    "ai_every": 2, "jpeg_every": 2, "full_every": 9999,
+    # 2026-10-23 跟踪延迟实测后的默认值（详见 docs/TRACKING_LATENCY_PLAN.md §8）：
+    # ai_every=1 让每帧都出 $KT；jpeg_every=3 + enc_scale=0.5 是为了把编码从
+    # 控制路径里摊薄——实测 AI 帧 4.9Hz -> 12.3Hz、loop 122ms -> 88ms。
+    # 注意：光改 ai_every=1 会更慢（每帧都编码），必须同时降 enc_scale。
+    "ai_every": 1, "jpeg_every": 3, "full_every": 9999,
     "roi_pad": 0.25, "roi_min": 192, "roi_max": 288,
-    "roi_scale": 0.75,          # ROI 回传缩放（信息量 = 回传像素数）
+    "roi_scale": 0.5,           # ROI 回传缩放（信息量 = 回传像素数）
     # 回传图：编码是板端瓶颈（实测 640x480 q70 = 65~69ms），缩放比降质量更有效
-    "jpeg_q": 92, "enc_scale": 0.80,
+    "jpeg_q": 92, "enc_scale": 0.50,
     "fps": 0, "stats": 15, "limit": 0,
     "sensor_id": 2,
     "uart_enable": 1, "uart_id": 3, "uart_tx": 32, "uart_rx": 33, "uart_baud": 115200,
