@@ -35,7 +35,12 @@ def add_laser(img, x, y, rad, rng, style="red"):
     x, y = int(round(x)), int(round(y))
     if not (0 <= x < w and 0 <= y < h):
         return
-    if style == "red":
+    if style == "blob":
+        # 近距离：白黄强核 + 红晕（2026-10-24 按缺陷截图补）
+        rings = [(rad * 1.9, (30, 25, 110)), (rad * 1.45, (50, 45, 175)),
+                 (rad * 1.05, (85, 90, 232)), (rad * 0.72, (150, 170, 250))]
+        core = (240, 250, 255)
+    elif style == "red":
         rings = [(rad * 2.4, (40, 25, 130)), (rad * 1.7, (55, 40, 190)),
                  (rad * 1.15, (75, 55, 235)), (rad * 0.75, (110, 85, 250))]
         core = (250, 252, 255)
@@ -65,17 +70,26 @@ def _scale_to_640(im):
 
 
 def load_real_positives(paths, size=128):
-    """从真实 on 帧里定位激光并裁 128x128（以激光为中心）。"""
+    """从真实 on 帧里定位激光并裁 128x128。
+
+    文件名形如 `xxx_<x>_<y>.jpg` 时用给定坐标（近距离大光斑自动定位会偏，
+    手工标中心更可靠）；否则退回"最红+最亮"自动定位。
+    """
+    import re as _re
     crops = []
     for p in paths:
         im = _scale_to_640(cv2.imread(p))
         if im is None:
             continue
-        b, g, r = [im[:, :, i].astype(np.int16) for i in range(3)]
-        pink = r - (g + b) // 2
-        bright = (r + g + b) // 3
-        score = pink + bright // 4
-        yy, xx = np.unravel_index(score.argmax(), score.shape)
+        m = _re.search(r"_(\d+)_(\d+)\.(?:jpg|jpeg|png)$", str(p))
+        if m:
+            xx, yy = int(m.group(1)), int(m.group(2))
+        else:
+            b, g, r = [im[:, :, i].astype(np.int16) for i in range(3)]
+            pink = r - (g + b) // 2
+            bright = (r + g + b) // 3
+            score = pink + bright // 4
+            yy, xx = np.unravel_index(score.argmax(), score.shape)
         x0 = max(0, min(im.shape[1] - size, int(xx - size // 2)))
         y0 = max(0, min(im.shape[0] - size, int(yy - size // 2)))
         crops.append(im[y0:y0 + size, x0:x0 + size].copy())
@@ -160,7 +174,6 @@ def make_sample(bg, size, rng, positive):
             cx = rng.uniform(half + 2, w - half - 2)
             cy = rng.uniform(half + 2, h - half - 2)
         canvas = bg.copy()
-        style = "red" if rng.random() < 0.5 else "white"
         r = rng.random()
         if r < 0.22:
             rad = rng.uniform(1.2, 3.0)      # 远距离：小光斑
@@ -168,10 +181,16 @@ def make_sample(bg, size, rng, positive):
             rad = rng.uniform(3.0, 6.5)      # 中距离
         elif r < 0.78:
             rad = rng.uniform(6.5, 11.0)     # 近一点
-        elif r < 0.94:
+        elif r < 0.90:
             rad = rng.uniform(11.0, 20.0)    # 近距离：大光斑/泛光（2026-10-24 加）
+        elif r < 0.97:
+            rad = rng.uniform(20.0, 34.0)    # 极近：饱和白核 + 红晕
         else:
-            rad = rng.uniform(20.0, 30.0)    # 极近：整片泛白+红晕
+            rad = rng.uniform(34.0, 55.0)    # 贴脸：整片泛白（按手背截图）
+        if rad >= 11.0:
+            style = "blob" if rng.random() < 0.65 else ("white" if rng.random() < 0.5 else "red")
+        else:
+            style = "red" if rng.random() < 0.5 else "white"
         add_laser(canvas, cx, cy, rad, rng, style)
         px = cx + rng.uniform(-half * 0.35, half * 0.35)
         py = cy + rng.uniform(-half * 0.35, half * 0.35)
