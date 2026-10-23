@@ -25,23 +25,30 @@ point_kalman.py —— 二维点 [x, y, vx, vy] 常速卡尔曼平滑（板端�
 """
 
 # 默认参数
-Q_ACC = 150.0      # px^2/s^3
-R_MEAS = 9.0       # px^2（≈3px 标准差）
-MAX_JUMP = 40.0    # px
-MAX_COAST = 6      # 帧
+Q_ACC = 40.0       # px^2/s^3（2026-10-23 从 150 收紧，抑制靶心抖动）
+R_MEAS = 16.0      # px^2（≈4px 标准差，更信模型）
+MAX_JUMP = 24.0    # px（超过就按野值处理）
+MAX_COAST = 8      # 帧
 
 
 class PointKalman:
-    def __init__(self, q=Q_ACC, r=R_MEAS, max_jump=MAX_JUMP, max_coast=MAX_COAST):
+    def __init__(self, q=Q_ACC, r=R_MEAS, max_jump=MAX_JUMP, max_coast=MAX_COAST,
+                 reject_jump=True, rej_max=3):
         self.q = float(q)
         self.r = float(r)
         self.mj = float(max_jump)
         self.mc = int(max_coast)
+        # reject_jump：单帧偏差超过 max_jump 时**不更新**（当误检丢弃）；
+        # 连续 rej_max 帧都超限才认账（目标真的跳了/换靶），避免被野值拽走。
+        self.rj = bool(reject_jump)
+        self.rj_max = int(rej_max)
+        self.rejn = 0
         self.reset()
 
     def reset(self):
         self.ok = False
         self.lost = 0
+        self.rejn = 0
         self.t = None
         self.px = self.py = self.vx = self.vy = 0.0
         # 每轴协方差 [p00, p01, p11]
@@ -116,9 +123,16 @@ class PointKalman:
         self.t = t
         self.px, self.vx, self.cx = self._pred(self.px, self.vx, self.cx, d)
         self.py, self.vy, self.cy = self._pred(self.py, self.vy, self.cy, d)
-        # MAX_JUMP：把观测偏差截断到 ±max_jump，异常跳变不会把状态带飞
+        # MAX_JUMP：偏差超过门限时默认“拒绝本次观测”（野值丢弃），
+        # 连续 rej_max 帧都超限才接受（目标真的跳了），避免被误检单帧拽走。
         ex = float(x) - self.px
         ey = float(y) - self.py
+        if self.rj and (abs(ex) > self.mj or abs(ey) > self.mj):
+            self.rejn += 1
+            if self.rejn < self.rj_max:
+                self.lost = 0
+                return (self.px, self.py, self.vx, self.vy)
+        self.rejn = 0
         if ex > self.mj:
             ex = self.mj
         elif ex < -self.mj:
