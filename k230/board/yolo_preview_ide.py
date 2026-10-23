@@ -72,6 +72,7 @@ LASER_PRIOR_A = 0.35          # 先验低通系数（只挪 ROI 中心，不改�
 LASER_LOST_SCAN = 1           # 丢失后搜索重捕
 LASER_LOST_MAX = 5            # 连续丢 N 帧后开始搜
 LASER_SCAN_EVERY = 6          # 每 N 帧搜一次（省算力，避免掉帧）
+LASER_SCAN_THR = 0.45          # 重捕复核阈值（比进入阈值低）
 LASER_PRIOR = (290, 190)      # 当前相机朝向下的激光先验
 LASER_CFG = {
     "min_area": 6,        # 小于 6px² 的噪点不要
@@ -483,6 +484,7 @@ _laser_thr = 0.0         # 本帧实际使用的阈值（日志/调参用）
 _laser_peak = 0.0        # 本帧峰值置信度（日志/调参用）
 _laser_kf = None       # 激光坐标卡尔曼（2026-10-24：按用户要求加回）
 _laser_coarse = None   # 全帧 LAB 粗搜器（LaserRepo，roi=整幅）
+_laser_gray = None     # 全帧灰度搜索（d71fd47 laser_openmv）
 _laser_prior = LASER_PRIOR
 _laser_ms = 0
 _ai_ms = 0
@@ -518,22 +520,21 @@ def _init_laser():
         except Exception as e:
             _laser_coarse = None
             print("全帧粗搜初始化失败:", e)
-    # 2026-10-24：按用户要求，激光检测回退到 d71fd47 版（laser_openmv 灰度
-    # cv_lite + 全图捕获 + ROI 跟随）；热图模型路径保留但不再启用。
+    # 2026-10-24：热图做主检测，d71fd47 灰度全帧（laser_openmv）做扩展搜索：
+    # 热图丢失时先用它全图找候选，再用热图复核。
+    global _laser_gray
     if _laser_gray_mod is not None and LASER_ENABLE:
         try:
             _cfg2 = dict(LASER_CFG or {})
             _cfg2["red_primary"] = 0          # 灰度主检测
             _cfg2["acquire"] = 1              # 启动全图捕获，搜索范围=整幅
-            _laser = _GrayLaser(_cfg2)
-            print("激光: laser_openmv %s thr=%s（全图捕获+ROI跟随）"
+            _laser_gray = _GrayLaser(_cfg2)
+            print("激光全帧灰度: laser_openmv %s thr=%s"
                   % (getattr(_laser_gray_mod, "VERSION", "?"),
-                     _laser.spot.cfg.get("threshold")))
+                     _laser_gray.spot.cfg.get("threshold")))
         except Exception as _e:
-            _laser = None
+            _laser_gray = None
             print("laser_openmv 初始化失败:", _e)
-    if _laser is not None:
-        return
     if _LaserHeat is not None:
         try:
             _heat = _LaserHeat(LASER_MODEL)
@@ -759,7 +760,27 @@ def main():
                     # 覆盖整幅 640x480），命中后用热图在候选处复核；
                     # 仍失败才每 12 帧跑一次热图全域网格兜底。
                     best = None
-                    if LASER_LOST_SCAN and LASER_COARSE and _laser_coarse is not None:
+                    # 1) 灰度全帧候选（d71fd47 逻辑，1~2ms，覆盖整幅）→ 热图复核
+                    if LASER_LOST_SCAN and _laser_gray is not None:
+                        _ls2 = None
+                        try:
+                            _ls2 = _laser_gray.sample(img)
+                        except Exception:
+                            _ls2 = None
+                        if _ls2 is not None:
+                            _gx3 = int(_ls2["x"])
+                            _gy3 = int(_ls2["y"])
+                            _hx3 = max(0, min(W - LASER_ROI, _gx3 - LASER_ROI // 2))
+                            _hy3 = max(0, min(H - LASER_ROI, _gy3 - LASER_ROI // 2))
+                            try:
+                                _c3 = img.crop(roi=(_hx3, _hy3, LASER_ROI, LASER_ROI)).to_rgb888().to_numpy_ref()
+                                _r3 = _heat.detect(_c3, _hx3, _hy3, LASER_SCAN_THR)
+                            except Exception:
+                                _r3 = None
+                            if _r3 is not None:
+                                best = _r3
+                    # 2) 灰度没找到时才用 LAB 粗搜
+                    if best is None and LASER_LOST_SCAN and LASER_COARSE and _laser_coarse is not None:
                         _lc = None
                         try:
                             _lc = _laser_coarse.sample(img)
