@@ -22,7 +22,3 @@ scratch/
 # v3 数据集：最终模型就是用这份训的，**入库**（train 1507 / val 28 / test 57）。
 # 需要重建时：tools/build_pose_dataset_v3.py（父数据集在 k230_target_project/）。
 # （2026-10-22 起不再忽略）
-
-# 构建中间产物 / 编辑器
-*.onnx
-.vscode/

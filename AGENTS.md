@@ -16,9 +16,11 @@
 > **旧激光识别已删除**（2026-10-22）：`board/laser_openmv.py`、PC 激光标定、
 > `$LS` 协议、固件里的激光三态瞄准与激光 IO **都不在了**，快照在
 > `scratch/删除归档_20261022/`（被 gitignore）。
-> 后来用户要求"简单地在 IDE 里看到激光点+坐标"，才加了**灰度版**：
-> `board/laser_detect_test.py` + `yolo_preview_ide.py` 里的激光图层（见第 5 节）。
-> 讨论"激光"时先分清是哪个：**旧的彩色/标定/闭环那套不要再复活**。
+> 后来用户要求"在 IDE 里看到激光点+坐标"，先加了**灰度版**（10-22，
+> `board/laser_detect_test.py` + `cv_lite`，已删），10-24 又换成**红色 LAB 版**
+> （`board/laser_repo.py`，见第 5 节）。讨论"激光"时先分清是哪个：
+> **旧的彩色/标定/闭环那套（$LS + PC 标定 + 固件三态瞄准）不要再复活**；
+> 现在的 LAB 红点检测只是"在画面里找红激光落点 + 画出来 + 压靶心"，不是标定闭环。
 >
 > 训练数据集里的"激光光斑"只是**图像增强**（让模型不把白光斑当成靶心），
 > 与板端激光检测无关。
@@ -143,16 +145,23 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
   80 张负样本 @0.25 误检 1/80、@0.4 误检 0；PC kmodel 评测 57/57，靶心 3.2 px；
 - **板端链路**：`$KT` 每个 AI 帧发一次（`ai_every=2`）；图像回传是
   **检测 ROI 原生像素**，没目标才发缩小全图；
-- **激光点检测（2026-10-22 加回，灰度版）**：`board/laser_detect_test.py`（独立脚本）
-  + `board/yolo_preview_ide.py`（IDE 预览里画十字和坐标）。用 `cv_lite.grayscale_find_blobs`，
-  **单独一路灰度通道 chn0**（三通道采集实测仍 57fps）；预览里激光图层让
-  22fps -> 18fps。关键参数：`THRESHOLD=(210,255)`、`MAX_PIXELS=150`、`MAX_SIDE=24`、
-  `LOCK_R=40`。教训：**阈值调太高会把 3~4px 的激光核心滤掉，反而去锁天花板灯**；
-  `KERNEL_SIZE` 必须 1（3×3 开运算会抹掉光斑）；不要逐像素泛洪拆分
-  （900px 一块 7ms，会把后处理拖到 45ms）；
-- **2026-10-23：激光点的卡尔曼平滑已删除**（`yolo_preview_ide.py` 里的 `_laser_kf`），
-  检测到哪就画哪；靶心（第 5 关键点）仍用 `PointKalman`，两者互不影响。
-  激光丢帧时 ROI 停在最后一次位置，不再外推；
+- **激光点检测（2026-10-24 换成红色 LAB 版）**：`board/laser_repo.py`（移植
+  zhouzhou-code/elec_vision_k230 的红激光 find_blobs，带形状自适应 + PointKalman）
+  + `board/yolo_preview_ide.py`（IDE 预览画十字/坐标 + `$KT` 瞄准补偿）。
+  **激光是红色**：阈值 `RED_LASER_LAB=(60,100,45,127,-20,80)`，L 下限 60 把靶纸上的
+  暗红十字挡掉；形状门控（面积/边长/长宽比/填充率）滤掉反光亮带和细线。
+  `LaserRepo` 支持按 `LASER_CFG` 传阈值/ROI/步长/门控（10-24 前这堆配置**根本没生效**：
+  `LaserRepo.__init__` 只收 `roi_scale`，`**LASER_CFG` 抛 TypeError 后兜底回旧 `RED_LAB`
+  + 中心 320×240 ROI）。瞄准 = **把靶心引到激光成像点**：优先用实测激光点（红点检测
+  + PointKalman 已够可靠），检测不到才用 `LASER_HOME` 兜底；`LASER_HOME_AUTO=1` 会在线
+  把 `LASER_HOME` 慢慢标定到实测位置（修正安装误差）。旧的灰度 `cv_lite` 版
+  `board/laser_detect_test.py` 已删除。
+- **波箱自动射击（2026-10-24 新增）**：波箱（发射机构）PWM 接 **GPIO25**（原 TB6612
+  STBY 脚已改线废弃、STBY 硬件接 3V3 常高）。ESP32 串口命令 `fire` 开启自动射击
+  （识别到激光每 5s 一发、单发 400ms PWM 脉冲、不连发），`cease` 停止；PS2 手柄
+  **○ 键 = 手动单发射击**（一次按键一发，按住也只一发）。参数在固件
+  `FIRE_PWM_FREQ/DUTY/PULSE_MS/INTERVAL_MS`。`$KT` 协议新增第 8 字段 `laser`（0/1），
+  K230 每帧上报是否检测到激光；ESP32 据此触发。见 `docs/K230_ESP32_UART.md`。
 - **性能（2026-10-22 实测）**：采集 57 fps，**JPEG 编码 640×480 要 65~70 ms，
   是唯一真瓶颈**；Pose 384 推理 40~43 ms。端到端 `live` 约 11 fps（ROI 回传）。
   提速只能降**回传像素数**或隔帧：`CFG["roi_scale"]` / `live --enc-scale` /
@@ -160,7 +169,8 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
   本固件**没有 CPU 调频接口**（`os` 只有 `cpu_usage`），`set_framebuffers`
   也不支持；`board/k230_perf.py` 会打印 `cpu=auto`、`set_framebuffers 不可用`，
   这是正常降级，不是 bug。**不插 USB 时板子没有数据链路**，`live/latest.*` 不会更新；
-- **ESP32 固件不在本仓库**；`$KT` 协议见 `docs/K230_ESP32_UART.md`。
+- **ESP32 固件在本仓库**：`firmware/ESP32_Gimbal_K230/ESP32_Gimbal_K230.ino`
+  （云台 `$KT` 跟踪 + V19 小车/PS2/8 路循迹已并入）；`$KT` 协议见 `docs/K230_ESP32_UART.md`。
 
 ### 历史问题的结论（代码已删，教训仍有效）
 
@@ -171,9 +181,13 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
   `find_blobs` 起步 11~14 ms，不适合每帧调用；`img.bytearray()` 全图 614 KB
   是掉帧/卡死主因；快速移动 + 复杂背景的传统 CV 方案很难同时做到"高检出 + 低误检"。
   以后再要"每帧全图扫描"的类似能力，先量单次 API 耗时再设计；
-- **云台 PID（2026-10-22）**：旧记录里 kp=9 那套是配 **40px 死区**整定的，
+- **云台 PID（2026-10-22 整定 / 10-24 调快）**：旧记录里 kp=9 那套是配 **40px 死区**整定的，
   在 **8px 死区**（`WBAND_PX=8`）上会振荡发散，把云台推到限位。
-  当前稳定值是 PAN `2.5/0.3/0.15`、TILT `2.5/0.2/0.10`、`smooth=0.02`；
+  10-22 稳定值是 PAN `2.5/0.3/0.15`、TILT `2.5/0.2/0.10`、`tgtAlpha=0.35`、`smooth(velTau)=0.02`；
+  10-24 为"水平跟随迟钝"调快（默认值在固件 `firmware/ESP32_Gimbal_K230/*.ino`）：
+  PAN `4.5/0.5/0.15`、TILT `3.0/0.3/0.10`、`tgtAlpha=0.60`、`trkLead=0.25`、`velTau=0.015`。
+  在线调参（免重烧）：`pid kp ki kd`（PAN）/ `pid2 kp ki kd`（TILT）/ `trk alpha lead` / `smooth tau`。
+  **若振荡回来**：USB 发 `pid 2.5 0.3 0.15`、`trk 0.35 0.20`、`smooth 0.02` 退回 10-22 稳定值；
   舵机多角度扫实测单轴 0.8~8.7 px、对角线 X 20~28 px（视角相关，不是单纯速度）。
 
 ### 下一步

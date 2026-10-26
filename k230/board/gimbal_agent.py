@@ -71,6 +71,12 @@ except Exception as _e:
     PointKalman = None
     print("agent: point_kalman import failed:", _e)
 
+try:
+    import laser_repo as laser_spot_mod
+except Exception as _e:
+    laser_spot_mod = None
+    print("agent: laser_repo import failed:", _e)
+
 # ============================ 配置 ============================
 MODEL = "/sdcard/models/pose_v3_384.kmodel"
 LABELS = ["target"]
@@ -83,6 +89,15 @@ MAX_BOXES = 20
 KP_NUM = 5
 KP_DIM = 3
 BULL_MIN_V = 0.30
+OVERLAP_PX = 25          # 激光与靶心距离 <= 该值视为“重叠”
+LASER_CFG = {
+    "threshold": (20, 100, 15, 127, -40, 100),
+    "roi": (0, 0, 640, 480),
+    "x_stride": 1, "y_stride": 1,
+    "pixels_threshold": 2, "merge": True, "margin": 1,
+    "min_area": 2, "max_area": 400, "max_side": 24,
+    "max_aspect": 2.5, "min_fill": 0.2,
+}
 
 # ---- 板端性能（见 board/k230_perf.py）----
 PERF_MODE = "performance"     # 不插 USB 离线运行时尤其重要
@@ -109,10 +124,6 @@ _uart = None
 _sensor = None
 _yolo = None
 _cam_open = False
-_WDT = None
-# ---- 稳定性（2026-10-23）：硬件看门狗；出错时不做事后析构（会死锁）----
-WDT_TIMEOUT_S = 20
-SAFE_DEINIT = 0
 _ready = False
 _running = False
 _rxbuf = ""
@@ -177,8 +188,9 @@ class _PoseAidemo:
 
 _YL.aidemo = _PoseAidemo()
 
-# 靶心平滑（缺失时 _bull_kf=None，行为与原来一致）
-_bull_kf = None   # 用户要求：靶心不做卡尔曼平滑（2026-10-24 改回）
+# 用户要求不做卡尔曼滤波：靶心直接用原始关键点
+_bull_kf = None
+_laser = None
 
 
 # ---------------- UART ----------------
@@ -368,6 +380,20 @@ def _open_model():
         return False
 
 
+def _init_laser():
+    global _laser
+    _laser = None
+    if laser_spot_mod is None:
+        print("agent: laser_repo 缺失，激光关闭")
+        return
+    try:
+        _laser = laser_spot_mod.LaserRepo(**LASER_CFG)
+        print("agent: laser ready roi=%s" % (_laser.roi,))
+    except Exception as e:
+        _laser = None
+        print("agent: laser init failed:", e)
+
+
 def _drain_frames():
     """空闲时排空两路帧：不取帧会把 VICAP 管线堵死（实测会卡死整块板）。"""
     if not _cam_open:
@@ -380,7 +406,7 @@ def _drain_frames():
 
 
 # ---------------- 推理 + 回传 ----------------
-def _send_frame(seq, boxes, scores, kpts):
+def _send_frame(seq, boxes, scores, kpts, img=None):
     if _uart is None:
         return
     run = 1 if boxes else 0
@@ -417,8 +443,25 @@ def _send_frame(seq, boxes, scores, kpts):
             _s = _bull_kf.predict(now)
             if _s is not None:
                 bx, by = int(round(_s[0])), int(round(_s[1]))
-    _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d!\n" %
-                (seq, run, cx, cy, bx, by, conf))
+    # ---- 激光 + overlap + 压靶心 ----
+    laser = 0
+    lx = ly = -1
+    if _laser is not None and img is not None:
+        try:
+            _ls = _laser.sample(img)
+            if _ls is not None:
+                laser = 1
+                lx = int(_ls["x"])
+                ly = int(_ls["y"])
+        except Exception:
+            laser = 0
+    overlap = 0
+    if run and bx >= 0 and by >= 0 and laser:
+        if abs(bx - lx) <= OVERLAP_PX and abs(by - ly) <= OVERLAP_PX:
+            overlap = 1
+    # 用户要求取消激光识别：不再用激光位置修正瞄准点，直接发原始靶心
+    _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d,%d,%d!\n" %
+                (seq, run, cx, cy, bx, by, conf, laser, overlap))
     try:
         _uart.flush()
     except Exception:
@@ -436,14 +479,14 @@ def _log_versions():
 
 def _stream_frame(seq):
     # chn1 必须持续取帧：不排空会堵死 VICAP 管线（见模块说明）
-    _sensor.snapshot(chn=CAM_CHN_ID_1)
+    img = _sensor.snapshot(chn=CAM_CHN_ID_1)
     arr = _sensor.snapshot(chn=CAM_CHN_ID_2).to_numpy_ref()
     res = _yolo.run(arr)
     if res and len(res) >= 4:
         boxes, scores, kpts = res[0], res[2], res[3]
     else:
         boxes, scores, kpts = [], [], []
-    _send_frame(seq, boxes, scores, kpts)
+    _send_frame(seq, boxes, scores, kpts, img)
     return len(boxes)
 
 
@@ -453,17 +496,14 @@ def _drop_pipeline():
     _fail = 0
     _running = False
     _cam_open = False
-    if SAFE_DEINIT:
-        try:
-            _sensor.stop()
-        except Exception:
-            pass
-        try:
-            MediaManager.deinit()
-        except Exception:
-            pass
-    # 默认不做 stop/deinit：KPU/相机原生对象析构会死锁（AGENTS 已记录），
-    # 连续出错时让上层复位整板更安全。
+    try:
+        _sensor.stop()
+    except Exception:
+        pass
+    try:
+        MediaManager.deinit()
+    except Exception:
+        pass
     print("agent: camera dropped, 等下一次 $E,START!")
 
 
@@ -479,13 +519,6 @@ def main():
 
     _log_versions()
     _init_uart()
-    global _WDT
-    try:
-        _WDT = machine.WDT(1, WDT_TIMEOUT_S)
-        print("agent: wdt %ds 看门狗已启用" % WDT_TIMEOUT_S)
-    except Exception as _e:
-        _WDT = None
-        print("agent: wdt 不可用:", _e)
     _reply("READY")
     print("agent: 常驻就绪（相机按需打开），等 $E,START! / $E,STOP!")
 
@@ -498,17 +531,12 @@ def main():
     auto_done = False
 
     while True:
-        if _WDT is not None:
-            try:
-                _WDT.feed()
-            except Exception:
-                pass
         cmd = _poll_cmd()
         if cmd == "DEBUG":
-            # 写 offline_off 后立刻复位；不要先 _drop_pipeline()/gc，
-            # 否则会在 KPU/相机原生对象析构时死锁（实测会把整块板卡死）。
-            _enter_debug_mode()
-            return
+            # 注意：实战时 ESP32 每次靶心丢失都会发 STOP，累计 3 条就会误触发这里，
+            # 把 main.py 关掉（offline_off）导致上电不再自动运行。所以这里只打印，不写文件。
+            print("agent: DEBUG 暗号已禁用（防止实战 STOP 误触发）")
+            continue
         if cmd:
             heard_cmd = True
         # 冷启动自愈：上电后一直没人喊 START，就自己开跑（只触发一次；AUTO_START_MS=0 关闭）
@@ -519,6 +547,8 @@ def main():
             print("agent: %dms 没收到 START, 自动开跑" % AUTO_START_MS)
         if cmd == "START":
             ok = _open_camera() and _open_model()
+            if ok:
+                _init_laser()
             _running = ok
             _reply("START_OK" if ok else "ERR,INIT")
             print("agent: START -> %s" % ("streaming" if ok else "init failed"))
