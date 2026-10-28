@@ -19,7 +19,7 @@
 ### K230 → ESP32（每帧一条，约 10~50Hz）
 
 ```text
-$KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>!
+$KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>,<overlap>!
 ```
 
 | 字段 | 含义 |
@@ -27,11 +27,15 @@ $KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>!
 | `seq` | 递增序号 |
 | `run` | 1=有目标可跟踪；0=无目标 |
 | `cx,cy` | 目标框中心（640×480 像素） |
-| `bx,by` | 靶心中心（或"压靶心"后的瞄准点）；无效时 `-1` |
-| `conf` | 置信度 0..1000 |
-| `laser` | 1=本帧检测到红色激光落点；0=未检测到（自动射击的触发前提） |
+| `bx,by` | **原始靶心**（10-28 起不再做激光补偿）；无效时 `-1` |
+| `conf` | 靶心置信度 0..1000 |
+| `laser` | 1=本帧检测到红色激光落点（只用于诊断） |
+| `overlap` | 1=激光与靶心距离 ≤ `OVERLAP_PX`（只用于诊断） |
 
-共 **8 个数字字段**（2026-10-24 起；`laser` 为新增，旧 7 字段的 K230 帧 `laser` 自动按 0 处理）。`!` 结束，后跟 `\n`。
+共 **9 个数字字段**（2026-10-28；`laser` 10-24 加、`overlap` 10-25 加）。
+固件按 `n>=7/8/9` 兼容：缺字段时 `laser`/`overlap` 按 0 处理。`!` 结束，后跟 `\n`。
+
+**开火与激光无关**：ESP32 只看 `run`+`bx/by`+`conf` 和对准误差，见第 3 节。
 
 ### ESP32 → K230
 
@@ -39,24 +43,23 @@ $KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>!
 $E,ACK,<seq>,<state>,<pan_us>,<tilt_us>!
 ```
 
-`state`：0=空闲，1=跟踪，2=已对准，3=数据超时。
+`state`：0=空闲，1=跟踪，2=已对准，3=数据超时 / 扫描中。
 
 ## 3. ESP32 固件
 
-源码：`ESP32_Gimbal_K230/ESP32_Gimbal_K230.ino`
+源码：`firmware/ESP32_Gimbal_K230/ESP32_Gimbal_K230.ino`（在本仓库里）
 
-只保留：
-- UART2 接收 `$KT`、发送 `$E,ACK`；
-- PAN=GPIO27、TILT=GPIO14 的 50Hz 舵机 PWM；
-- USB 串口调试命令。
-
-删除：PS2、TB6612 电机、循迹 I2C、模式切换、急停电机等。
+除了 UART2 + 双舵机，还包含：
+- PAN=GPIO27、TILT=GPIO14 的 50Hz 舵机（LEDC 直写寄存器，100Hz 控制环）；
+- 波箱 PWM：GPIO25 / LEDC CH4，50Hz，**2000us 发射、1000us 停**；
+- PS2 手柄、TB6612 双电机、8 路 I2C 循迹、模式切换。
 
 ### 编译/上传
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32 ESP32_Gimbal_K230
-arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 ESP32_Gimbal_K230
+arduino-cli compile --fqbn esp32:esp32:esp32 firmware/ESP32_Gimbal_K230
+arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 \
+    --build-path <build目录> firmware/ESP32_Gimbal_K230   # Windows 上是 COM10
 ```
 
 ### USB 调试命令（115200）
@@ -67,12 +70,48 @@ arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 ESP32_Gimbal_K230
 | `s2 <us>` | 直接设置 TILT（1200~1800） |
 | `pan <±us>` / `tilt <±us>` | 相对微调 |
 | `sh` | 回中 1500/1500 |
-| `auto` / `manual` | 自动跟踪 / 手动 |
+| `auto` / `manual` | 自动跟踪开 / 关（`auto` 不通知 K230） |
 | `sweep` | 扫动测试（约 4 秒） |
-| `status` | 查看状态 |
-| `fire` | 开启自动射击：识别到激光每 5s 一发（波箱 PWM GPIO25） |
-| `cease` | 停止自动射击 |
-| `$KT,...` | PC 模拟一帧 K230 数据，测试解析与云台 |
+| `status` / `kt` | 查看状态（含 bull / conf / err / fire） |
+| `gtrack` / `gmanual` / `gnone` | 云台 TRACK / 手动 / 无模式（TRACK 会发 `$E,START!`） |
+| `fire` / `cease` | 开 / 关自动射击 |
+| `shoot` | 单发（调试波箱，不经手柄） |
+| `fireus <500..2500>` | 发射脉宽；**设 1000 可静默验证逻辑**（1000=停位） |
+| `firesig 0\|1` | 波形：0=1000Hz 占空比，1=50Hz 舵机/电调（默认 1） |
+| `pid/pid2 <kp> <ki> <kd>`、`trk <alpha> <lead>`、`smooth <tau>`、`pidshow` | 在线调参 |
+| `pad` / `ps2` | 手柄原始 9 字节 + 摇杆/按键（查接线） |
+| `ledcdump` | LEDC 寄存器 + 定时器是否在跑（`moving=1`）+ 波箱状态 |
+| `$KT,...` | PC 模拟一帧 K230 数据（可只发 7 字段），测试解析/开火逻辑 |
+
+### 自动射击规则（2026-10-28 起）
+
+```
+开火 = 云台在 TRACK
+     ∧ run=1 ∧ bx,by ≥ 0
+     ∧ |aimErrX| ≤ FIRE_AIM_PX(24) ∧ |aimErrY| ≤ 24
+     ∧ 以上条件保持 ≥ FIRE_OVERLAP_MS(1000ms)
+     ∧ 距上一发 ≥ FIRE_INTERVAL_MS(4000ms)
+单发脉冲 = FIRE_PULSE_MS(400ms)，脉宽 fireServoUs(2000us)
+```
+
+不再使用 `laser`/`overlap` 字段触发；它们保留是为了屏幕标定和排错。
+
+### 手柄按键（2026-10-25 重构）
+
+| 键 | 作用 |
+| --- | --- |
+| `L1` | 找靶并锁定（TRACK，不激发），再按退出 |
+| `R1` | 单发射击 |
+| `L2` | 循迹开 / 关 |
+| `R2` | 自动寻靶 + 4s 射击（再按退出） |
+| `□` | 自动寻靶 + 射击（等于 R2 的开） |
+| `○` / `△` | 单发射击 |
+| `×` | 只停激发（电机/云台不动） |
+| `START` | 一键：循迹 + 寻靶 + 打靶 |
+| `SELECT` | 小车手动 ↔ 循迹 |
+| 方向键 | 控车（前后左右，按住走） |
+| 摇杆 | 云台手动微调（非 TRACK 时） |
+
 
 ## 4. K230 端
 

@@ -72,7 +72,9 @@ LASER_CFG = {
     "max_aspect": 2.5,
     "min_fill": 0.2,
 }
-AIM_LASER_ON_BULL = 1
+# 2026-10-28：与离线 agent 对齐 —— 不再把瞄准点改写成“中心+(靶心-激光)”，
+# 直接发原始靶心，由 ESP32 把靶心压到画面中心。激光只用于画点/坐标和 overlap 上报。
+AIM_LASER_ON_BULL = 0
 AIM_GAIN = 1.0           # 先不加增益，避免放大检测噪声
 AIM_LASER_MIN_LOCK = 4   # 连续 4 帧才算锁定
 LASER_AIM_HOLD_MS = 1500 # 丢失后只保持 1.5s，不追空

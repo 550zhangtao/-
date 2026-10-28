@@ -220,14 +220,15 @@ constexpr int    FIRE_PWM_RES = 8;          // 8bit -> 0~255
 constexpr int    FIRE_PWM_DUTY = 255;       // 单发占空比（255=100%，可调）
 constexpr uint32_t FIRE_PULSE_MS = 400;     // 单发脉冲时长（发射一发）
 constexpr uint32_t FIRE_INTERVAL_MS = 4000; // 自动射击最小间隔（不连发）
-constexpr uint32_t FIRE_LASER_FRESH_MS = 500; // laser 标志新鲜度：超过则视为丢失
-constexpr uint32_t FIRE_OVERLAP_MS = 1000;    // 激光与靶心重叠持续这么久才开火
+constexpr uint32_t FIRE_LASER_FRESH_MS = 500; // laser 标志新鲜度（现在只用于诊断/兼容）
+constexpr uint32_t FIRE_OVERLAP_MS = 1000;    // 对准（靶心落在 FIRE_AIM_PX 内）持续这么久才开火
+constexpr int      FIRE_AIM_PX = 24;          // 开火前允许的瞄准误差（像素）
 
-// ---- 激光搜索（靶心在、但激光丢失时小范围摆动找激光）----
-constexpr int      LASER_SEARCH_AMP_US = 120;      // 左右摆幅（相对搜索起点，us）
-constexpr uint32_t LASER_SEARCH_PERIOD_MS = 1200;  // 一个来回周期
-constexpr uint32_t LASER_SEARCH_TIMEOUT_MS = 6000; // 一直找不到就停
-constexpr bool     LASER_SEARCH_ENABLE = 1;  // 1=激光丢失时摆动找激光；0=关闭（只追靶心）
+// ---- 丢靶扫描（靶心丢失时围绕当前位置做 8 方向小步搜索）----
+constexpr uint32_t SCAN_STEP_MS = 300;      // 每步停留时间
+constexpr int      SCAN_AMP_PAN_US = 40;    // 相对扫描起点的摆幅
+constexpr int      SCAN_AMP_TILT_US = 25;
+constexpr uint32_t SCAN_TIMEOUT_MS = 15000; // 扫这么久还找不到就回起点停住（避免蹭到限位）
 constexpr bool   TB_INV_L = false;     // 左方向反了改 true
 constexpr bool   TB_INV_R = false;     // 右方向反了改 true
 constexpr int16_t CAR_MAX_SPEED = 120;
@@ -508,10 +509,14 @@ void fireService(uint32_t now) {
     Serial.println("FIRE: 脉冲结束");
   }
   if (!fireMode) return;
-  // 取消激光识别：只要锁定靶心（bull 有效）并稳定 >1s 就开火；间隔 >=4s；靶心丢失后重新武装
-  if (lastRun && lastBx >= 0 && lastBy >= 0) {
+  // 开火条件（2026-10-28）：跟踪中 + 靶心有效 + 已对准（|err| <= FIRE_AIM_PX）
+  // 并保持 FIRE_OVERLAP_MS 才打一发。以前只看“靶心有效”，云台还在赶路时就会打偏。
+  const bool aimedNow = autoTrack && lastRun && lastBx >= 0 && lastBy >= 0
+                        && fabsf(aimErrX) <= (float)FIRE_AIM_PX
+                        && fabsf(aimErrY) <= (float)FIRE_AIM_PX;
+  if (aimedNow) {
     if (overlapSince == 0) overlapSince = now;
-    // 一直锁定靶心时：每 4s 打一发（不要求靶心丢失才重新武装）
+    // 一直对准时：每 4s 打一发（不要求靶心丢失才重新武装）
     if (!fireActive
         && (now - overlapSince >= FIRE_OVERLAP_MS)
         && (now - lastFireMs >= FIRE_INTERVAL_MS)) {
@@ -526,7 +531,7 @@ void fireEnable() {
   fireMode = true;
   overlapSince = 0;
   // lastFireMs 保持初值 0：进入模式后锁定靶心 1s 就打第一发，之后每 4s
-  Serial.println("FIRE: 自动射击开启 (靶心锁定 1s 开火, 每 4s 一发)");
+  Serial.println("FIRE: 自动射击开启 (对准 |err|<=24px 持续 1s 开火, 每 4s 一发)");
 }
 
 void fireDisable() {
@@ -569,7 +574,7 @@ void help() {
   Serial.println("          trk <kp> <lead_s> <alpha> <beta>       (世界系跟踪器调参)");
   Serial.println("          trk <alpha> <lead_s> / smooth <tau_s>  (目标平滑/前视/速度低通)");
   Serial.println("          probe16   (sample GPIO16 for 10s; toggle K230 GPIO9)");
-  Serial.println("          fire / cease  (自动射击: 靶心锁定 1s, 每 4s 一发 / 停止)");
+  Serial.println("          fire / cease  (自动射击: 对准>=1s, 每 4s 一发 / 停止)");
   Serial.println("          $KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>,<overlap>!  (模拟 K230 帧)");
   Serial.println("          kstop  (调试: TRACK 中只停 K230，用于验证靶心丢失自动复位)");
   helpExtra();
@@ -839,10 +844,16 @@ void updateTrack(uint32_t now) {
   static int hx[3] = {0, 0, 0}, hy[3] = {0, 0, 0};
   static uint8_t hn = 0, hi = 0;
   static uint8_t jumpN = 0;
+  // 丢靶扫描状态（2026-10-28：围绕扫描起点做有界摆动，不再累加漂移）
+  static uint32_t scanMs = 0, scanStartMs = 0;
+  static uint8_t scanPhase = 0;
+  static bool scanInit = false;
+  static int scanPan0 = SERVO_MID_US, scanTilt0 = SERVO_MID_US;
 
   if (!autoTrack) {
     panVel = tiltVel = 0;
     tgtInit = false; pidInit = false; panInteg = tiltInteg = 0; hn = hi = 0; jumpN = 0;
+    scanInit = false;
     trackState = 0;
     return;
   }
@@ -855,20 +866,32 @@ void updateTrack(uint32_t now) {
     if (lostFrames || lostMs || neverFound) {
       panVel = tiltVel = 0.0f;
       tgtInit = false; pidInit = false; panInteg = tiltInteg = 0; hn = hi = 0; jumpN = 0;
-      // 找不到靶心：8 方向小幅度扫描寻找（每 350ms 一步，幅度 ±12/8us）
-      static uint32_t scanMs = 0;
-      static uint8_t scanPhase = 0;
-      if (now - scanMs >= 300) {
-        scanMs = now;
-        static const int8_t dirs[8][2] = {{1,0},{1,1},{0,1},{-1,1},{-1,0},{-1,-1},{0,-1},{1,-1}};
-        jogGimbal(0, dirs[scanPhase][0] * 40);
-        jogGimbal(1, dirs[scanPhase][1] * 25);
-        scanPhase = (scanPhase + 1) & 7;
+      // 8 方向小步扫描：绝对位置围绕扫描起点（净位移为 0，不会慢慢蹭到限位）；
+      // SCAN_TIMEOUT_MS 后回起点停住，等靶心回来或人工介入。
+      static const int8_t dirs[8][2] = {{1,0},{1,1},{0,1},{-1,1},{-1,0},{-1,-1},{0,-1},{1,-1}};
+      if (!scanInit) {
+        scanInit = true;
+        scanStartMs = now; scanMs = now; scanPhase = 0;
+        scanPan0 = panUs; scanTilt0 = tiltUs;
       }
-      trackState = 3;   // 3 = 扫描中
+      if (now - scanStartMs < SCAN_TIMEOUT_MS) {
+        if (now - scanMs >= SCAN_STEP_MS) {
+          scanMs = now;
+          const int tp = clampPan(scanPan0 + dirs[scanPhase][0] * SCAN_AMP_PAN_US);
+          const int tt = clampTilt(scanTilt0 + dirs[scanPhase][1] * SCAN_AMP_TILT_US);
+          jogGimbal(0, tp - panUs);
+          jogGimbal(1, tt - tiltUs);
+          scanPhase = (uint8_t)((scanPhase + 1) & 7);
+        }
+      } else if (panUs != scanPan0 || tiltUs != scanTilt0) {
+        jogGimbal(0, scanPan0 - panUs);
+        jogGimbal(1, scanTilt0 - tiltUs);
+      }
+      trackState = 3;   // 3 = 扫描中 / 等目标
       return;
     }
   }
+  scanInit = false;   // 靶心回来了：下次丢失重新记扫描起点
 
   const bool stale = (lastFrameMs == 0) || (now - lastFrameMs > TARGET_TIMEOUT_MS);
   if (stale) {
@@ -1172,11 +1195,14 @@ void padButtons(uint32_t now) {
     triWas = triNow;
   }
 
-  // ---- □: 自动射击开/关（激光与靶心重叠 >1s 打一发，间隔 >=5s）----
+  // ---- □: 自动寻靶 + 自动射击（和 R2 同一套，× 退出激发）----
+  // 2026-10-28：开火门槛改成“跟踪中且已对准”，所以这里必须同时进 TRACK，
+  // 否则只开 fireMode 而云台不在跟踪，永远不会开火。
   if (pressedEdge(btnSq)) {
+    setGimbalMode(GIMBAL_TRACK);
     fireMode = true;
     overlapSince = 0;
-    Serial.println("FIRE: 自动射击开 (× 退出)");
+    Serial.println("FIRE: 自动寻靶+射击开 (× 只停激发, R2 退出)");
   }
 
   // ---- ○: 手动单发射击（一次按键 = 一发，按住也只一发） ----
@@ -1902,7 +1928,7 @@ void setup() {
   Serial.print(") MOTOR_R="); Serial.print(CH_MOTOR_R);
   Serial.print("(ok="); Serial.print(rightPwmOk); Serial.println(")");
   Serial.println("TB6612 LEFT: PWM33/IN1_2/IN2_4  RIGHT: PWM32/IN1_13/IN2_26  STBY=已废弃(3V3常高)");
-  Serial.println("波箱 PWM: GPIO25(CH4) 50Hz/2000us 发射; 自动射击: R2/fire, 靶心锁定 1s 每 4s 一发");
+  Serial.println("波箱 PWM: GPIO25(CH4) 50Hz/2000us 发射; 自动射击: R2/fire, 对准 1s 每 4s 一发");
   Serial.print("PS2 pins: DAT="); Serial.print(PS2_DAT);
   Serial.print(" CMD="); Serial.print(PS2_CMD);
   Serial.print(" ATT="); Serial.print(PS2_ATT);
