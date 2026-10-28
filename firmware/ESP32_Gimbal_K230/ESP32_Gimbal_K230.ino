@@ -91,8 +91,8 @@ constexpr float PAN_ACCEL = 40000.0f;  // us/s^2
 constexpr float TILT_ACCEL = 20000.0f;
 // 目标预处理 + 速度自适应前视
 constexpr float WBAND_PX = 8.0f;      // 死区（像素）
-constexpr int TGT_JUMP_PX = 80;       // 单帧跳变超过该值先当离群点
-constexpr uint8_t TGT_JUMP_HOLD = 4;  // 连续 N 帧都跳才认定目标真的换了位置
+constexpr int TGT_JUMP_PX = 120;      // 单帧跳变超过该值先当离群点（循迹颠簸时放宽）
+constexpr uint8_t TGT_JUMP_HOLD = 2;  // 连续 N 帧都跳才认定目标真的换了位置
 float tgtAlpha = 0.35f;               // 目标位置低通（越大越跟手、越抖）
 float trkLead  = 0.20f;               // 最大前视时间 s（随目标速度自适应）
 float velTau   = 0.02f;              // 速度指令一阶低通时间常数 s（越大越丝滑、越滞后）
@@ -221,14 +221,22 @@ constexpr int    FIRE_PWM_DUTY = 255;       // 单发占空比（255=100%，可�
 constexpr uint32_t FIRE_PULSE_MS = 400;     // 单发脉冲时长（发射一发）
 constexpr uint32_t FIRE_INTERVAL_MS = 4000; // 自动射击最小间隔（不连发）
 constexpr uint32_t FIRE_LASER_FRESH_MS = 500; // laser 标志新鲜度（现在只用于诊断/兼容）
-constexpr uint32_t FIRE_OVERLAP_MS = 1000;    // 对准（靶心落在 FIRE_AIM_PX 内）持续这么久才开火
-constexpr int      FIRE_AIM_PX = 24;          // 开火前允许的瞄准误差（像素）
+constexpr uint32_t FIRE_OVERLAP_MS = 0;       // 0=识别到靶心立即开火（不再等 1s 对准）
+constexpr int      FIRE_AIM_PX = 0;           // 0=开火不检查对准误差（设 24 可恢复门控）
 
 // ---- 丢靶扫描（靶心丢失时围绕当前位置做 8 方向小步搜索）----
 constexpr uint32_t SCAN_STEP_MS = 300;      // 每步停留时间
 constexpr int      SCAN_AMP_PAN_US = 40;    // 相对扫描起点的摆幅
 constexpr int      SCAN_AMP_TILT_US = 25;
 constexpr uint32_t SCAN_TIMEOUT_MS = 15000; // 扫这么久还找不到就回起点停住（避免蹭到限位）
+
+// ---- 摇杆接管（任何模式下都能手动控制云台）----
+constexpr uint32_t JOY_HOLD_MS = 300;        // 松杆后多久恢复自动跟踪
+
+// ---- L1 全行程寻靶（水平来回扫，垂直不动）----
+constexpr int      SEARCH_RATE_US_PER_S = 700; // 水平扫描速度（us/s，约 2.2s 扫完全行程）
+constexpr uint32_t SEARCH_GRACE_MS = 250;      // 已有靶心后，短时丢失多久才重新扫
+constexpr uint32_t SEARCH_START_MS = 1200;     // L1 进入后多久没靶就开始扫
 constexpr bool   TB_INV_L = false;     // 左方向反了改 true
 constexpr bool   TB_INV_R = false;     // 右方向反了改 true
 constexpr int16_t CAR_MAX_SPEED = 120;
@@ -262,7 +270,7 @@ constexpr bool     SENSOR_FLIP = false;    // 通道1..8 与左→右相反时�
 constexpr int     PARKING_MIN_BLACK = 6;         // 同时压黑 >= 该路数判定停车标记
 constexpr uint32_t PARKING_DEBOUNCE_MS = 80;
 constexpr float   KP_DEFAULT = 18.0f, KI_DEFAULT = 0.0f, KD_DEFAULT = 0.08f;
-constexpr int     SPEED_LOW = 70, SPEED_MED = 90, SPEED_HIGH = 110;
+constexpr int     SPEED_LOW = 45, SPEED_MED = 60, SPEED_HIGH = 75;   // 循迹整体放慢（椭圆线路）
 constexpr uint32_t CLEAR_MARKER_MIN_MS = 150;
 constexpr uint32_t CLEAR_MARKER_MAX_MS = 2000;
 constexpr uint32_t PARK_BLANK_MS = 300;
@@ -334,8 +342,8 @@ char lastLine[128] = "-";
 // ---- 靶心丢失 -> 自动复位 ----
 // 靶心连续 N 帧未检出或 900ms 无 bull -> 判定打靶完成，云台回 NONE（不改 carMode）。
 // 实测 N：现场 60 帧最大连续漏检 0；新视角 20 帧最大 2 -> N=10 + 900ms 兜底。
-constexpr uint32_t AIM_LOST_FRAMES = 10;
-constexpr uint32_t AIM_LOST_MS = 900;
+constexpr uint32_t AIM_LOST_FRAMES = 25;
+constexpr uint32_t AIM_LOST_MS = 1200;
 constexpr uint32_t AIM_START_GRACE_MS = 3000;   // K230 启动约 1.5s，留余量
 constexpr int AIM_BULL_MIN_CONF = 300;
 uint32_t aimBullLostFrames = 0;
@@ -380,6 +388,14 @@ constexpr uint8_t BOOT_GIMBAL_MODE = GIMBAL_NONE;
 uint8_t carMode = BOOT_CAR_MODE;
 uint8_t gimbalMode = BOOT_GIMBAL_MODE;
 uint32_t lastGimbalSend = 0;
+
+// ---- L1 全行程寻靶 + 摇杆接管状态（2026-10-28）----
+bool l1Mode = false;          // L1 寻靶模式（粘性，直到再按 L1 / SELECT / 退出）
+bool searchActive = false;    // 正在全行程水平扫
+int  searchDir = 1;           // 扫描方向 ±1
+int  searchTilt = SERVO_MID_US;
+bool joyActive = false;       // 摇杆正在接管
+uint32_t joyLastMs = 0;
 
 // ---- 新增：电机状态 ----
 bool carEStop = true;
@@ -509,14 +525,13 @@ void fireService(uint32_t now) {
     Serial.println("FIRE: 脉冲结束");
   }
   if (!fireMode) return;
-  // 开火条件（2026-10-28）：跟踪中 + 靶心有效 + 已对准（|err| <= FIRE_AIM_PX）
-  // 并保持 FIRE_OVERLAP_MS 才打一发。以前只看“靶心有效”，云台还在赶路时就会打偏。
-  const bool aimedNow = autoTrack && lastRun && lastBx >= 0 && lastBy >= 0
-                        && fabsf(aimErrX) <= (float)FIRE_AIM_PX
-                        && fabsf(aimErrY) <= (float)FIRE_AIM_PX;
-  if (aimedNow) {
+  // 开火条件（2026-10-28 改）：识别到靶心就开火（去掉 1s 对准等待，运动中颠簸更稳）。
+  // 仍限 4s 最小间隔；FIRE_AIM_PX>0 时可恢复“对准门控”。
+  const bool haveBull = autoTrack && lastRun && lastBx >= 0 && lastBy >= 0;
+  const bool onAim = (FIRE_AIM_PX <= 0)
+                     || (fabsf(aimErrX) <= (float)FIRE_AIM_PX && fabsf(aimErrY) <= (float)FIRE_AIM_PX);
+  if (haveBull && onAim) {
     if (overlapSince == 0) overlapSince = now;
-    // 一直对准时：每 4s 打一发（不要求靶心丢失才重新武装）
     if (!fireActive
         && (now - overlapSince >= FIRE_OVERLAP_MS)
         && (now - lastFireMs >= FIRE_INTERVAL_MS)) {
@@ -531,7 +546,7 @@ void fireEnable() {
   fireMode = true;
   overlapSince = 0;
   // lastFireMs 保持初值 0：进入模式后锁定靶心 1s 就打第一发，之后每 4s
-  Serial.println("FIRE: 自动射击开启 (对准 |err|<=24px 持续 1s 开火, 每 4s 一发)");
+  Serial.println("FIRE: 自动射击开启 (识别到靶心即开火, 每 4s 一发)");
 }
 
 void fireDisable() {
@@ -563,6 +578,8 @@ void printStatus() {
   Serial.print(" bullLost="); Serial.print(aimBullLostFrames);
   Serial.print(" laser="); Serial.print(lastLaser ? 1 : 0);
   Serial.print(" fire="); Serial.print(fireMode ? 1 : 0);
+  Serial.print(" l1="); Serial.print(l1Mode ? 1 : 0);
+  Serial.print(" search="); Serial.print(searchActive ? 1 : 0);
   Serial.println();
 }
 
@@ -574,7 +591,8 @@ void help() {
   Serial.println("          trk <kp> <lead_s> <alpha> <beta>       (世界系跟踪器调参)");
   Serial.println("          trk <alpha> <lead_s> / smooth <tau_s>  (目标平滑/前视/速度低通)");
   Serial.println("          probe16   (sample GPIO16 for 10s; toggle K230 GPIO9)");
-  Serial.println("          fire / cease  (自动射击: 对准>=1s, 每 4s 一发 / 停止)");
+  Serial.println("          fire / cease  (自动射击: 识别到靶心即开火, 每 4s 一发 / 停止)");
+  Serial.println("          l1 / search  (L1 全行程水平寻靶, 锁定靶心; 丢靶自动重扫)");
   Serial.println("          $KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>,<overlap>!  (模拟 K230 帧)");
   Serial.println("          kstop  (调试: TRACK 中只停 K230，用于验证靶心丢失自动复位)");
   helpExtra();
@@ -766,6 +784,17 @@ void onUsbLine(char *line, bool) {
   } else if (!strcmp(cmd, "fireus") && n >= 2) {
     fireServoUs = constrain(a, 500, 2500);
     Serial.printf("FIRE servo us=%u\n", fireServoUs);
+  } else if (!strcmp(cmd, "l1") || !strcmp(cmd, "search")) {
+    if (l1Mode) {
+      l1Mode = false; searchActive = false;
+      setGimbalMode(GIMBAL_NONE);
+      Serial.println("L1: 退出寻靶");
+    } else {
+      l1Mode = true; searchActive = false;
+      setGimbalMode(GIMBAL_TRACK);
+      fireMode = false; overlapSince = 0;
+      Serial.println("L1: 全行程寻靶(USB)");
+    }
   } else if (!strcmp(cmd, "probe16")) {
     Serial.println("PROBE16 10s: GPIO16 as input; toggle K230 GPIO9 now");
     K230.end();
@@ -858,6 +887,39 @@ void updateTrack(uint32_t now) {
     return;
   }
 
+  // ---- 摇杆接管：任何模式下推杆立即手动控制，松杆 JOY_HOLD_MS 后恢复自动 ----
+  if (joyActive || (joyLastMs && now - joyLastMs < JOY_HOLD_MS)) {
+    panVel = tiltVel = 0.0f;
+    tgtInit = false; pidInit = false; panInteg = tiltInteg = 0; hn = hi = 0; jumpN = 0;
+    scanInit = false;
+    trackState = 0;
+    return;
+  }
+
+  // ---- L1 全行程寻靶：水平来回扫，TILT 固定；锁定后交给 PID，丢靶自动重扫 ----
+  if (l1Mode) {
+    const bool fresh = lastFrameMs && (now - lastFrameMs <= TARGET_TIMEOUT_MS);
+    const bool bullNow = fresh && lastRun && lastBx >= 0 && lastBy >= 0;
+    const bool needSearch = (!aimEverBull)
+                            ? (now - aimStartMs > SEARCH_START_MS)
+                            : (!bullNow && (now - aimLastBullMs > SEARCH_GRACE_MS));
+    if (needSearch) {
+      panVel = tiltVel = 0.0f;
+      tgtInit = false; pidInit = false; panInteg = tiltInteg = 0; hn = hi = 0; jumpN = 0;
+      if (!searchActive) { searchActive = true; searchDir = 1; searchTilt = tiltUs; }
+      const int step = (int)(SEARCH_RATE_US_PER_S * dt);
+      int next = panUs + searchDir * step;
+      if (next >= PAN_MAX_US) { next = PAN_MAX_US; searchDir = -1; }
+      else if (next <= PAN_MIN_US) { next = PAN_MIN_US; searchDir = 1; }
+      panUs = clampPan(next);
+      tiltUs = clampTilt(searchTilt);
+      applyServos();
+      trackState = 4;   // 4 = 全行程寻靶
+      return;
+    }
+    searchActive = false;
+  }
+
   // ---- 靶心丢失：暂停跟踪（不自动退出，等靶心回来；只有再按 R2 才退出）----
   if (gimbalMode == GIMBAL_TRACK) {
     const bool lostFrames = aimEverBull && (aimBullLostFrames >= AIM_LOST_FRAMES);
@@ -900,8 +962,8 @@ void updateTrack(uint32_t now) {
     trackState = 3;
     return;
   }
-  // ---- 靶心无效（无目标 / bx,by=-1）：停止运动，不再用框中心兜底 ----
-  if (!lastRun || lastBx < 0 || lastBy < 0) {
+  // ---- 无目标：停。有框但靶心短暂丢失 -> 用框中心兜底（循迹颠簸时不停摆）----
+  if (!lastRun || (lastBx < 0 && lastCx < 0)) {
     panVel = tiltVel = 0;
     tgtInit = false; pidInit = false; panInteg = tiltInteg = 0; hn = hi = 0; jumpN = 0;
     laserSearchActive = false;
@@ -1068,10 +1130,13 @@ void handleGimbal() {
   const uint32_t now = millis();
   if (now - lastGimbalSend < GIMBAL_POLL_MS) return;
   lastGimbalSend = now;
-  const int16_t panD = 128 - ps2.lx();   // 用户要求：摇杆往右，云台往右（原来是反的）
-  const int16_t tiltD = ps2.ry() - 128;   // 用户要求：右摇杆方向反转
-  if (abs(panD) > GIMBAL_DEADZONE)  jogGimbal(0, panD / GIMBAL_STEP_DIV);
-  if (abs(tiltD) > GIMBAL_DEADZONE) jogGimbal(1, tiltD / GIMBAL_STEP_DIV);
+  const int16_t panD = 128 - ps2.lx();   // 左摇杆水平 -> 云台 PAN（往右=往右）
+  const int16_t tiltD = ps2.ry() - 128;  // 右摇杆垂直 -> 云台 TILT
+  bool moved = false;
+  if (abs(panD) > GIMBAL_DEADZONE)  { jogGimbal(0, panD / GIMBAL_STEP_DIV);  moved = true; }
+  if (abs(tiltD) > GIMBAL_DEADZONE) { jogGimbal(1, tiltD / GIMBAL_STEP_DIV); moved = true; }
+  if (moved) { joyActive = true; joyLastMs = now; }
+  else if (now - joyLastMs > JOY_HOLD_MS) joyActive = false;
 }
 
 // ---------- 手柄按键边沿 ----------
@@ -1136,19 +1201,21 @@ void padButtons(uint32_t now) {
   padLostStopped = false;
 
   // ---- 肩键直达模式（再按同一个键 = 重新 arm / 重置） ----
-  // ---- L1: 循迹 + 自动找靶（不激发），再按一下关闭 ----
+  // ---- L1: 全行程水平寻靶（不激发），再按一次退出 ----
   if (pressedEdge(btnCar)) {
     static uint32_t l1LastMs = 0;
     if (millis() - l1LastMs > 400) {          // 防抖：手柄抖动不重复触发
       l1LastMs = millis();
-      if (gimbalMode == GIMBAL_TRACK && !fireMode) {
+      if (l1Mode) {
+        l1Mode = false; searchActive = false;
         setGimbalMode(GIMBAL_NONE);
-        Serial.println("L1: 退出自动找靶");
+        Serial.println("L1: 退出寻靶");
       } else {
+        l1Mode = true; searchActive = false;
         setGimbalMode(GIMBAL_TRACK);
         fireMode = false;
         overlapSince = 0;
-        Serial.println("L1: 找靶并锁定(不激发)");
+        Serial.println("L1: 全行程寻靶(锁定靶心, 丢失自动重扫)");
       }
     }
   }
@@ -1166,18 +1233,28 @@ void padButtons(uint32_t now) {
   // ---- R2: 切换“自动寻靶 + 4s 射击” ----
   if (pressedEdge(btnTrack)) {
     if (gimbalMode == GIMBAL_TRACK && fireMode) {
+      l1Mode = false; searchActive = false;
       setGimbalMode(GIMBAL_NONE);
       fireMode = false;
       overlapSince = 0;
       Serial.println("R2: 退出自动寻靶射击");
     } else {
+      l1Mode = false; searchActive = false;
       setGimbalMode(GIMBAL_TRACK);
       fireMode = true;
       overlapSince = 0;
       Serial.println("R2: 自动寻靶 + 4s 射击开启");
     }
   }
-  if (pressedEdge(btnSel))   setCarMode(carMode == CAR_MANUAL ? CAR_LINE : CAR_MANUAL);
+  if (pressedEdge(btnSel)) {
+    // SELECT = 一键全自动（和 START 一样）：循迹 + 寻靶 + 自动射击
+    lineStart(true);
+    l1Mode = false; searchActive = false;
+    setGimbalMode(GIMBAL_TRACK);
+    fireMode = true;
+    overlapSince = 0;
+    Serial.println("SELECT: 循迹 + 寻靶 + 打靶 (× 退出)");
+  }
 
   // ---- ×: 仅停止激发（不碰电机/云台）----
   if (pressedEdge(btnCross)) {
@@ -1199,6 +1276,7 @@ void padButtons(uint32_t now) {
   // 2026-10-28：开火门槛改成“跟踪中且已对准”，所以这里必须同时进 TRACK，
   // 否则只开 fireMode 而云台不在跟踪，永远不会开火。
   if (pressedEdge(btnSq)) {
+    l1Mode = false; searchActive = false;
     setGimbalMode(GIMBAL_TRACK);
     fireMode = true;
     overlapSince = 0;
@@ -1220,10 +1298,10 @@ void padButtons(uint32_t now) {
       if (!motorArmed) motorArm(true);          // 只在未 arm 时 arm 一次（motorArm 内部会 tbHardStop）
       const int16_t fwd = (up ? 1 : 0) - (down ? 1 : 0);
       const int16_t rot = (right ? 1 : 0) - (left ? 1 : 0);
-      const int16_t base = (fwd != 0) ? 80 : 0;   // 用户要求加快位移速度
-      const int16_t spin = (fwd == 0) ? 60 : 40;
-      int16_t l = constrain(base * fwd + spin * rot, (int16_t)-100, (int16_t)100);
-      int16_t r = constrain(base * fwd - spin * rot, (int16_t)-100, (int16_t)100);
+      const int16_t base = (fwd != 0) ? 100 : 0;   // 加快位移速度
+      const int16_t spin = (fwd == 0) ? 80 : 50;
+      int16_t l = constrain(base * fwd + spin * rot, (int16_t)-110, (int16_t)110);
+      int16_t r = constrain(base * fwd - spin * rot, (int16_t)-110, (int16_t)110);
       tbDrive(l, r);
       dpadActive = true;
       dpadOverride = true;
@@ -1237,14 +1315,14 @@ void padButtons(uint32_t now) {
   // ---- START: 一键自动循迹 + 寻靶 + 打靶 ----
   if (pressedEdge(btnStart)) {
     lineStart(true);                  // 循迹
+    l1Mode = false; searchActive = false;
     setGimbalMode(GIMBAL_TRACK);      // 寻靶（以靶心为准）
-    fireMode = true;                  // 打靶（靶心锁定 1s、间隔 4s）
+    fireMode = true;                  // 打靶（识别到靶心即开火、间隔 4s）
     overlapSince = 0;
     Serial.println("一键: 循迹 + 寻靶 + 打靶 (× 退出)");
   }
-  // ---- 并行: 小车和云台各跑各的 ----
-  if (carMode == CAR_MANUAL) handleCar();
-  if (gimbalMode != GIMBAL_TRACK) handleGimbal();   // NONE 下也能用摇杆手动转云台
+  // ---- 并行: 小车和云台各跑各的；摇杆随时接管云台（所有模式）----
+  handleGimbal();
 }
 
 void padPrint() {                          // 手柄诊断: 原始 9 字节 + 摇杆/按键
@@ -1506,22 +1584,9 @@ void motorPrint() {
 
 void carStop() { tbHardStop(); }
 
-int16_t stickToSpeed(int16_t stickY) { return int16_t((128 - stickY) * 2.0f); }
-
-void handleCar() {
-  if (!motorArmed || !motorArmFromPad || carEStop || motorTestActive) return;
-  if (dpadOverride) return;   // 方向键优先，摇杆不覆盖
-  int16_t lS = stickToSpeed(ps2.ly()), rS = stickToSpeed(ps2.ry());
-  if (abs(lS) < CAR_SPEED_DEADZONE) lS = 0;
-  if (abs(rS) < CAR_SPEED_DEADZONE) rS = 0;
-  lS = constrain(lS, -CAR_MAX_SPEED, CAR_MAX_SPEED);
-  rS = constrain(rS, -CAR_MAX_SPEED, CAR_MAX_SPEED);
-  if (ps2.pressed(PS2_L3)) { lS = -CAR_SPIN_SPEED; rS = CAR_SPIN_SPEED; }
-  else if (ps2.pressed(PS2_R3)) { lS = CAR_SPIN_SPEED; rS = -CAR_SPIN_SPEED; }
-  if (lS != lastCarLS || rS != lastCarRS) {
-    lastCarLS = lS; lastCarRS = rS; tbDrive(lS, rS);
-  }
-}
+// 2026-10-28：摇杆不再控小车（摇杆专给云台，左右分工：左=水平/PAN，右=上下/TILT）。
+// 小车手动只走方向键（按住走）；这里保留空实现，避免其它地方调用报错。
+void handleCar() { }
 
 // ---------- 循迹（V19 原样移植；上报/继续改走 K230 串口） ----------
 void lnResetPID() {
@@ -1729,9 +1794,10 @@ void carStatusLine(uint32_t now) {
 }
 
 void helpExtra() {
-  Serial.println("-- 新增(V19 补齐): 手柄 --");
-  Serial.println("PS2: L1=小车手动+arm  L2=循迹+arm  R1=云台手动  R2=云台跟踪(K230)  ○=单发射击");
-  Serial.println("     SELECT=小车手动/循迹互切  X=急停  △=云台回中  START=停车/云台中位/跟踪暂停");
+  Serial.println("-- 手柄(2026-10-28 重构) --");
+  Serial.println("PS2: L1=全行程寻靶(不激发,丢靶重扫)  L2=循迹开关  R1=单发  R2=自动寻靶+射击");
+  Serial.println("     □=自动寻靶+射击  ○/△=单发  ×=停激发  SELECT/START=循迹+寻靶+打靶");
+  Serial.println("     方向键=控车(按住走)  摇杆=云台(左=水平/右=上下, 任何模式都接管)");
   Serial.println("-- 新增(V19 补齐): USB 命令 --");
   Serial.println("模式: cmanual | cline | cnone | gmanual(gm) | gtrack | gnone | mode");
   Serial.println("电机: arm | disarm/cs | stop | motor | ch <0左|1右> <-120..120> <20..1500ms> | cf | cb");
@@ -1928,13 +1994,13 @@ void setup() {
   Serial.print(") MOTOR_R="); Serial.print(CH_MOTOR_R);
   Serial.print("(ok="); Serial.print(rightPwmOk); Serial.println(")");
   Serial.println("TB6612 LEFT: PWM33/IN1_2/IN2_4  RIGHT: PWM32/IN1_13/IN2_26  STBY=已废弃(3V3常高)");
-  Serial.println("波箱 PWM: GPIO25(CH4) 50Hz/2000us 发射; 自动射击: R2/fire, 对准 1s 每 4s 一发");
+  Serial.println("波箱 PWM: GPIO25(CH4) 50Hz/2000us 发射; 自动射击: R2/fire, 识别到靶心即开火, 每 4s 一发");
   Serial.print("PS2 pins: DAT="); Serial.print(PS2_DAT);
   Serial.print(" CMD="); Serial.print(PS2_CMD);
   Serial.print(" ATT="); Serial.print(PS2_ATT);
   Serial.print(" CLK="); Serial.println(PS2_CLK);
-  Serial.println("上电: 无模式 (按手柄 R2 才进跟踪 / 才让 K230 跑识别); 小车无模式");
-  Serial.println("手柄: L1=小车手动 L2=循迹 R1=云台手动 R2=云台跟踪 ○=单发射击; 电机需 arm");
+  Serial.println("上电: 无模式 (按手柄 R2/L1 才进跟踪 / 才让 K230 跑识别); 小车无模式");
+  Serial.println("手柄: L1=寻靶 L2=循迹 R2=自动打靶 SELECT/START=一键全自动 方向键=控车 摇杆=云台");
 
   Serial.println();
   Serial.println("ESP32_Gimbal_K230 ready");
