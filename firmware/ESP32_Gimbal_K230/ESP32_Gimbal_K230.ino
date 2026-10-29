@@ -219,10 +219,10 @@ constexpr int    FIRE_PWM_FREQ = 1000;      // 波箱 PWM 频率 Hz
 constexpr int    FIRE_PWM_RES = 8;          // 8bit -> 0~255
 constexpr int    FIRE_PWM_DUTY = 255;       // 单发占空比（255=100%，可调）
 constexpr uint32_t FIRE_PULSE_MS = 400;     // 单发脉冲时长（发射一发）
-constexpr uint32_t FIRE_INTERVAL_MS = 4000; // 自动射击最小间隔（不连发）
+constexpr uint32_t FIRE_INTERVAL_MS = 3000; // 自动射击最小间隔（不连发）
 constexpr uint32_t FIRE_LASER_FRESH_MS = 500; // laser 标志新鲜度（现在只用于诊断/兼容）
-constexpr uint32_t FIRE_OVERLAP_MS = 0;       // 0=识别到靶心立即开火（不再等 1s 对准）
-constexpr int      FIRE_AIM_PX = 0;           // 0=开火不检查对准误差（设 24 可恢复门控）
+constexpr uint32_t FIRE_OVERLAP_MS = 0;       // 0=激光与靶心重合立即开火（不等 1s）
+constexpr int      FIRE_AIM_PX = 0;           // 已弃用：开火改由 $KT 的 overlap 字段决定
 
 // ---- 丢靶扫描（靶心丢失时围绕当前位置做 8 方向小步搜索）----
 constexpr uint32_t SCAN_STEP_MS = 300;      // 每步停留时间
@@ -525,12 +525,15 @@ void fireService(uint32_t now) {
     Serial.println("FIRE: 脉冲结束");
   }
   if (!fireMode) return;
-  // 开火条件（2026-10-28 改）：识别到靶心就开火（去掉 1s 对准等待，运动中颠簸更稳）。
-  // 仍限 4s 最小间隔；FIRE_AIM_PX>0 时可恢复“对准门控”。
+  // 开火条件（2026-10-29）：激光与靶心重合（K230 上报 overlap 字段）即开火，间隔 >=3s。
+  // K230 侧已经把“激光压靶心”写进 bx/by，ESP32 只需把 bx/by 居中；重合时 overlap=1。
   const bool haveBull = autoTrack && lastRun && lastBx >= 0 && lastBy >= 0;
-  const bool onAim = (FIRE_AIM_PX <= 0)
-                     || (fabsf(aimErrX) <= (float)FIRE_AIM_PX && fabsf(aimErrY) <= (float)FIRE_AIM_PX);
-  if (haveBull && onAim) {
+  bool trigger = false;
+  if (haveBull) {
+    if (overlapKnown) trigger = lastOverlap;   // 有 overlap 字段：按重合开火
+    // 老 K230（无 overlap 字段）：不盲打，宁可不开火
+  }
+  if (trigger) {
     if (overlapSince == 0) overlapSince = now;
     if (!fireActive
         && (now - overlapSince >= FIRE_OVERLAP_MS)
@@ -545,8 +548,8 @@ void fireService(uint32_t now) {
 void fireEnable() {
   fireMode = true;
   overlapSince = 0;
-  // lastFireMs 保持初值 0：进入模式后锁定靶心 1s 就打第一发，之后每 4s
-  Serial.println("FIRE: 自动射击开启 (识别到靶心即开火, 每 4s 一发)");
+  // lastFireMs 保持初值 0：进入模式后一旦激光与靶心重合就打第一发，之后每 3s
+  Serial.println("FIRE: 自动射击开启 (激光与靶心重合即开火, 每 3s 一发)");
 }
 
 void fireDisable() {
@@ -591,7 +594,7 @@ void help() {
   Serial.println("          trk <kp> <lead_s> <alpha> <beta>       (世界系跟踪器调参)");
   Serial.println("          trk <alpha> <lead_s> / smooth <tau_s>  (目标平滑/前视/速度低通)");
   Serial.println("          probe16   (sample GPIO16 for 10s; toggle K230 GPIO9)");
-  Serial.println("          fire / cease  (自动射击: 识别到靶心即开火, 每 4s 一发 / 停止)");
+  Serial.println("          fire / cease  (自动射击: 激光与靶心重合即开火, 每 3s 一发 / 停止)");
   Serial.println("          l1 / search  (L1 全行程水平寻靶, 锁定靶心; 丢靶自动重扫)");
   Serial.println("          $KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>,<overlap>!  (模拟 K230 帧)");
   Serial.println("          kstop  (调试: TRACK 中只停 K230，用于验证靶心丢失自动复位)");
@@ -1230,7 +1233,7 @@ void padButtons(uint32_t now) {
       lineStart(true);
     }
   }
-  // ---- R2: 切换“自动寻靶 + 4s 射击” ----
+  // ---- R2: 切换“自动寻靶 + 3s 射击” ----
   if (pressedEdge(btnTrack)) {
     if (gimbalMode == GIMBAL_TRACK && fireMode) {
       l1Mode = false; searchActive = false;
@@ -1243,7 +1246,7 @@ void padButtons(uint32_t now) {
       setGimbalMode(GIMBAL_TRACK);
       fireMode = true;
       overlapSince = 0;
-      Serial.println("R2: 自动寻靶 + 4s 射击开启");
+      Serial.println("R2: 自动寻靶 + 3s 射击开启");
     }
   }
   if (pressedEdge(btnSel)) {
@@ -1317,7 +1320,7 @@ void padButtons(uint32_t now) {
     lineStart(true);                  // 循迹
     l1Mode = false; searchActive = false;
     setGimbalMode(GIMBAL_TRACK);      // 寻靶（以靶心为准）
-    fireMode = true;                  // 打靶（识别到靶心即开火、间隔 4s）
+    fireMode = true;                  // 打靶（激光与靶心重合即开火、间隔 3s）
     overlapSince = 0;
     Serial.println("一键: 循迹 + 寻靶 + 打靶 (× 退出)");
   }
@@ -1994,7 +1997,7 @@ void setup() {
   Serial.print(") MOTOR_R="); Serial.print(CH_MOTOR_R);
   Serial.print("(ok="); Serial.print(rightPwmOk); Serial.println(")");
   Serial.println("TB6612 LEFT: PWM33/IN1_2/IN2_4  RIGHT: PWM32/IN1_13/IN2_26  STBY=已废弃(3V3常高)");
-  Serial.println("波箱 PWM: GPIO25(CH4) 50Hz/2000us 发射; 自动射击: R2/fire, 识别到靶心即开火, 每 4s 一发");
+  Serial.println("波箱 PWM: GPIO25(CH4) 50Hz/2000us 发射; 自动射击: R2/fire, 激光与靶心重合即开火, 每 3s 一发");
   Serial.print("PS2 pins: DAT="); Serial.print(PS2_DAT);
   Serial.print(" CMD="); Serial.print(PS2_CMD);
   Serial.print(" ATT="); Serial.print(PS2_ATT);
@@ -2031,7 +2034,7 @@ void loop() {
   lineService(now);
   motorTestService(now);
   motorService(now);
-  fireService(now);          // 波箱自动射击（脉冲关断 + 每 4s 触发）
+  fireService(now);          // 波箱自动射击（脉冲关断 + 激光重合触发, 每 3s）
   carStatusLine(now);
   linkDiag(now);
 

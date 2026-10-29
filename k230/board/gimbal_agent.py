@@ -89,7 +89,7 @@ MAX_BOXES = 20
 KP_NUM = 5
 KP_DIM = 3
 BULL_MIN_V = 0.30
-OVERLAP_PX = 25          # 激光与靶心距离 <= 该值视为“重叠”
+OVERLAP_PX = 25          # 激光与靶心距离 <= 该值视为“重叠”（开火条件）
 LASER_CFG = {
     "threshold": (20, 100, 15, 127, -40, 100),
     "roi": (0, 0, 640, 480),
@@ -97,7 +97,16 @@ LASER_CFG = {
     "pixels_threshold": 2, "merge": True, "margin": 1,
     "min_area": 2, "max_area": 400, "max_side": 24,
     "max_aspect": 2.5, "min_fill": 0.2,
+    "use_kalman": True,   # 激光点卡尔曼平滑（运动中稳定、短时丢失外推）
 }
+
+# ---- 激光瞄准（2026-10-29 重新启用）：激光在发射器上，激光点 = 枪口指向 ----
+LASER_HOME = (342, 289)   # 激光在画面里的固定成像位置（云台刚性安装，基本不动）
+LASER_HOME_AUTO = 1       # 在线把 LASER_HOME 慢慢标定到实测位置（修正安装误差）
+LASER_HOME_EMA = 0.02     # 标定 EMA（越小越稳，越大收敛越快）
+AIM_ENABLE = 1            # 1=激光压靶心（发补偿瞄准点）；0=只发原始靶心
+AIM_MAX_PX = 180          # 单方向补偿误差上限（超过视为误检）
+AIM_RATE_PX = 20          # 每帧瞄准点变化上限（减小云台抖动）
 
 # ---- 板端性能（见 board/k230_perf.py）----
 PERF_MODE = "performance"     # 不插 USB 离线运行时尤其重要
@@ -188,9 +197,11 @@ class _PoseAidemo:
 
 _YL.aidemo = _PoseAidemo()
 
-# 用户要求不做卡尔曼滤波：靶心直接用原始关键点
+# 靶心仍用原始关键点（不滤波）；激光点用 laser_repo 里的卡尔曼
 _bull_kf = None
 _laser = None
+_laser_home = [LASER_HOME[0], LASER_HOME[1]]   # 可在线标定的激光成像位置（兜底）
+_last_aim = [W // 2, H // 2]                     # 上一帧瞄准点（速率限幅用）
 
 
 # ---------------- UART ----------------
@@ -407,6 +418,7 @@ def _drain_frames():
 
 # ---------------- 推理 + 回传 ----------------
 def _send_frame(seq, boxes, scores, kpts, img=None):
+    global _laser_home, _last_aim
     if _uart is None:
         return
     run = 1 if boxes else 0
@@ -419,47 +431,61 @@ def _send_frame(seq, boxes, scores, kpts, img=None):
         cy = int(b[1] + b[3] * 0.5)
         kp = kpts[0]
         if len(kp) >= 15 and float(kp[14]) >= BULL_MIN_V:
-            _rx, _ry = int(kp[12]), int(kp[13])
-            if _bull_kf is not None:
-                _s = _bull_kf.update(_rx, _ry, now)
-                if _s is not None:
-                    bx, by = int(round(_s[0])), int(round(_s[1]))
-                else:
-                    bx, by = _rx, _ry
-            else:
-                bx, by = _rx, _ry
-            # $KT 的 conf 协议上是**靶心置信度**（yolo_pose.py 也这么发）；
-            # 旧代理发的是框分数，ESP32 三态接口按 bull conf 判有效会误判。
+            bx, by = int(kp[12]), int(kp[13])
+            # $KT 的 conf 协议上是**靶心置信度**（yolo_pose.py 也这么发）
             conf = int(float(kp[14]) * 1000)
-        else:
-            # 有框但靶心不可信：短暂丢失用预测兜底
-            if _bull_kf is not None:
-                _s = _bull_kf.predict(now)
-                if _s is not None:
-                    bx, by = int(round(_s[0])), int(round(_s[1]))
     else:
         cx = cy = -1
-        if _bull_kf is not None:
-            _s = _bull_kf.predict(now)
-            if _s is not None:
-                bx, by = int(round(_s[0])), int(round(_s[1]))
-    # ---- 激光 + overlap + 压靶心 ----
+
+    # ---- 激光检测：真实检测(det=1) / 卡尔曼外推(coast=1) / 丢失 ----
     laser = 0
+    coast = 0
     lx = ly = -1
     if _laser is not None and img is not None:
         try:
             _ls = _laser.sample(img)
             if _ls is not None:
-                laser = 1
                 lx = int(_ls["x"])
                 ly = int(_ls["y"])
+                coast = int(_ls.get("coast", 0))
+                laser = 1 if (not coast) else 0
         except Exception:
             laser = 0
+            coast = 0
+
+    # ---- 激光参考点：优先实测（det 或 coast），彻底丢失用 LASER_HOME 兜底 ----
+    ref_valid = False
+    if laser or coast:
+        ref_valid = True
+        refx, refy = lx, ly
+        if laser and LASER_HOME_AUTO:
+            _laser_home[0] += LASER_HOME_EMA * (lx - _laser_home[0])
+            _laser_home[1] += LASER_HOME_EMA * (ly - _laser_home[1])
+    else:
+        refx, refy = _laser_home[0], _laser_home[1]
+
+    # 先算 overlap（原始靶心 vs 激光参考点）；有激光参考点且距离够近才算重叠
     overlap = 0
-    if run and bx >= 0 and by >= 0 and laser:
-        if abs(bx - lx) <= OVERLAP_PX and abs(by - ly) <= OVERLAP_PX:
+    if run and bx >= 0 and by >= 0 and ref_valid:
+        _dx = bx - refx
+        _dy = by - refy
+        if _dx * _dx + _dy * _dy <= OVERLAP_PX * OVERLAP_PX:
             overlap = 1
-    # 用户要求取消激光识别：不再用激光位置修正瞄准点，直接发原始靶心
+
+    # ---- 激光压靶心：瞄准点 = 画面中心 + (靶心 - 激光)，ESP32 居中后两者重合 ----
+    if run and bx >= 0 and by >= 0 and AIM_ENABLE:
+        _ex = bx - refx
+        _ey = by - refy
+        _ex = max(-AIM_MAX_PX, min(AIM_MAX_PX, _ex))
+        _ey = max(-AIM_MAX_PX, min(AIM_MAX_PX, _ey))
+        _ax = W // 2 + int(round(_ex))
+        _ay = H // 2 + int(round(_ey))
+        _ax = max(_last_aim[0] - AIM_RATE_PX, min(_last_aim[0] + AIM_RATE_PX, _ax))
+        _ay = max(_last_aim[1] - AIM_RATE_PX, min(_last_aim[1] + AIM_RATE_PX, _ay))
+        _last_aim[0] = _ax
+        _last_aim[1] = _ay
+        bx, by = _ax, _ay
+
     _uart.write("$KT,%d,%d,%d,%d,%d,%d,%d,%d,%d!\n" %
                 (seq, run, cx, cy, bx, by, conf, laser, overlap))
     try:

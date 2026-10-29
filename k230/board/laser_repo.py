@@ -200,7 +200,7 @@ class LaserRepo:
                  x_stride=1, y_stride=1, pixels_threshold=1,
                  merge=True, margin=1,
                  min_area=0, max_area=0, max_side=0, max_aspect=0.0,
-                 min_fill=0.0):
+                 min_fill=0.0, use_kalman=False):
         # 阈值：默认用"亮红激光"（排除暗红十字）；也可传老 RED_LAB。
         self.lab = tuple(int(v) for v in threshold) if threshold else RED_LASER_LAB
         if roi is not None:
@@ -220,8 +220,11 @@ class LaserRepo:
         self.max_side = int(max_side)
         self.max_aspect = float(max_aspect)
         self.min_fill = float(min_fill)
-        # 用户要求：不做卡尔曼滤波，直接用原始质心（更跟手、不引入额外延迟）
+        # 卡尔曼平滑：默认关（保持原行为）；激光瞄准需要稳定时传 use_kalman=True。
+        # r 取 6（≈2.5px 标准差），运动时更稳又不至于太滞后。
         self.kf = None
+        if use_kalman and PointKalman is not None:
+            self.kf = PointKalman(q=150.0, r=6.0, max_jump=LASER_MAX_JUMP, max_coast=6)
         self.last = None
         self.last_ms = 0
         self.nblob = 0
@@ -271,6 +274,16 @@ class LaserRepo:
         cands = [b for b in self.blobs if self._passes(b)]
         if not cands:
             self.last = None
+            # 短暂丢失：卡尔曼外推兜底（连续丢失超过 max_coast 帧会返回 None）
+            if self.kf is not None:
+                s = self.kf.predict(now)
+                if s is not None:
+                    self.last = (s[0], s[1])
+                    return {"x": round(s[0], 1), "y": round(s[1], 1),
+                            "det": 0, "coast": 1,
+                            "area": 0, "w": 0, "h": 0, "n": 0,
+                            "bx": -1, "by": -1,
+                            "raw": self.nblob, "core": 0, "ms": self.last_ms}
             return None
         b = max(cands, key=lambda z: (z.area(), -z.y()))
         # 默认就用原始质心（所有 API 失败时也安全）
@@ -288,8 +301,13 @@ class LaserRepo:
             if core is not None:
                 rx, ry = core
                 self.core = 1
+        if self.kf is not None:
+            s = self.kf.update(rx, ry, now)
+            if s is not None:
+                rx, ry = s[0], s[1]
         self.last = (rx, ry)
-        return {"x": round(rx, 1), "y": round(ry, 1), "area": b.area(),
+        return {"x": round(rx, 1), "y": round(ry, 1), "det": 1, "coast": 0,
+                "area": b.area(),
                 "w": bw, "h": bh, "n": b.pixels(),
                 "bx": int(b.x()), "by": int(b.y()),
                 "raw": self.nblob, "core": self.core, "ms": self.last_ms}

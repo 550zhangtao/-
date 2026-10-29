@@ -84,17 +84,19 @@ arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 \
 | `ledcdump` | LEDC 寄存器 + 定时器是否在跑（`moving=1`）+ 波箱状态 |
 | `$KT,...` | PC 模拟一帧 K230 数据（可只发 7 字段），测试解析/开火逻辑 |
 
-### 自动射击规则（2026-10-28 起）
+### 自动射击规则（2026-10-29 起）
 
 ```
 开火 = 云台在 TRACK
-     ∧ run=1 ∧ bx,by ≥ 0          ← 识别到靶心即开火（不再等 1s、不再查对准）
-     ∧ 距上一发 ≥ FIRE_INTERVAL_MS(4000ms)
+     ∧ $KT 第 9 字段 overlap == 1       ← 激光与靶心重合（K230 判定）
+     ∧ 距上一发 ≥ FIRE_INTERVAL_MS(3000ms)
 单发脉冲 = FIRE_PULSE_MS(400ms)，脉宽 fireServoUs(2000us)
 ```
 
-- `FIRE_AIM_PX` 现为 0（不查对准）；设成 24~40 可恢复“对准门控”。
-- 不再使用 `laser`/`overlap` 触发；它们保留只为屏幕标定和排错。
+- K230 侧已把“瞄准点 = 画面中心 + (靶心 − 激光)”写进 `bx/by`，ESP32 只需把 bx/by 居中；
+  当靶心压到激光点上时 `overlap=1` 触发开火。
+- 老 K230（无 overlap 字段）**不盲打**（宁可不开火）。
+- `FIRE_AIM_PX` 已弃用；`OVERLAP_PX=25`（K230 侧）控制“重合”判定。
 
 ### L1 全行程寻靶（2026-10-28 起）
 
