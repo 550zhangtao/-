@@ -82,9 +82,15 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
 
 - **工作 → 调试绝不再连发 Ctrl-C**：实测会触发 KPU/相机析构死锁，把 K230
   打进 USB 不枚举（内核 `descriptor error -71`），只能断电。
-- `board/gimbal_agent.py` 把 **1.5s 内 3 条 `$E,STOP!`** 识别为调试暗号：
-  写 `/sdcard/offline_off` → `machine.reset()`。PC 侧让 ESP32 连发 3 次
-  USB `gnone` 即可，全程免拔插。
+- **切调试改用专用命令 `$E,DEBUG!`（2026-10-29）**：旧的“1.5s 内 3 条 STOP”暗号已废弃——
+  实战中模式切换也会发 STOP，凑满 3 条会误把 `main.py` 关掉（写 `offline_off`）。
+  现行链路：`mode.sh debug` → ESP32 USB 命令 `gdebug` → 转发 `$E,DEBUG!` →
+  代理写 `offline_off` + `machine.reset()`；普通 STOP **不再**触发。
+  要求 ESP32 固件带 `gdebug`、板端 `main.py` 带 `$E,DEBUG!` 分支；
+  旧固件/旧代理仍要一次性断电拔卡建 `offline_off` 升级。
+  **已在 2026-10-29 实测**：`gdebug` → `$E,DEBUG!` → 代理写 marker 复位 → REPL 可用、
+  `Offline=True`；随后 `gnone`（普通 STOP）不会触发调试，代理继续跑。
+  Windows 无 bash 时用工作区根的 `debug_mode.ps1`（等价于 `mode.sh debug` 的 UART 路径）。
 - 调试 → 工作：`mode work` 删 `offline_off`，`machine.reset(wait_repl=False)`，
   等 USB/tty 稳定；`/sdcard/main.py` 自动运行。
 - `yolo_preview_ide.py` 退出仍会 `machine.reset()`；IDE 需等 2~3 秒 USB
@@ -103,7 +109,7 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
 | KPU 原生对象析构死锁 | 退出时把 yolo/kpu/ai2d 存进 keepalive 容器，默认 `machine.reset()`；`sys.modules` 访问必须 try 包住 |
 | `emit()` 临时 bytes 多 | `gc.threshold(96*1024)` + 每 16 帧 `gc.collect()` |
 | AI2D 是**左上角对齐**，不是居中 letterbox | 板端反变换必须 `pad_x=0, pad_y=0`，否则输出整体偏移半个 pad（640×480→320×320 会偏 80px） |
-| IDE 预览画面/位置跳动 | `VIEW="full"` 固定视窗；`VIEW_SCALE=0.45`（288×216）、`IDE_QUALITY=70`、`AI_EVERY=2` |
+| IDE 预览画面/位置跳动 | `VIEW="full"` 固定视窗；`VIEW_SCALE=0.60`（384×288）、`IDE_QUALITY=90`、`AI_EVERY=2`、`SHOW_EVERY=2` |
 | 阈值与远距离 | 合并模型 @0.4：80 张负样本 0 误检；@0.25：为 20px 极小靶保留召回，误检 1/80 |
 | 串口独占 | 自动化前 `fuser -v /dev/ttyACM0` |
 | `from media.sensor import *` 会把 `sys` 覆盖成 `mpp.sys` | `import sys` 必须放在星号导入**之后** |
@@ -145,14 +151,29 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
   80 张负样本 @0.25 误检 1/80、@0.4 误检 0；PC kmodel 评测 57/57，靶心 3.2 px；
 - **板端链路**：`$KT` 每个 AI 帧发一次（`ai_every=2`）；图像回传是
   **检测 ROI 原生像素**，没目标才发缩小全图；
-- **激光瞄准（2026-10-29 重新启用）**：激光在**发射器**上，激光点=枪口指向，所以
-  “激光与靶心重合”即满足开火条件。K230 `gimbal_agent.py`：
-  - `laser_repo.py` 全帧红激光 LAB 检测 + **卡尔曼**（`use_kalman=True`，短时丢失外推 `coast`）；
-  - 瞄准点 = 画面中心 + (靶心 − 激光)，`AIM_RATE_PX=20` 限速、`AIM_MAX_PX=180` 限幅（运动中稳定）；
-  - 激光丢失用 `LASER_HOME`（`LASER_HOME_AUTO=1` 在线标定）兜底，仍发补偿瞄准点但不判定 overlap；
-  - `$KT` 第 8/9 字段 `laser`/`overlap`：`overlap=1` 表示靶心与激光距离 ≤ `OVERLAP_PX=25`。
+- **激光瞄准（2026-10-29 定稿：实测激光闭环，距离无关）**：激光在**发射器**上，
+  激光点 = 枪口指向，所以“激光落在靶上”即满足开火条件。K230 `gimbal_agent.py`：
+  - `laser_repo.py` 全帧红激光 **LAB** 检测，阈值 `(99,100,127,127,127,127)`
+    （只收亮红，挡掉靶纸上的暗红十字）；形状门控：面积≤400、边长≤24、
+    长宽比≤2.5、填充≥0.2；
+  - 位置门控 `LASER_GATE_PX=90`（只收 `LASER_HOME=(300,206)` 附近的候选）；
+    **`LASER_HOME_AUTO=0`**（在线标定已关：假点会把基准拉偏）；
+  - **时序连续性优先**：优先选离上一帧最近的红点（≤120px），否则退回取最大；
+    加卡尔曼（`use_kalman=True`）后实测静止 15/15 帧稳定在 `(312,279)`、零抖动；
+  - 激光丢失时用**最后一次实测点**兜底（不再回 `LASER_HOME`，避免两个基准间来回跳）；
+  - 瞄准点 = 画面中心 + (靶心 − 激光)，`AIM_RATE_PX=20` 限速、`AIM_MAX_PX=180` 限幅；
+  - `overlap` 判定：**激光点落在靶框内**（框内缩 4px）→ `overlap=1`；本帧没有激光实测时，
+    退回“靶心与参考点距离 ≤ `OVERLAP_PX=25`”。`laser=1` 只表示本帧**真实检出**（`coast` 外推记 0）。
   ESP32 把 bx/by 居中 → 靶心压到激光点；`overlap=1` 时开火。
-  阈值 `(20,100,15,127,-40,100)`，形状门控（面积≤400、边长≤24、长宽比≤2.5、填充≥0.2）。
+  实测（2026-10-29，1m）：闭环收敛后靶心 `(303,206)` / 激光 `(300,201)`，差 3~5px，
+  `overlap=1` 连发 3 发；激光点全程稳定在 `(300±5, 201±5)`。
+- **靶心时序关联（2026-10-29）**：模型 top-1 会在相似候选间跳（实测 `357,420 ↔ 140,190`），
+  `BULL_FROM_BOX=1` 用**检测框中心**当靶心（第 5 关键点系统性偏上 ~159px，不可用）；
+  新靶心离上一帧超过 `BULL_JUMP_PX=70` 时先沿用上一帧，连续 `BULL_JUMP_HOLD=4` 帧都跳才认。
+- **停流自愈（2026-10-29）**：K230 跑几千帧后会随机停流（相机管线卡死），以前只能断电。
+  `gimbal_agent.py` 现在带看门狗：`WATCHDOG_MS=3000` —— 连续 3s 没有产出就
+  `_drop_pipeline()` → 重开相机+模型（**不** `machine.reset()`），`RESTART_EVERY_FRAMES=3000`
+  每 3000 帧再主动重启一次清泄漏；重启后 `seq` 归零。实测重启后 `frames` 继续递增。
 - **丢靶处理（2026-10-28）**：
   - **L1 全行程寻靶**：进入后若 1.2s 没靶，PAN 在 740~2260 来回整幅扫（`SEARCH_RATE_US_PER_S=700`），
     TILT 固定；一旦锁定靶心交给 PID；丢靶 250ms 后自动重扫（L1 模式内持续）。
@@ -162,7 +183,7 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
     循迹颠簸时不停摆。
 - **波箱自动射击（2026-10-29 定稿）**：波箱 PWM 接 **GPIO25**（LEDC CH4，50Hz/16bit；
   **2000us=发射、1000us=停**，写 0us 会让 ESC 失控）。开火条件 =
-  **跟踪中 + `$KT` 上报 `overlap=1`（激光与靶心重合）→ 立即开火**，间隔 `FIRE_INTERVAL_MS=3000`。
+  **跟踪中 + `$KT` 上报 `overlap=1`（激光落在靶框内）→ 立即开火**，间隔 `FIRE_INTERVAL_MS=3000`。
   无 overlap 字段（老 K230）**不盲打**。USB `fire`/`cease`、`shoot` 单发、`fireus`/`firesig`
   调波形；单发脉冲 400ms。手柄 ○/△/R1 单发，× 只停激发。
   实测：overlap=0 连续 2.5s 不发射，overlap=1 首射 ~1 帧，两发间隔 2996ms（≈3s）。
@@ -201,16 +222,18 @@ bash k230/scripts/mode.sh reset    # 保持模式真软复位（工作模式自�
 
 ### 下一步
 
-- **外场实弹**：靶纸 3~5m + 波箱连发，验证“激光与靶心重合即开火（overlap）”在真实抖动下
-  的命中与误触发；`OVERLAP_PX=25`、`AIM_RATE_PX=20` 可按需调；
+- **外场实弹**：靶纸 3~5m + 波箱连发，验证“激光落在靶上即开火（overlap）”在真实抖动下
+  的命中与误触发；`OVERLAP_PX=25`（激光丢失时的兜底阈值）、`AIM_RATE_PX=20` 可按需调；
+- **换距离验收**：0.6m / 1.5m 各跑一次 L1→收敛→R2，确认闭环与距离无关（1m 已验证）；
+- **未完成的代码对齐**：`yolo_preview_ide.py` 仍是旧参数（LAB `(20,100,15,127,-40,100)`、
+  `LASER_HOME_AUTO=1`、overlap=距离≤25px、`AIM_LASER_ON_BULL=0`），与 agent 不一致；
+  `yolo_pose.py` 仍只发 7 字段。要统一得先改预览并在 IDE 里验收；
 - **蓝色小靶（关键待办）**：当前 `pose_v3_384.kmodel` 只练过**绿色靶**，大概率检不出更小的蓝色靶。
   需要：给蓝色靶采训练图（`tools/capture_dataset.py`）→ 标注（`pose_label.html`）→
   `train_pose_v3.py` 重训 → `export_onnx.py`/`compile_kmodel.py` 重出 kmodel；
   若要“绿色优先、蓝绿两靶都认”，得训双类或加颜色分选（`find_blobs` 按绿/蓝 hue 判色）。
 - **手柄在车上复测**：单独测试手柄是好的；之前串口读到 `valid=0` 是舵机 5V 未开、接收器没电。
   接回车上后跑 `pad` 看 `PS2[..] valid=1`；
-- **协议字段统一**：`yolo_pose.py`（PC 推流）仍只发 7 字段，agent/预览发 9 字段；
-  固件已按 `n>=8/9` 兼容，但要上 laser/overlap 诊断就得补齐；
 - 20px 以下的极小靶：需要更多该尺度的人工标注；
 - 检测抖动已接近模型上限，再提升应做"多候选 + 时序关联"（当前只取 top-1，
   相似物之间会跳）。

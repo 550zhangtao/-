@@ -27,15 +27,18 @@ $KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>,<overlap>!
 | `seq` | 递增序号 |
 | `run` | 1=有目标可跟踪；0=无目标 |
 | `cx,cy` | 目标框中心（640×480 像素） |
-| `bx,by` | **原始靶心**（10-28 起不再做激光补偿）；无效时 `-1` |
+| `bx,by` | **补偿后的瞄准点** = 画面中心 + (靶心 − 激光)，无效时 `-1` |
 | `conf` | 靶心置信度 0..1000 |
-| `laser` | 1=本帧检测到红色激光落点（只用于诊断） |
-| `overlap` | 1=激光与靶心距离 ≤ `OVERLAP_PX`（只用于诊断） |
+| `laser` | 1=本帧**真实检出**红色激光落点（卡尔曼 `coast` 外推记 0） |
+| `overlap` | 1=**激光点落在靶框内**（开火条件） |
 
-共 **9 个数字字段**（2026-10-28；`laser` 10-24 加、`overlap` 10-25 加）。
+共 **9 个数字字段**（2026-10-28；`laser` 10-24 加、`overlap` 10-25 加；
+10-29 起 `overlap` 语义改为“激光落在靶框内”，取值为开火条件）。
 固件按 `n>=7/8/9` 兼容：缺字段时 `laser`/`overlap` 按 0 处理。`!` 结束，后跟 `\n`。
 
-**开火与激光无关**：ESP32 只看 `run`+`bx/by`+`conf` 和对准误差，见第 3 节。
+**开火由 `overlap` 决定**：K230 每帧实测激光点，激光落在靶框内（内缩 4px）→ `overlap=1`，
+ESP32 在 TRACK 中据此开火，见第 3 节。激光丢失的那一帧退回“靶心与参考点距离 ≤
+`OVERLAP_PX=25`”兜底；`laser`/`overlap` 都有诊断含义，但 `overlap` 已不是纯诊断字段。
 
 ### ESP32 → K230
 
@@ -44,6 +47,10 @@ $E,ACK,<seq>,<state>,<pan_us>,<tilt_us>!
 ```
 
 `state`：0=空闲，1=跟踪，2=已对准，3=数据超时 / 扫描中。
+
+切调试专用命令：ESP32 USB 输入 `gdebug` → 向 K230 发 `$E,DEBUG!`；代理写
+`/sdcard/offline_off` 后 `machine.reset()`，把 REPL 交还 CanMV IDE。
+（旧的 3×`$E,STOP!` 暗号已废弃，见 `TROUBLESHOOTING.md`。）
 
 ## 3. ESP32 固件
 
@@ -74,6 +81,7 @@ arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 \
 | `sweep` | 扫动测试（约 4 秒） |
 | `status` / `kt` | 查看状态（含 bull / conf / err / fire） |
 | `gtrack` / `gmanual` / `gnone` | 云台 TRACK / 手动 / 无模式（TRACK 会发 `$E,START!`） |
+| `gdebug` | 切 K230 调试：发 `$E,DEBUG!`，K230 写 `offline_off` 后复位，REPL 交还 IDE |
 | `fire` / `cease` | 开 / 关自动射击 |
 | `shoot` | 单发（调试波箱，不经手柄） |
 | `fireus <500..2500>` | 发射脉宽；**设 1000 可静默验证逻辑**（1000=停位） |
@@ -88,15 +96,16 @@ arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 \
 
 ```
 开火 = 云台在 TRACK
-     ∧ $KT 第 9 字段 overlap == 1       ← 激光与靶心重合（K230 判定）
+     ∧ $KT 第 9 字段 overlap == 1       ← 激光落在靶框内（K230 判定）
      ∧ 距上一发 ≥ FIRE_INTERVAL_MS(3000ms)
 单发脉冲 = FIRE_PULSE_MS(400ms)，脉宽 fireServoUs(2000us)
 ```
 
-- K230 侧已把“瞄准点 = 画面中心 + (靶心 − 激光)”写进 `bx/by`，ESP32 只需把 bx/by 居中；
-  当靶心压到激光点上时 `overlap=1` 触发开火。
+- K230 每帧实测激光点，把“瞄准点 = 画面中心 + (靶心 − 激光)”写进 `bx/by`；
+  ESP32 把 bx/by 居中后靶心压在激光上，同时 K230 判 `overlap=1` 触发开火。
+  因为两者都在同一帧里测量，**距离变化会自动抵消**，不需要标定。
 - 老 K230（无 overlap 字段）**不盲打**（宁可不开火）。
-- `FIRE_AIM_PX` 已弃用；`OVERLAP_PX=25`（K230 侧）控制“重合”判定。
+- `FIRE_AIM_PX` 已弃用；`OVERLAP_PX=25`（K230 侧）只在**本帧没有激光实测**时兜底。
 
 ### L1 全行程寻靶（2026-10-28 起）
 
@@ -126,6 +135,8 @@ arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:esp32 \
 
 - `board/yolo_pose.py`：USB 推流时同时通过 UART3（GPIO32/33）发送 `$KT`。
 - `board/yolo_preview_ide.py`：CanMV IDE 预览时同时发送 `$KT`。
+- `board/gimbal_agent.py`：离线常驻代理；带**停流看门狗**（`WATCHDOG_MS=3000` 重开相机、
+  `RESTART_EVERY_FRAMES=3000` 定期重启），停流不再需要断电。
 - `board/uart_test_k230.py`：独立 UART 测试（默认接 ESP32；把 TX/RX 短接可 loopback）。
 
 打开 CanMV IDE 运行 `uart_test_k230.py`：
@@ -186,8 +197,8 @@ YAHBOOM K230 的 4Pin UART1（GPIO9/GPIO10）在转接板/丝印层面实测无�
 ### 7.2 当前控制律（图像系 PID + 速度自适应前视）
 
 ```cpp
-PAN  : kp=2.0  ki=1.0  kd=0.4      // 输出 us/s，输入像素误差
-TILT : kp=2.0  ki=0.5  kd=0.4
+PAN  : kp=2.5  ki=0.3  kd=0.15     // 输出 us/s，输入像素误差
+TILT : kp=2.5  ki=0.2  kd=0.10
 AIM_DEADBAND = 8 px
 PAN_MAX_RATE 2600 us/s / TILT_MAX_RATE 1000 us/s
 PAN_ACCEL 40000 / TILT_ACCEL 20000 us/s^2
@@ -195,8 +206,8 @@ PID_D_FILTER 0.35
 AIM_CTRL_MS 10                     // 100Hz，dt 用真实经过时间
 ```
 
-目标预处理：3 点中值 → 一阶低通 α=0.25 → 离群点抑制（单帧跳变 >80px 先忽略，
-连续 4 帧才接受）。
+目标预处理：3 点中值 → 一阶低通 α=0.35 → 离群点抑制（单帧跳变 >80px 先忽略，
+连续 4 帧才接受）。速度低通 `velTau=0.02s`。
 
 **前视预测**：`err = (x + vx·leadEff) − 320`，其中
 `leadEff = trkLead(0.2s) × clamp(|vx|/500, 0.7, 1.2)`。
@@ -216,7 +227,8 @@ AIM_CTRL_MS 10                     // 100Hz，dt 用真实经过时间
 
 关键结论：
 - **仿真与真机差别很大**：仿真按 k=0.6px/µs 整定出 kp=7~9，真机上 kp≥4 就会
-  把云台怼到限位并丢失目标，**真机稳定值是 kp=2**（静止 |ex| 9px / |ey| 7px，
+  把云台怼到限位并丢失目标，**当时真机稳定值是 kp=2**（现行默认已改为
+  `2.5/0.3/0.15`，见 §7.2，静止 |ex| 9px / |ey| 7px，
   死区占比 45%，pan 速度中位 0）；
 - 真机上加大前视（α=0.35 / lead=0.35）反而更差（84px vs 69px），保持 0.25/0.20；
 - 移动目标 |ex| 中位 69px，滞后主要来自 ~20fps 检测 + ~100ms 链路延迟；

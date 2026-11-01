@@ -234,7 +234,12 @@ constexpr uint32_t SCAN_TIMEOUT_MS = 15000; // 扫这么久还找不到就回起
 constexpr uint32_t JOY_HOLD_MS = 300;        // 松杆后多久恢复自动跟踪
 
 // ---- L1 全行程寻靶（水平来回扫，垂直不动）----
-constexpr int      SEARCH_RATE_US_PER_S = 700; // 水平扫描速度（us/s，约 2.2s 扫完全行程）
+constexpr int      SEARCH_RATE_US_PER_S = 250; // （保留，现用步进扫描）
+constexpr int      SEARCH_STEP_US = 40;        // 步进扫描：每步转多少 us
+constexpr uint32_t SEARCH_STEP_MS = 600;       // 每步停多久（留足够帧给识别，避免拖影）
+constexpr int      SEARCH_TILT_STEP_US = 25;   // 每扫完一趟换一层 tilt（蛇形搜索）
+constexpr int      SEARCH_TILT_MIN_US = 1400;  // 蛇形搜索的 tilt 范围
+constexpr int      SEARCH_TILT_MAX_US = 1580;
 constexpr uint32_t SEARCH_GRACE_MS = 250;      // 已有靶心后，短时丢失多久才重新扫
 constexpr uint32_t SEARCH_START_MS = 1200;     // L1 进入后多久没靶就开始扫
 constexpr bool   TB_INV_L = false;     // 左方向反了改 true
@@ -276,6 +281,8 @@ constexpr uint32_t CLEAR_MARKER_MAX_MS = 2000;
 constexpr uint32_t PARK_BLANK_MS = 300;
 constexpr uint32_t LOST_TIMEOUT_MS = 250;
 constexpr float   LOST_SPEED_FACTOR = 0.6f;
+constexpr int     LOST_SEARCH_DUTY = 30;        // 丢线后慢速原地找线的 PWM
+constexpr bool    LINE_PARKING_ENABLE = false;  // 2026-10-29：默认关闭"停车区停车"，要求持续循迹直到 L2
 constexpr uint32_t LINE_CTRL_MS = 10;
 constexpr uint32_t LINE_DEBUG_MS = 200;
 const char CMD_DONE[] = "DONE";       // K230 回 DONE = 打靶完成, 巡线继续
@@ -910,11 +917,24 @@ void updateTrack(uint32_t now) {
       panVel = tiltVel = 0.0f;
       tgtInit = false; pidInit = false; panInteg = tiltInteg = 0; hn = hi = 0; jumpN = 0;
       if (!searchActive) { searchActive = true; searchDir = 1; searchTilt = tiltUs; }
-      const int step = (int)(SEARCH_RATE_US_PER_S * dt);
-      int next = panUs + searchDir * step;
-      if (next >= PAN_MAX_US) { next = PAN_MAX_US; searchDir = -1; }
-      else if (next <= PAN_MIN_US) { next = PAN_MIN_US; searchDir = 1; }
-      panUs = clampPan(next);
+      // 步进扫描（2026-10-29）：每 SEARCH_STEP_MS 转 SEARCH_STEP_US，中间保持静止，
+      // 让 10fps 的识别有机会抓到靶（连续运动会拖影导致检不出）。
+      static uint32_t searchStepMs = 0;
+      if (searchStepMs == 0 || now - searchStepMs >= SEARCH_STEP_MS) {
+        searchStepMs = now;
+        int next = panUs + searchDir * SEARCH_STEP_US;
+        // 蛇形：每扫完一趟换一个 tilt 层
+        if (next >= PAN_MAX_US) {
+          next = PAN_MAX_US; searchDir = -1;
+          searchTilt = clampTilt(searchTilt + SEARCH_TILT_STEP_US);
+          if (searchTilt >= SEARCH_TILT_MAX_US) searchTilt = SEARCH_TILT_MIN_US;
+        } else if (next <= PAN_MIN_US) {
+          next = PAN_MIN_US; searchDir = 1;
+          searchTilt = clampTilt(searchTilt + SEARCH_TILT_STEP_US);
+          if (searchTilt >= SEARCH_TILT_MAX_US) searchTilt = SEARCH_TILT_MIN_US;
+        }
+        panUs = clampPan(next);
+      }
       tiltUs = clampTilt(searchTilt);
       applyServos();
       trackState = 4;   // 4 = 全行程寻靶
@@ -1055,8 +1075,15 @@ void updateTrack(uint32_t now) {
   panVel  = constrain(panVel,  -PAN_MAX_RATE,  PAN_MAX_RATE);
   tiltVel = constrain(tiltVel, -TILT_MAX_RATE, TILT_MAX_RATE);
 
-  panUs = clampPan(panUs + int(panVel * dt));
-  tiltUs = clampTilt(tiltUs + int(tiltVel * dt));
+  // 2026-10-29：位置用浮点累加。原来 panUs + int(panVel*dt)，dt≈0.01 时
+  // 偏差小时 panVel*dt≈0.5us 被 int() 截断成 0 → 云台"推不动"。
+  static float panF = SERVO_MID_US, tiltF = SERVO_MID_US;
+  if (fabsf(panF - (float)panUs) > 1.5f) panF = (float)panUs;      // 外部 s1/sh/jog 改过就同步
+  if (fabsf(tiltF - (float)tiltUs) > 1.5f) tiltF = (float)tiltUs;
+  panF  = constrain(panF  + panVel  * dt, (float)PAN_MIN_US,  (float)PAN_MAX_US);
+  tiltF = constrain(tiltF + tiltVel * dt, (float)TILT_MIN_US, (float)TILT_MAX_US);
+  panUs  = (int)panF;
+  tiltUs = (int)tiltF;
   applyServos();
 
   if (fabsf(errX) <= WBAND_PX && fabsf(errY) <= WBAND_PX) trackState = 2;
@@ -1678,10 +1705,15 @@ void lnFollowLine(float dt) {
       lnLineLost = true; lnLostStartMs = millis(); lnResetPID(); lnLostStopped = false;
     }
     if (uint32_t(millis() - lnLostStartMs) >= LOST_TIMEOUT_MS) {
-      lnLostStopped = true; lnFault("LINE_LOST_TIMEOUT"); return;
+      // 2026-10-29 用户要求：循迹要一直跑，只有再按 L2 才停。
+      // 丢线超时不再进 FAULT 停车，改为慢速原地转圈找线（朝最后一次偏离的方向）。
+      lnLostStopped = false;
+      speed = LOST_SEARCH_DUTY;
+      correction = (lnError >= 0.0f) ? float(speed) : -float(speed);
+    } else {
+      speed = int(speed * LOST_SPEED_FACTOR);
+      error = lnError; correction = lnPid.kp * error;
     }
-    speed = int(speed * LOST_SPEED_FACTOR);
-    error = lnError; correction = lnPid.kp * error;
   } else {
     lnLineLost = false; lnLostStopped = false;
     correction = lnPidCompute(lnPid, error, dt);
@@ -1699,7 +1731,7 @@ void lnRunControl(float dt) {
   if (!motorArmed || carEStop) { lnLSpeed = lnRSpeed = 0; return; }
   switch (lnState) {
     case LS_FOLLOW:
-      lnHandleParkingDetection();
+      if (LINE_PARKING_ENABLE) lnHandleParkingDetection();
       if (lnState == LS_FOLLOW) lnFollowLine(dt);
       break;
     case LS_PARKING: break;
@@ -1802,7 +1834,7 @@ void helpExtra() {
   Serial.println("     □=自动寻靶+射击  ○/△=单发  ×=停激发  SELECT/START=循迹+寻靶+打靶");
   Serial.println("     方向键=控车(按住走)  摇杆=云台(左=水平/右=上下, 任何模式都接管)");
   Serial.println("-- 新增(V19 补齐): USB 命令 --");
-  Serial.println("模式: cmanual | cline | cnone | gmanual(gm) | gtrack | gnone | mode");
+  Serial.println("模式: cmanual | cline | cnone | gmanual(gm) | gtrack | gnone | gdebug | mode");
   Serial.println("电机: arm | disarm/cs | stop | motor | ch <0左|1右> <-120..120> <20..1500ms> | cf | cb");
   Serial.println("      pwm <40..120>(先 disarm) | pins <0|1> <-1|0|1>(诊断, STBY 保持 LOW)");
   Serial.println("循迹: line | go | park | s | 1/2/3(速度) | kp/ki/kd <值> | linewatch on|off");
@@ -1867,6 +1899,13 @@ bool handleCarLine(const char *line) {
     setGimbalMode(GIMBAL_TRACK); return true;
   }
   if (!strcmp(line, "gnone")) { setGimbalMode(GIMBAL_NONE); return true; }
+  if (!strcmp(line, "gdebug")) {
+    // PC 调试入口：让 K230 代理写 offline_off 后复位，把 REPL 交还 CanMV IDE。
+    // 不走“3 条 STOP”老暗号（会被实战中的模式切换误触发）。
+    k230Cmd("DEBUG");
+    Serial.println("已发 $E,DEBUG!（K230 写 offline_off 后复位到 REPL）");
+    return true;
+  }
   if (!strcmp(line, "home")) {
     centerServos();
     Serial.println("云台回中 1500/1500"); return true;

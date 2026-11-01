@@ -40,10 +40,12 @@ bash scripts/mode.sh status   # 只读查看
 python3 -m k230tool reset     # 真 machine.reset + 等 USB 重新枚举
 ```
 
-`mode debug` 让 ESP32 连发 3 条 `$E,STOP!`（`gnone`），新版
-`board/gimbal_agent.py` 识别为调试暗号：写 `offline_off` 后立即
-`machine.reset()`；复位发生在对象析构之前，不会死锁。
-旧版 `main.py` 没有暗号时，会提示一次性用 TF 卡建 `offline_off` 升级。
+`mode debug` 在 **REPL 空闲**时直接写 `offline_off` + 真软复位；REPL 被工作脚本
+占用时，改为向 ESP32 发 USB 命令 `gdebug` → 转发 `$E,DEBUG!` → 代理写
+`offline_off` 并 `machine.reset()`。
+**2026-10-29 起，原来的“3×`$E,STOP!` 暗号”已废弃**：实战中的模式切换也会发 STOP，
+1.5s 内凑满 3 条会误触发、把 `main.py` 关掉。ESP32 固件和板端 `main.py`
+都必须带 gdebug 支持；旧版本仍要一次性拔卡建 `offline_off` 升级。
 
 **不要**再对正在跑识别的工作脚本连发 Ctrl-C。
 
@@ -56,6 +58,16 @@ K230 的 KPU 原生对象析构死锁（已知固件问题）。表现：脚本�
   默认 `reset_on_exit=1`；
 - 如果仍然卡住：先 `bash scripts/mode.sh debug`；仍无响应再按 RESET / 断电；
 - 不要尝试在脚本里直接 `del kpu` / `kpu.release()` / `gc.collect()` 清理。
+
+### 跑几千帧后突然停流（agent 日志还在、`$KT` 不来了）
+
+相机管线随机卡死，以前只能断电。`board/gimbal_agent.py`（2026-10-29 起）带看门狗：
+
+- `WATCHDOG_MS=3000`：连续 3s 没有成功产出 → `_drop_pipeline()` → 重开相机 + 模型，
+  不 `machine.reset()`，`seq` 归零；
+- `RESTART_EVERY_FRAMES=3000`：每 3000 帧主动重启一次，清驱动/内存潜在泄漏；
+- 日志出现 `agent: watchdog restart #N` / `agent: periodic restart #N` 是**正常自愈**，
+  不是崩溃；重启后 `status` 里 `frames` 应从 0 重新递增。
 
 ### 堆内存不足 / `snapshot()` 卡死
 

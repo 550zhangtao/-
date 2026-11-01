@@ -1,5 +1,10 @@
 # 激光点检测测试脚本（`board/laser_detect_test.py`）
 
+> **已废弃（2026-10-24 起）**：本文件描述的 `board/laser_detect_test.py` 与 `cv_lite`
+> 灰度方案**已删除**，现行实现是 `board/laser_repo.py`（红色 LAB `find_blobs` +
+> 卡尔曼 + 时序连续性），见 `AGENTS.md` 第 5 节。本文只作历史记录保留，
+> 里面的参数、路径、命令都不要再照做。
+
 独立测试脚本：用 **cv_lite 灰度 `find_blobs`** 找激光点，画十字并打印坐标/面积。
 不依赖 YOLO、不依赖舵机/UART。
 

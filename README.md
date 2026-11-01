@@ -14,12 +14,14 @@
 - **K230**：只负责"看"。YOLOv8n-Pose（`pose_v3`，5 关键点 = 四角 + 靶心）
   走 UART3（TX=GPIO32 / RX=GPIO33，115200）以
   `$KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>,<overlap>!` 上报
-  **框中心 + 靶心 + 置信度**（`laser`/`overlap` 只作诊断）。
+  **框中心 + 瞄准点 + 激光/重合判定**（`bx/by` 已含“靶心−激光”补偿；
+  `overlap=1` 表示激光落在靶框内，是开火条件）。
   板端常驻代理 `/sdcard/main.py` 由 ESP32 指挥：收到 `$E,START!` 才开相机跑识别，
   `$E,STOP!` 停。
 - **ESP32**（固件在本仓库 `firmware/`）：收到 `$KT` 后跑 PID + 速度自适应前视，
-  让**靶心居中**（K230 已把“靶心−激光”偏移写进 bx/by，即把靶心压到激光点）；靶心丢失不退出，
-  做有界扫描或 L1 全行程寻靶。自动射击：跟踪中 + `$KT` 上报激光与靶心重合（overlap）即开火，每 3s 一发。
+  让**瞄准点 bx/by 居中**（K230 每帧实测激光点，把“靶心−激光”偏移写进 bx/by，
+  居中后靶心就压在激光点上）；靶心丢失不退出，做有界扫描或 L1 全行程寻靶。
+  自动射击：跟踪中 + `$KT` 上报 `overlap=1`（激光落在靶框内）即开火，每 3s 一发。
 - **上电默认无模式**：K230 不跑识别，直到 ESP32 发 START（手柄 R2 / USB `gtrack`）。
 
 ## 目录
@@ -28,6 +30,7 @@
 .
 ├── README.md                     本文件
 ├── AGENTS.md                     开发约定 + 踩坑记录（改代码前先读）
+├── debug_mode.ps1                Windows 一键切调试（ESP32 USB 发 gdebug）
 ├── k230/                         ★ K230 视觉端（自包含，命令都在这里面跑）
 │   ├── board/                    板端 MicroPython
 │   │   ├── gimbal_agent.py       ★ 离线常驻代理（放 /sdcard/main.py）
@@ -91,11 +94,12 @@ cd k230 && bash scripts/mode.sh debug      # 也可以这样
 ```
 
 然后打开 CanMV IDE，运行 `k230/board/yolo_preview_ide.py`（默认已配好
-`/sdcard/models/pose_v3_384.kmodel`、`VIEW="full"`、`VIEW_SCALE=0.45`、`CONF=0.25`）。
+`/sdcard/models/pose_v3_384.kmodel`、`VIEW="full"`、`VIEW_SCALE=0.60`、`CONF=0.25`）。
 
-> 工作 → 调试不用拔插 USB、也不用 Ctrl-C：PC 让 ESP32 连发 3 条 `$E,STOP!`
-> （`gnone`），代理写 `offline_off` 后立即 `machine.reset()`。工作模式下 IDE
-> 连不上是正常现象。
+> 工作 → 调试：`mode.sh debug` 在 REPL 被占时会让 ESP32 发 `gdebug` → K230 收
+> `$E,DEBUG!` 写 `offline_off` 并复位，REPL 交还 IDE。旧的 3×`$E,STOP!` 暗号
+> 已废弃（实战 STOP 会误触发）。工作模式下 IDE 连不上是正常现象。
+> **Windows 没有 bash** 时用工作区根的 `debug_mode.ps1`（同样是 `gdebug` 链路）。
 
 ### 4) 重训 / 评测 Pose 模型
 
@@ -133,7 +137,7 @@ python3 tools/compile_kmodel.py --onnx models/pose_v3_384.onnx --out models/pose
 - [k230/docs/K230_ESP32_UART.md](k230/docs/K230_ESP32_UART.md) —— `$KT` / `$E` 协议
 - [k230/docs/YOLOV8_DEPLOY.md](k230/docs/YOLOV8_DEPLOY.md) —— 训练 → ONNX → kmodel → 板端
 - [k230/docs/POSE_ANNOTATION.md](k230/docs/POSE_ANNOTATION.md) —— 5 关键点标注规范
-- [k230/docs/LASER_DETECT_TEST.md](k230/docs/LASER_DETECT_TEST.md) —— 激光点检测测试（cv_lite 灰度，独立脚本）
+- [k230/docs/LASER_DETECT_TEST.md](k230/docs/LASER_DETECT_TEST.md) —— 已废弃的灰度激光测试（历史记录；现行实现见 `board/laser_repo.py`）
 - [k230/docs/ARCHITECTURE.md](k230/docs/ARCHITECTURE.md) / [TROUBLESHOOTING.md](k230/docs/TROUBLESHOOTING.md)
 - [k230/README.md](k230/README.md) —— K230 USB 工具链细节
 

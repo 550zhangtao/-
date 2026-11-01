@@ -31,14 +31,16 @@ mode.py —— K230 调试模式 / 工作模式自由切换
   可能直接死锁；狂发 Ctrl-C 更会把 K230 打进 USB 不枚举状态；
 * 就算没死锁，工作脚本也会在复位后重新占住 REPL，看起来像“复位没反应”。
 
-新版 board/gimbal_agent.py 复用 ESP32 已有的 `gnone` 命令：
-PC 让 ESP32 连发 3 条 `$E,STOP!`（1.5s 内），K230 代理把它识别为调试暗号：
+新版 board/gimbal_agent.py 用**专用调试命令**：PC 向 ESP32 发 USB 命令
+`gdebug`，ESP32 转发 `$E,DEBUG!`；K230 代理收到后：
     写 /sdcard/offline_off -> machine.reset()
 复位发生在 Python 对象析构之前，因此不会触发 KPU 死锁；复位后 main.py
-看到 offline_off 直接退出，REPL 自然回来。全程不拔插、不按 Ctrl-C、
-不需要改 ESP32 固件。
+看到 offline_off 直接退出，REPL 自然回来。全程不拔插、不按 Ctrl-C。
 
-旧版代理没有这个暗号。首次升级需要一次性进入调试模式：
+（2026-10-29：旧的“3 条 `$E,STOP!` 暗号”已废弃——实战里的模式切换也会发 STOP，
+1.5s 内凑满 3 条会误关 main.py，导致上电不再自启。）
+
+旧版代理没有 gdebug。首次升级需要一次性进入调试模式：
 断电 -> 取出 TF 卡 -> 在根目录建空文件 `offline_off` -> 装回上电；
 然后执行 `mode work --agent board/gimbal_agent.py` 部署新版。
 （也可以试 `mode debug --force-ctrl-c`，但可能死锁，不推荐。）
@@ -293,15 +295,15 @@ def _find_esp32_port() -> str:
     return ""
 
 
-def _esp32_stop_burst(count: int = 3, wait_ready: float = 2.0) -> bool:
-    """通过 ESP32 的 USB 命令 `gnone` 连发 STOP 给 K230。
+def _esp32_debug(wait_ready: float = 2.0) -> bool:
+    """通过 ESP32 的 USB 命令 `gdebug` 让 K230 写 offline_off 并复位。
 
-    新 main.py 会把“1.5s 内 3 条 STOP”识别为切调试模式：写 offline_off
-    后 machine.reset()。不需要 K230 REPL，也不需要改 ESP32 固件。
+    ESP32 固件把 gdebug 转成 `$E,DEBUG!`；新版 main.py 只认这一条显式命令
+    （普通的 STOP 不再触发，避免实战误关 main.py）。不需要 K230 REPL。
     """
     dev = _find_esp32_port()
     if not dev:
-        _log("没有找到 ESP32 串口，无法用 UART 暗号")
+        _log("没有找到 ESP32 串口，无法发 gdebug")
         return False
     try:
         ser = serial.Serial(dev, 115200, timeout=0.1, write_timeout=1.0)
@@ -322,17 +324,18 @@ def _esp32_stop_burst(count: int = 3, wait_ready: float = 2.0) -> bool:
             boot += ser.read(4096)
             if b"ESP32_Gimbal_K230 ready" in boot:
                 break
-        _log("ESP32 %s 已就绪，发送 %d 条 STOP 暗号 …" % (dev, count))
-        for _ in range(count):
-            ser.write(b"gnone\n")
-            time.sleep(0.12)
-        time.sleep(0.4)
+        _log("ESP32 %s 已就绪，发送 gdebug …" % dev)
+        ser.write(b"gdebug\n")
+        time.sleep(0.6)
         out = bytes(boot + ser.read(16384)).decode("utf-8", "replace")
-        sent = out.count("-> K230 $E,STOP!")
-        _log("ESP32 已发出 STOP ×%d" % sent)
-        return sent >= count
+        ok = "-> K230 $E,DEBUG!" in out
+        if ok:
+            _log("ESP32 已转发 $E,DEBUG!")
+        else:
+            _log("ESP32 没有确认 DEBUG（固件可能还是旧版，需要重新烧录）")
+        return ok
     except Exception as exc:
-        _log("ESP32 暗号发送失败：%s" % exc)
+        _log("gdebug 发送失败：%s" % exc)
         return False
     finally:
         try:
@@ -347,7 +350,7 @@ def _print_recovery() -> None:
   1) python3 -m k230tool mode status
   2) 断电 -> 取出 TF 卡 -> 在根目录建空文件 offline_off -> 装回上电
      （一次性操作；进调试模式后执行 mode work --agent board/gimbal_agent.py
-       部署带 3×STOP 暗号的新代理，以后切换就不需要再这样）
+       部署带 gdebug 支持的新代理，以后切换就不需要再这样）
   3) 仍无响应：按板子 RESET 或断电重上电
 """, flush=True)
 
@@ -384,19 +387,18 @@ def cmd_debug(args) -> int:
                                   settle=1.0, on_wait=_log)
             return _finish_debug(link, dev)
 
-        # 2) REPL 被工作脚本占用：走 ESP32 UART 暗号，不碰 Ctrl-C
-        #    新版代理把 1.5s 内的 3 条 STOP 当成 DEBUG。不需要 REPL，
-        #    也不需要改 ESP32 固件；gnone 本来就存在。
-        _log("REPL 被工作脚本占用；尝试 ESP32 UART 暗号（gnone ×3 -> STOP ×3）…")
-        if _esp32_stop_burst(3):
-            _log("已发 3 条 STOP；等待 K230 复位（不探测、不发 Ctrl-C）…")
+        # 2) REPL 被工作脚本占用：走 ESP32 专用命令 gdebug -> $E,DEBUG!
+        #    不碰 Ctrl-C；也不会被实战中的普通 STOP 误触发。
+        _log("REPL 被工作脚本占用；尝试 ESP32 专用调试命令（gdebug -> $E,DEBUG!）…")
+        if _esp32_debug():
+            _log("已发 $E,DEBUG!；等待 K230 写 offline_off 并复位（不探测、不发 Ctrl-C）…")
             try:
                 link.wait_for_usb(timeout=min(12.0, args.timeout),
                                   settle=0.5, on_wait=_log)
             except BoardError as exc:
                 raise BoardError(
-                    "ESP32 已发 STOP ×3，但 K230 没有复位。\n"
-                    "  说明当前 main.py 还是旧版（没有 _record_stop() 暗号）。\n"
+                    "ESP32 已转 $E,DEBUG!，但 K230 没有复位。\n"
+                    "  说明当前 /sdcard/main.py 还是旧版（不认 $E,DEBUG!）。\n"
                     "  一次性处理：断电 -> 取 TF 卡 -> 根目录建空文件 offline_off -> 上电；\n"
                     "  然后：python3 -m k230tool mode work --agent board/gimbal_agent.py\n"
                     "  原始错误：%s" % exc)
@@ -406,7 +408,7 @@ def cmd_debug(args) -> int:
 
         # 3) 旧代理兜底（显式 --force-ctrl-c，只发一次）
         if args.force_ctrl_c:
-            _log("ESP32 暗号不可用，尝试一次 Ctrl-C（旧代理兜底）…")
+            _log("ESP32 专用命令不可用，尝试一次 Ctrl-C（旧代理兜底）…")
             if _gentle_ctrl_c(link, wait=2.5):
                 _write_marker(link)
                 dev = link.soft_reset(wait_repl=True, timeout=args.timeout,
@@ -414,8 +416,8 @@ def cmd_debug(args) -> int:
                 return _finish_debug(link, dev)
 
         raise BoardError(
-            "工作脚本没有识别 ESP32 的 3×STOP 暗号。\n"
-            "  说明当前 /sdcard/main.py 还是旧版。\n"
+            "工作脚本没有识别 $E,DEBUG!，也没有回退成功。\n"
+            "  说明当前 /sdcard/main.py 或 ESP32 固件还是旧版（没有 gdebug）。\n"
             "  一次性处理：断电 -> 取 TF 卡 -> 根目录建空文件 offline_off -> 上电；\n"
             "  然后运行：python3 -m k230tool mode work --agent board/gimbal_agent.py\n"
             "  （之后工作<->调试切换全程不需要拔插/按 Ctrl-C）")
@@ -439,7 +441,7 @@ def cmd_work(args) -> int:
             if args.agent:
                 raise BoardError(
                     "板子在工作模式，REPL 被占用，无法直接部署新 main.py。\n"
-                    "  先运行 python3 -m k230tool mode debug（新版代理会识别 3×STOP），\n"
+                    "  先运行 python3 -m k230tool mode debug（新代理认 $E,DEBUG!），\n"
                     "  部署成功后再切回 work。")
             _log("已经在工作模式（REPL 被工作脚本占用）")
             print("CanMV IDE 不能连接，这是正常的。"
@@ -500,7 +502,7 @@ def cmd_reset(args) -> int:
                      "（REPL 被占用，属正常）" % dev)
             return 0
 
-        # 工作模式没有单独的“只复位不切模式”通道（3×STOP 已定义为切调试）。
+        # 工作模式没有单独的“只复位不切模式”通道（切调试现在走 gdebug）。
         # 自动走 debug -> work 两步，效果等于“保持工作模式重启一次”。
         link.close()
         _log("工作模式；自动执行 debug -> work 两步复位（不拔插、不发 Ctrl-C）…")

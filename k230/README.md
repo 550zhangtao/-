@@ -31,7 +31,7 @@ k230/
 │   ├── gimbal_agent.py        离线常驻代理（ESP32 START/STOP 指挥）
 │   ├── k230_perf.py           板端性能单点入口（CPU 频率 / 相机帧缓冲）
 │   ├── stream_camera.py       采图 -> JPEG -> USB
-│   ├── laser_detect_test.py   ★ 独立激光点检测测试（cv_lite 灰度，不依赖 YOLO）
+│   ├── laser_repo.py          ★ 红色激光 LAB 检测（卡尔曼 + 时序连续性）
 │   └── uart_test_k230.py / uart_pin_diag.py   接线自检
 ├── tools/                     Pose 标注/训练/转换/评估
 │   ├── pose_label.html        ★ 5 关键点浏览器标注工具
@@ -187,11 +187,13 @@ bash scripts/mode.sh reset    # 保持当前模式真软复位（machine.reset +
 - `work`：删 `offline_off`，真软复位，等 USB 启动完成；ESP32 按 R2/`gtrack`
   后开始轮询识别；
 - **工作 → 调试** 不用 Ctrl-C 杀脚本（会把 K230 打进 USB 不枚举/死锁）：
-  PC 让 ESP32 连发 3 条 `$E,STOP!`（`gnone`），代理识别为调试暗号：
-  写 `offline_off` → `machine.reset()`。全程不拔插、不需要改 ESP32 固件；
-- 首次升级 / 旧版 `main.py` 没有暗号时，需要一次性进入调试：
-  断电 → 取 TF 卡 → 根目录建空文件 `offline_off` → 上电，然后执行
-  `python3 -m k230tool mode work --agent board/gimbal_agent.py`；
+  `mode.sh debug` 在 REPL 被占时向 ESP32 发 USB 命令 `gdebug`，ESP32 转发
+  `$E,DEBUG!`，代理写 `offline_off` 后 `machine.reset()`。全程不拔插。
+  Windows 下没有 bash，可用工作区根的 `debug_mode.ps1`（同一个 gdebug 链路）。
+  **注意（2026-10-29）**：旧的“3×`$E,STOP!` 暗号”已废弃——实战中模式切换的 STOP
+  会误把 `main.py` 关掉；需要 ESP32 固件和板端 `main.py` 都是新版。
+- 首次部署 / 升级 `main.py`：断电 → 取 TF 卡 → 根目录建空文件 `offline_off` → 上电，
+  然后执行 `python3 -m k230tool mode work --agent board/gimbal_agent.py`；
 - 别名：`scripts/ide_mode.sh` = `mode debug`，`scripts/offline_mode.sh` = `mode work`。
 
 串口是 **独占** 的：`k230tool live`/`monitor` 在跑时，CanMV IDE 连不上；
@@ -208,24 +210,27 @@ bash scripts/mode.sh reset    # 保持当前模式真软复位（machine.reset +
 | 图层 | 内容 |
 | --- | --- |
 | Pose | 绿色检测框 + 四角连线 + 靶心红十字 |
-| **激光** | 黑色十字 + 圆圈 + 黑底白字坐标 `L(cx,cy) A=<像素面积>` |
+| **激光** | 绿色 blob 外接框 + 红色十字/圆圈 + 白色 3×5 点阵坐标 `(cx,cy)` |
 
-激光坐标是 **640×480 原图坐标系**的真实值，和 `/sdcard/laser_detect_test.py`
-打印的完全一致。默认配置：
+激光坐标是 **640×480 原图坐标系**的真实值。默认配置：
 
 ```python
 MODEL = "/sdcard/models/pose_v3_384.kmodel"   # 384 输入，远小靶更准
 VIEW = "full"                                 # 固定全图，画面稳定不跳动
-VIEW_SCALE = 0.45                             # 288×216；0.55 -> 352×264
-IDE_QUALITY = 70                              # 预览 JPEG 质量
+VIEW_SCALE = 0.60                             # 384×288（0.45=288×216 更省）
+IDE_QUALITY = 90                              # 预览 JPEG 质量
+SHOW_EVERY = 2                                # 每 2 帧推一次画面
 CONF = 0.25
 PERF_MODE = "performance"                     # 板端 CPU 频率（见 k230_perf.py）
 SENSOR_FB = 3                                 # 相机帧缓冲
 LASER_ENABLE = 1                              # 1=预览里也检测激光并画坐标
-LASER_THRESHOLD = (210, 255)                  # 激光灰度阈值（按现场调）
-LASER_MAX_PIXELS = 150                        # 光斑像素上限（排除灯/白墙）
-LASER_LABEL_EVERY = 5                         # 每 N 帧重画一次坐标文字
+LASER_EVERY = 1                               # 每 N 帧检测一次激光
+LASER_LABEL = 1                               # 0=不画坐标文字（十字/圆圈仍画）
 ```
+
+> **预览的激光参数尚未和离线 agent 对齐**：agent 用 LAB `(99,100,127,127,127,127)`
+> + 90px 位置门控 + 时序连续性，`overlap` 按“激光落在靶框内”判定；预览仍是旧参数
+> `(20,100,15,127,-40,100)`，overlap 按距离 ≤25px 判定（见 `AGENTS.md`「下一步」）。
 
 实现要点（踩过的坑见 `AGENTS.md`）：
 
@@ -233,23 +238,19 @@ LASER_LABEL_EVERY = 5                         # 每 N 帧重画一次坐标文�
   `libs.YOLO.aidemo = _PoseAidemo()` 注入 top-1 解码；
 - IDE 预览**不初始化 Display**，直接用 `img.compress_for_ide()` 推帧；
 - 采集顺序是**先拍显示帧、再拍 AI 帧**，避免框/关键点比画面晚一帧；
-- 板端没有 FreeType 字体，默认不写字；结果打印在 IDE 终端：
-  `[30] 19.0fps target 0.71 bull (243,405)`；
+- 板端没有可用的 FreeType 字体：激光坐标用脚本里的 3×5 点阵函数 `_draw_text()` 自绘；
+  Pose 结果打印在 IDE 终端：`[30] 19.0fps target 0.71 bull (243,405)`；
 - 每 N 帧可把"画好的帧"存到 `/sdcard/pose_preview_dbg.jpg`
   （`DBG_SAVE`，默认 0），用 `k230tool pull` 拉回核对绘制是否正确。
 
 ### 5.3 激光图层的实现要点
 
-- **单独开一路灰度通道 chn0** 给 `cv_lite.grayscale_find_blobs`（彩色 chn1 继续做预览、
-  chn2 送 AI）。实测三通道采集仍是 **56.7 fps**，不掉帧；`chn0` 必须在
-  `MediaManager.init()`/`run()` **之前**配好，否则 `snapshot(chn=0) failed(3)`。
-- 阈值 `LASER_THRESHOLD` 和独立脚本 `laser_detect_test.py` 是同一套语义
-  （`MIN_PIXELS` / `AREA_THRESHOLD` / `MAX_PIXELS` / `MAX_SIDE` / `LOCK_R`）。
-- 文字用 `draw_string`（`draw_string_advanced` 在本机固件缺字体，会报
-  `FreeType init failed`）。它每次调用会打一条 `Deprecated function` 日志，
-  所以文字每 `LASER_LABEL_EVERY` 帧才重画一次；嫌刷屏就 `LASER_LABEL = 0`
-  （十字仍然画）。
-- 加了激光检测后预览 **22 fps → 18 fps**（多一路取帧 + cv_lite ~4ms + 文字）。
+- 检测用 `board/laser_repo.py`：**红色 LAB `find_blobs`**（不是灰度 `cv_lite`）。
+  旧的独立测试脚本 `laser_detect_test.py` 已删除（2026-10-24 换 LAB 版）；
+- 预览建两路：小 ROI 跟踪（`_laser`）+ 连续丢失 20 帧后的全帧粗搜（`_laser_wide`）；
+- blob 形状门控：面积 2~400、边长 ≤24、长宽比 ≤2.5、填充 ≥0.2；
+- 激光坐标是 640×480 原图坐标，绘制前按 `VIEW_SCALE` 缩放；
+- 加了激光检测后预览 **22 fps → 18 fps**（2026-10-22 灰度版实测；LAB 版待复测）。
 
 > 停止脚本后板子会自动复位（KPU 析构死锁，复位最干净）。
 

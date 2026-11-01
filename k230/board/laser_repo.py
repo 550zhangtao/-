@@ -200,7 +200,7 @@ class LaserRepo:
                  x_stride=1, y_stride=1, pixels_threshold=1,
                  merge=True, margin=1,
                  min_area=0, max_area=0, max_side=0, max_aspect=0.0,
-                 min_fill=0.0, use_kalman=False):
+                 min_fill=0.0, use_kalman=False, home=None, gate_px=0):
         # 阈值：默认用"亮红激光"（排除暗红十字）；也可传老 RED_LAB。
         self.lab = tuple(int(v) for v in threshold) if threshold else RED_LASER_LAB
         if roi is not None:
@@ -225,6 +225,9 @@ class LaserRepo:
         self.kf = None
         if use_kalman and PointKalman is not None:
             self.kf = PointKalman(q=150.0, r=6.0, max_jump=LASER_MAX_JUMP, max_coast=6)
+        # 位置门控：激光刚性装在发射器上，成像位置基本固定；离 home 太远的红点一律当误检
+        self.home = tuple(home) if home is not None else None
+        self.gate_px = int(gate_px)
         self.last = None
         self.last_ms = 0
         self.nblob = 0
@@ -272,6 +275,19 @@ class LaserRepo:
         now = time.ticks_ms()
         # 形状/面积/填充率门控：把暗红十字、大片反光、细长亮带挡在门外
         cands = [b for b in self.blobs if self._passes(b)]
+        # ---- 位置门控（2026-10-29）：先只留下 LASER_HOME 附近的候选，再挑最大 ----
+        # 否则画面里更大的假红点会把真激光挤掉。
+        if self.home is not None and self.gate_px > 0:
+            near = []
+            for _b in cands:
+                try:
+                    _dx = int(_b.cx()) - self.home[0]
+                    _dy = int(_b.cy()) - self.home[1]
+                except Exception:
+                    continue
+                if _dx * _dx + _dy * _dy <= self.gate_px * self.gate_px:
+                    near.append(_b)
+            cands = near
         if not cands:
             self.last = None
             # 短暂丢失：卡尔曼外推兜底（连续丢失超过 max_coast 帧会返回 None）
@@ -285,7 +301,23 @@ class LaserRepo:
                             "bx": -1, "by": -1,
                             "raw": self.nblob, "core": 0, "ms": self.last_ms}
             return None
-        b = max(cands, key=lambda z: (z.area(), -z.y()))
+        # ---- 时序连续性优先（2026-10-29）----
+        # 之前取"面积最大的红点"，画面里红色候选不止一个时会在几个点之间来回跳，
+        # 闭环跟着抖。改为优先选离上一帧最近的候选，跳变超过 120px 才退回取最大。
+        b = None
+        if self.last is not None:
+            _lx0, _ly0 = self.last
+            _best = None
+            for _c in cands:
+                _dx = _c.cx() - _lx0
+                _dy = _c.cy() - _ly0
+                _d = _dx * _dx + _dy * _dy
+                if _best is None or _d < _best[0]:
+                    _best = (_d, _c)
+            if _best is not None and _best[0] <= 120 * 120:
+                b = _best[1]
+        if b is None:
+            b = max(cands, key=lambda z: (z.area(), -z.y()))
         # 默认就用原始质心（所有 API 失败时也安全）
         rx, ry = b.cx(), b.cy()
         # ---- 方案 2：形状自适应（整段可回退，绝不漏检）----
@@ -301,6 +333,13 @@ class LaserRepo:
             if core is not None:
                 rx, ry = core
                 self.core = 1
+        # ---- 位置门控（2026-10-29）：离 LASER_HOME 太远的红点 = 误检，直接丢弃 ----
+        if self.home is not None and self.gate_px > 0:
+            _dhx = rx - self.home[0]
+            _dhy = ry - self.home[1]
+            if _dhx * _dhx + _dhy * _dhy > self.gate_px * self.gate_px:
+                self.last = None
+                return None
         if self.kf is not None:
             s = self.kf.update(rx, ry, now)
             if s is not None:

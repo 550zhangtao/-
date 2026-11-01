@@ -16,16 +16,17 @@ gimbal_agent.py —— K230 常驻代理：ESP32 说开始才开始跑识别
 
 与 ESP32 的协议
 ---------------
-    ESP32 -> K230 : `$E,START!` / `$E,STOP!`
-    K230 -> ESP32 : `$KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>!`（每帧）
+    ESP32 -> K230 : `$E,START!` / `$E,STOP!` / `$E,DEBUG!`
+    K230 -> ESP32 : `$KT,<seq>,<run>,<cx>,<cy>,<bx>,<by>,<conf>,<laser>,<overlap>!`（每帧）
     状态回执      : `$E,K230,READY!` / `START_OK!` / `STOP_OK!` / `ERR,INIT!`
 
 免 REPL 切调试
 --------------
-    1.5 秒内连续收到 3 条 `$E,STOP!`（PC 可让 ESP32 连发 `gnone`）：
-    写 `/sdcard/offline_off` 后立刻 `machine.reset()`。复位发生在 Python
+    只认显式 `$E,DEBUG!`（ESP32 USB 命令 `gdebug` 转发）：写
+    `/sdcard/offline_off` 后立刻 `machine.reset()`。复位发生在 Python
     对象析构之前，不会触发 KPU/相机死锁；复位后本脚本看到 marker 直接退出，
     REPL 交还给 CanMV IDE。PC 侧入口：`bash scripts/mode.sh debug`。
+    普通 `$E,STOP!` 不再触发（实战中的模式切换会发 STOP，曾误关 main.py）。
 
 部署
 ----
@@ -91,7 +92,7 @@ KP_DIM = 3
 BULL_MIN_V = 0.30
 OVERLAP_PX = 25          # 激光与靶心距离 <= 该值视为“重叠”（开火条件）
 LASER_CFG = {
-    "threshold": (20, 100, 15, 127, -40, 100),
+    "threshold": (99, 100, 127, 127, 127, 127),   # 只收亮红激光，挡掉靶纸上的暗红十字（L<60）
     "roi": (0, 0, 640, 480),
     "x_stride": 1, "y_stride": 1,
     "pixels_threshold": 2, "merge": True, "margin": 1,
@@ -101,12 +102,21 @@ LASER_CFG = {
 }
 
 # ---- 激光瞄准（2026-10-29 重新启用）：激光在发射器上，激光点 = 枪口指向 ----
-LASER_HOME = (342, 289)   # 激光在画面里的固定成像位置（云台刚性安装，基本不动）
-LASER_HOME_AUTO = 1       # 在线把 LASER_HOME 慢慢标定到实测位置（修正安装误差）
+LASER_HOME = (300, 206)   # 实测激光成像位置（发射口在相机左下方；随云台刚性转动，基本固定）
+LASER_HOME_AUTO = 0       # 2026-10-29：关闭自动标定（假点会把基准拉偏）
 LASER_HOME_EMA = 0.02     # 标定 EMA（越小越稳，越大收敛越快）
+LASER_GATE_PX = 90        # 只接受距 LASER_HOME 这么近的红点，其余当误检
 AIM_ENABLE = 1            # 1=激光压靶心（发补偿瞄准点）；0=只发原始靶心
 AIM_MAX_PX = 180          # 单方向补偿误差上限（超过视为误检）
 AIM_RATE_PX = 20          # 每帧瞄准点变化上限（减小云台抖动）
+
+# ---- 靶心时序关联（2026-10-29）：模型 top-1 会在相似候选间跳（实测 357,420 <-> 140,190）。
+#     新靶心离上一帧超过 BULL_JUMP_PX 时先沿用上一帧，连续 BULL_JUMP_HOLD 帧都跳才认。
+BULL_JUMP_PX = 70
+BULL_JUMP_HOLD = 4
+# 1=用检测框中心当靶心（实测第 5 关键点系统性偏框中心上方 ~159px，不可用）
+# 0=用第 5 关键点
+BULL_FROM_BOX = 1
 
 # ---- 板端性能（见 board/k230_perf.py）----
 PERF_MODE = "performance"     # 不插 USB 离线运行时尤其重要
@@ -118,6 +128,8 @@ UART_ENABLE = 1
 UART_ID = 3                     # 12Pin UART3: TX=GPIO32, RX=GPIO33
 UART_TX = 32
 UART_RX = 33
+WATCHDOG_MS = 3000                # 看门狗：3 秒没出帧就重开相机管线
+RESTART_EVERY_FRAMES = 3000       # 每 3000 帧主动重启一次，清潜在泄漏
 UART_BAUD = 115200
 
 PRINT_EVERY = 60
@@ -201,7 +213,10 @@ _YL.aidemo = _PoseAidemo()
 _bull_kf = None
 _laser = None
 _laser_home = [LASER_HOME[0], LASER_HOME[1]]   # 可在线标定的激光成像位置（兜底）
+_laser_last = [LASER_HOME[0], LASER_HOME[1]]   # 最后一次实测激光点（检测丢失时优先用它）
 _last_aim = [W // 2, H // 2]                     # 上一帧瞄准点（速率限幅用）
+_bull_lock = None                                # 时序关联：锁定的靶心
+_bull_jump = 0                                   # 连续跳变计数
 
 
 # ---------------- UART ----------------
@@ -287,12 +302,14 @@ def _poll_cmd():
             idx = i if i < j else j
         line = _rxbuf[:idx].strip()
         _rxbuf = _rxbuf[idx + 1:]
-        if "START" in line:
+        if "DEBUG" in line:
+            # 专用调试命令（ESP32 的 gdebug -> $E,DEBUG!），不再用 3×STOP 暗号
+            cmd = "DEBUG"
+            break
+        elif "START" in line:
             cmd = "START"
         elif "STOP" in line:
-            cmd = "DEBUG" if _record_stop() else "STOP"
-            if cmd == "DEBUG":
-                break
+            cmd = "STOP"
     return cmd
 
 
@@ -398,7 +415,8 @@ def _init_laser():
         print("agent: laser_repo 缺失，激光关闭")
         return
     try:
-        _laser = laser_spot_mod.LaserRepo(**LASER_CFG)
+        _laser = laser_spot_mod.LaserRepo(home=LASER_HOME, gate_px=LASER_GATE_PX,
+                                          **LASER_CFG)
         print("agent: laser ready roi=%s" % (_laser.roi,))
     except Exception as e:
         _laser = None
@@ -418,7 +436,7 @@ def _drain_frames():
 
 # ---------------- 推理 + 回传 ----------------
 def _send_frame(seq, boxes, scores, kpts, img=None):
-    global _laser_home, _last_aim
+    global _laser_home, _last_aim, _bull_lock, _bull_jump
     if _uart is None:
         return
     run = 1 if boxes else 0
@@ -437,6 +455,51 @@ def _send_frame(seq, boxes, scores, kpts, img=None):
     else:
         cx = cy = -1
 
+    # ---- BULL_FROM_BOX：直接用框中心当靶心（实测关键点系统性偏移，框中心更可靠）----
+    if run and BULL_FROM_BOX:
+        bx, by = cx, cy
+        if conf == 0:
+            conf = 300
+
+    # ---- 靶心合理性：关键点离框中心太远（>0.5*框长边 或 >60px）就用框中心兜底 ----
+    # 实测模型偶尔把第 5 关键点画到框外 150~220px；靶纸靶心本来就在框中心附近，
+    # 这种离谱的关键点不可用，退回框中心反而稳定。
+    if run:
+        _bw = float(b[2]); _bh = float(b[3])
+        _lim = 0.5 * max(_bw, _bh)
+        if _lim < 60.0:
+            _lim = 60.0
+        if bx < 0 or by < 0:
+            bx, by = cx, cy
+            conf = 300
+        else:
+            _dx0 = bx - cx
+            _dy0 = by - cy
+            if _dx0 * _dx0 + _dy0 * _dy0 > _lim * _lim:
+                bx, by = cx, cy
+                conf = 300
+
+    # ---- 靶心时序关联：相似候选之间会跳，先用上一帧兜住，连续跳才认 ----
+    if bx >= 0 and by >= 0:
+        if _bull_lock is None:
+            _bull_lock = (bx, by)
+        else:
+            _dx = bx - _bull_lock[0]
+            _dy = by - _bull_lock[1]
+            if _dx * _dx + _dy * _dy <= BULL_JUMP_PX * BULL_JUMP_PX:
+                _bull_lock = (bx, by)
+                _bull_jump = 0
+            else:
+                _bull_jump += 1
+                if _bull_jump < BULL_JUMP_HOLD:
+                    bx, by = _bull_lock          # 先沿用上一帧，等确认
+                else:
+                    _bull_lock = (bx, by)
+                    _bull_jump = 0
+    elif not run:
+        _bull_lock = None
+        _bull_jump = 0
+
     # ---- 激光检测：真实检测(det=1) / 卡尔曼外推(coast=1) / 丢失 ----
     laser = 0
     coast = 0
@@ -452,25 +515,38 @@ def _send_frame(seq, boxes, scores, kpts, img=None):
         except Exception:
             laser = 0
             coast = 0
+    # ---- 靶框内的红点不再排除：用户要求"激光落在靶子上即可开火"，
+    #      所以打在靶上的激光点必须留着，用它判断是否命中。----
 
-    # ---- 激光参考点：优先实测（det 或 coast），彻底丢失用 LASER_HOME 兜底 ----
+    # ---- 激光参考点：优先实测（det 或 coast）；丢了用"最后一次实测点"兜底 ----
+    # 2026-10-29：以前丢了退回 LASER_HOME，一旦检测时有时无，瞄准点就在两个基准间来回跳，
+    # 导致云台摆动。激光刚性固定在发射器上，用上次实测位置作兜底最稳。
     ref_valid = False
     if laser or coast:
         ref_valid = True
         refx, refy = lx, ly
+        _laser_last[0] = lx
+        _laser_last[1] = ly
         if laser and LASER_HOME_AUTO:
             _laser_home[0] += LASER_HOME_EMA * (lx - _laser_home[0])
             _laser_home[1] += LASER_HOME_EMA * (ly - _laser_home[1])
     else:
-        refx, refy = _laser_home[0], _laser_home[1]
+        refx, refy = _laser_last[0], _laser_last[1]
 
-    # 先算 overlap（原始靶心 vs 激光参考点）；有激光参考点且距离够近才算重叠
+    # overlap：激光点落在靶框内即算命中（2026-10-29 用户要求：打在靶上就开火，不必对准圆心）
     overlap = 0
-    if run and bx >= 0 and by >= 0 and ref_valid:
-        _dx = bx - refx
-        _dy = by - refy
-        if _dx * _dx + _dy * _dy <= OVERLAP_PX * OVERLAP_PX:
-            overlap = 1
+    if run and bx >= 0 and by >= 0:
+        if laser and lx >= 0:
+            _bx0 = float(b[0]); _by0 = float(b[1])
+            _bx1 = _bx0 + float(b[2]); _by1 = _by0 + float(b[3])
+            _mg = 4.0                     # 稍微内缩，避免擦边误判
+            if (_bx0 + _mg) <= lx <= (_bx1 - _mg) and (_by0 + _mg) <= ly <= (_by1 - _mg):
+                overlap = 1
+        else:
+            _dx = bx - refx
+            _dy = by - refy
+            if _dx * _dx + _dy * _dy <= OVERLAP_PX * OVERLAP_PX:
+                overlap = 1
 
     # ---- 激光压靶心：瞄准点 = 画面中心 + (靶心 - 激光)，ESP32 居中后两者重合 ----
     if run and bx >= 0 and by >= 0 and AIM_ENABLE:
@@ -503,6 +579,25 @@ def _log_versions():
     return True
 
 
+def _log_err(tag, e):
+    """把异常写进 /sdcard/agent_err.txt（限 2KB），便于脱离 USB 后排查。"""
+    try:
+        print("agent %s err:" % tag, e)
+    except Exception:
+        pass
+    try:
+        n = os.stat("/sdcard/agent_err.txt")[6]
+    except Exception:
+        n = 0
+    try:
+        if n < 2000:
+            f = open("/sdcard/agent_err.txt", "a")
+            f.write("%s: %s\n" % (tag, repr(e)))
+            f.close()
+    except Exception:
+        pass
+
+
 def _stream_frame(seq):
     # chn1 必须持续取帧：不排空会堵死 VICAP 管线（见模块说明）
     img = _sensor.snapshot(chn=CAM_CHN_ID_1)
@@ -512,7 +607,11 @@ def _stream_frame(seq):
         boxes, scores, kpts = res[0], res[2], res[3]
     else:
         boxes, scores, kpts = [], [], []
-    _send_frame(seq, boxes, scores, kpts, img)
+    # 2026-10-29：激光/瞄准这段单独兜异常——出错只丢这一帧，不能把相机丢掉（否则 $KT 断流）
+    try:
+        _send_frame(seq, boxes, scores, kpts, img)
+    except Exception as e:
+        _log_err("send", e)
     return len(boxes)
 
 
@@ -555,13 +654,18 @@ def main():
     boot_ms = time.ticks_ms()
     heard_cmd = False
     auto_done = False
+    last_ok_ms = time.ticks_ms()      # 看门狗：最后一帧成功的时间
+    restart_n = 0
 
     while True:
         cmd = _poll_cmd()
         if cmd == "DEBUG":
-            # 注意：实战时 ESP32 每次靶心丢失都会发 STOP，累计 3 条就会误触发这里，
-            # 把 main.py 关掉（offline_off）导致上电不再自动运行。所以这里只打印，不写文件。
-            print("agent: DEBUG 暗号已禁用（防止实战 STOP 误触发）")
+            # 只认显式 $E,DEBUG!（ESP32 的 gdebug），普通 STOP 不再触发，
+            # 避免实战中模式切换的 STOP 误把 main.py 关掉。
+            print("agent: DEBUG 命令 -> 写 offline_off + 复位到 REPL")
+            sys.stdout.flush()
+            _enter_debug_mode()
+            time.sleep_ms(1000)
             continue
         if cmd:
             heard_cmd = True
@@ -576,6 +680,7 @@ def main():
             if ok:
                 _init_laser()
             _running = ok
+            last_ok_ms = time.ticks_ms()
             _reply("START_OK" if ok else "ERR,INIT")
             print("agent: START -> %s" % ("streaming" if ok else "init failed"))
         elif cmd == "STOP":
@@ -583,12 +688,50 @@ def main():
             _reply("STOP_OK")
             print("agent: STOP -> idle")
 
+        # ---- 看门狗（2026-10-29）：K230 跑几千帧后会随机停流（相机管线卡死），
+        # 以前只能断电恢复。这里 3 秒没有产出就自动重开相机，并定期主动重启一次。
+        if _running and time.ticks_diff(time.ticks_ms(), last_ok_ms) > WATCHDOG_MS:
+            restart_n += 1
+            print("agent: watchdog restart #%d (spent=%d)" % (restart_n, spent))
+            try:
+                _drop_pipeline()
+                time.sleep_ms(200)
+                ok = _open_camera() and _open_model()
+                if ok:
+                    _init_laser()
+                _running = ok
+            except Exception as e:
+                print("agent: watchdog fail:", e)
+                _running = False
+            last_ok_ms = time.ticks_ms()
+            seq = 0
+            spent = 0
+            continue
+        if _running and spent >= RESTART_EVERY_FRAMES:
+            # 定期主动重启，清掉驱动/内存的潜在泄漏
+            restart_n += 1
+            print("agent: periodic restart #%d" % restart_n)
+            try:
+                _drop_pipeline()
+                time.sleep_ms(200)
+                ok = _open_camera() and _open_model()
+                if ok:
+                    _init_laser()
+                _running = ok
+            except Exception:
+                _running = False
+            last_ok_ms = time.ticks_ms()
+            seq = 0
+            spent = 0
+            continue
+
         if _running and _ready and _cam_open:
             try:
                 _stream_frame(seq)
                 seq += 1
                 _fail = 0
                 spent += 1
+                last_ok_ms = time.ticks_ms()
                 dt = time.ticks_diff(time.ticks_ms(), t_last)
                 t_last = time.ticks_ms()
                 if dt > 0:
@@ -601,7 +744,7 @@ def main():
             except Exception as e:
                 _fail += 1
                 print("agent: stream error(%d):" % _fail, e)
-                if _fail >= 3:
+                if _fail >= 20:
                     _drop_pipeline()
                 time.sleep_ms(50)
         else:
